@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Provider {
+  id                String              @id @default(cuid())
+  name              String
+  baseUrl           String
+  requiresLogin     Boolean             @default(false)
+  username          String?
+  encryptedPassword String?
+  isActive          Boolean             @default(true)
+  notes             String?
+  lastExtractionAt  DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  scraperConfig     ProviderScraperConfig?
+  extractionJobs    ExtractionJob[]
+}
+
+model ProviderScraperConfig {
+  id                  String   @id @default(cuid())
+  providerId          String   @unique
+  provider            Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  productCardSelector String?
+  skuSelector         String?
+  nameSelector        String?
+  descriptionSelector String?
+  priceSelector       String?
+  oldPriceSelector    String?
+  stockSelector       String?
+  categorySelector    String?
+  imageSelector       String?
+  productUrlSelector  String?
+  nextPageSelector    String?
+  maxPages            Int      @default(10)
+  waitForSelector     String?
+  loginUsernameSelector String?
+  loginPasswordSelector String?
+  loginSubmitSelector   String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ExtractionJob {
+  id                    String             @id @default(cuid())
+  providerId            String
+  provider              Provider           @relation(fields: [providerId], references: [id])
+  status                JobStatus          @default(PENDING)
+  startUrl              String?
+  startedAt             DateTime?
+  finishedAt            DateTime?
+  /// Porcentaje de progreso 0-100 (actualizado por el worker página a página)
+  progress              Int                @default(0)
+  totalProducts         Int                @default(0)
+  productsWithPrice     Int                @default(0)
+  productsWithoutPrice  Int                @default(0)
+  productsWithoutSku    Int                @default(0)
+  /// Ruta local del archivo Excel generado (relativa a /public)
+  excelFilePath         String?
+  /// URL pública para descarga desde el navegador
+  excelFileUrl          String?
+  errorMessage          String?
+  /// Timestamp del momento en que un worker tomó el job (para detección de locks muertos)
+  workerLockedAt        DateTime?
+  /// ID del proceso worker que bloqueó el job (útil para debug multi-instancia)
+  workerPid             Int?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  products              ExtractedProduct[]
+  logs                  ExtractionLog[]
+
+  @@index([status, createdAt])
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ExtractedProduct {
+  id            String        @id @default(cuid())
+  jobId         String
+  job           ExtractionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  providerId    String
+  sku           String?
+  name          String
+  description   String?
+  wholesalePrice Decimal?     @db.Decimal(10, 2)
+  oldPrice      Decimal?      @db.Decimal(10, 2)
+  stock         String?
+  category      String?
+  brand         String?
+  productUrl    String?
+  imageUrl      String?
+  status        String?
+  observations  String?
+  rawData       Json?
+  extractedAt   DateTime      @default(now())
+
+  @@index([jobId])
+  @@index([providerId])
+  @@index([sku])
+}
+
+model ExtractionLog {
+  id            String        @id @default(cuid())
+  jobId         String
+  job           ExtractionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  level         LogLevel      @default(INFO)
+  message       String
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+
+  @@index([jobId])
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}

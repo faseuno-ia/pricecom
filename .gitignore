@@ -1,0 +1,41 @@
+# deps
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+build/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# Excel exports (generados en runtime)
+public/exports/
+/exports/
+
+# Scripts ad-hoc / debug (no se versionan)
+/scripts/
+
+# DB
+*.db
+*.sqlite
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+# Prisma
+prisma/migrations/

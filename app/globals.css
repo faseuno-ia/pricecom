@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 214 40% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 214 40% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 214 40% 16%;
+    --primary: 214 71% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 16% 93%;
+    --secondary-foreground: 214 40% 24%;
+    --muted: 210 16% 93%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 158 64% 32%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 214 71% 44%;
+    --radius: 0.5rem;
+
+    --font-sans: "DM Sans", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-optical-sizing: auto;
+  }
+}
+
+/* Status badges */
+.badge-pending   { @apply bg-amber-100 text-amber-800 border border-amber-200; }
+.badge-running   { @apply bg-blue-100 text-blue-800 border border-blue-200; }
+.badge-completed { @apply bg-emerald-100 text-emerald-800 border border-emerald-200; }
+.badge-failed    { @apply bg-red-100 text-red-800 border border-red-200; }
+.badge-cancelled { @apply bg-gray-100 text-gray-600 border border-gray-200; }
+
+/* Subtle scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { @apply bg-transparent; }
+::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
