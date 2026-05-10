@@ -86,16 +86,45 @@ export class ScraperService {
         }
       }
 
+      // Si el sitio usa modo mpage (scroll infinito Tienda Nube), la página inicial
+      // también sufre el race entre DOM listo y carga real de cards. Misma espera
+      // que aplicamos a cada ?mpage=N en goToNextPage.
+      const willUseMpage =
+        !!config?.nextPageSelector &&
+        this.detectUrlPaginationMode(config.nextPageSelector) === "mpage";
+      if (willUseMpage && config?.productCardSelector) {
+        try {
+          await page.waitForLoadState("networkidle", { timeout: 10000 });
+        } catch {
+          await onLog("DEBUG", "networkidle inicial no se estabilizó en 10s, continuando");
+        }
+        const initialCount = await this.waitForProductsToStabilize(page, config.productCardSelector);
+        await onLog("DEBUG", `Página inicial: ${initialCount} tarjetas tras estabilizar`);
+      }
+
       const maxPages = config?.maxPages ?? 10;
       let currentPage = 0;
       let arrivedViaUrl = false;
+      // En modo mpage de Tienda Nube el DOM acumula las tarjetas de mpages anteriores.
+      // Trackeamos cuántas ya procesamos para saltarlas en el próximo extract y no
+      // iterar N*pageSize cards cada vez (auto-calibrado al page size real del sitio).
+      let inMpageMode = false;
+      let cardOffset = 0;
 
       while (currentPage < maxPages) {
         currentPage++;
         await onLog("INFO", `Procesando página ${currentPage}...`);
 
         const html = await page.content();
-        const products = await this.extractProductsFromPage(html, page, config, provider.baseUrl, onLog);
+        const offsetForExtract = inMpageMode ? cardOffset : 0;
+        const { products, totalCards } = await this.extractProductsFromPage(
+          html,
+          page,
+          config,
+          provider.baseUrl,
+          onLog,
+          offsetForExtract
+        );
 
         // Deduplicar
         let added = 0;
@@ -110,8 +139,13 @@ export class ScraperService {
           added++;
         }
 
-        await onLog("INFO", `Página ${currentPage}: ${products.length} productos encontrados, ${added} nuevos`);
+        await onLog(
+          "INFO",
+          `Página ${currentPage}: ${products.length} productos encontrados, ${added} nuevos (DOM: ${totalCards})`
+        );
         await onProgress(currentPage, allProducts.length);
+
+        if (inMpageMode) cardOffset = totalCards;
 
         // En modo URL, una página sin productos nuevos indica fin del catálogo
         if (arrivedViaUrl && added === 0) {
@@ -121,12 +155,19 @@ export class ScraperService {
 
         // Paginación
         const nextPageSelector = config?.nextPageSelector || "a[rel='next'], .next-page, [aria-label='Siguiente'], .pagination-next";
-        const next = await this.goToNextPage(page, nextPageSelector, onLog);
+        const next = await this.goToNextPage(page, nextPageSelector, config?.productCardSelector ?? null, onLog);
         if (!next.ok) {
           await onLog("INFO", "No hay más páginas, extracción completada");
           break;
         }
         arrivedViaUrl = next.viaUrl;
+        if (next.urlMode === "mpage") {
+          inMpageMode = true;
+        } else if (next.viaUrl === false) {
+          // Selector click rompe la acumulación: reset offset
+          inMpageMode = false;
+          cardOffset = 0;
+        }
 
         // Pequeña pausa para no sobrecargar el servidor
         await page.waitForTimeout(1500);
@@ -171,8 +212,9 @@ export class ScraperService {
     page: Page,
     config: ProviderScraperConfig | null,
     baseUrl: string,
-    onLog: ScraperOptions["onLog"]
-  ): Promise<ScrapedProduct[]> {
+    onLog: ScraperOptions["onLog"],
+    offset = 0
+  ): Promise<{ products: ScrapedProduct[]; totalCards: number }> {
     const $ = cheerio.load(html);
     const products: ScrapedProduct[] = [];
 
@@ -180,11 +222,19 @@ export class ScraperService {
 
     if (!cardSelector) {
       await onLog("WARN", "No se pudo detectar tarjetas de producto automáticamente");
-      return [];
+      return { products: [], totalCards: 0 };
     }
 
-    const cards = $(cardSelector);
-    await onLog("DEBUG", `Encontradas ${cards.length} tarjetas con selector "${cardSelector}"`);
+    const allCards = $(cardSelector);
+    const totalCards = allCards.length;
+    const cards = offset > 0 ? allCards.slice(offset) : allCards;
+
+    await onLog(
+      "DEBUG",
+      `Tarjetas con "${cardSelector}": ${totalCards} totales${
+        offset > 0 ? `, procesando ${cards.length} desde índice ${offset}` : ""
+      }`
+    );
 
     cards.each((_, el) => {
       const card = $(el);
@@ -194,7 +244,7 @@ export class ScraperService {
       }
     });
 
-    return products;
+    return { products, totalCards };
   }
 
   private extractFromCard(
@@ -371,9 +421,10 @@ export class ScraperService {
   private async goToNextPage(
     page: Page,
     selector: string,
+    productCardSelector: string | null,
     onLog: ScraperOptions["onLog"]
-  ): Promise<{ ok: boolean; viaUrl: boolean }> {
-    const urlPaginationMode = selector.toLowerCase().includes("page");
+  ): Promise<{ ok: boolean; viaUrl: boolean; urlMode: "mpage" | "path" | null }> {
+    const urlPaginationMode = this.detectUrlPaginationMode(selector);
 
     try {
       const nextBtn = page.locator(selector).first();
@@ -386,38 +437,108 @@ export class ScraperService {
           await nextBtn.click();
           await page.waitForLoadState("domcontentloaded");
         }
-        return { ok: true, viaUrl: false };
+        return { ok: true, viaUrl: false, urlMode: null };
       }
     } catch {
       // Cae al modo URL si está activado
     }
 
     if (urlPaginationMode) {
-      const nextUrl = this.buildNextPageUrl(page.url());
+      const nextUrl = this.buildNextPageUrl(page.url(), urlPaginationMode);
       if (nextUrl) {
-        await onLog("INFO", `Selector no encontrado, paginando por URL: ${nextUrl}`);
+        await onLog("INFO", `Selector no encontrado, paginando por URL (${urlPaginationMode}): ${nextUrl}`);
         try {
           const response = await page.goto(nextUrl, { waitUntil: "domcontentloaded" });
           if (response && response.status() >= 400) {
             await onLog("DEBUG", `Página ${nextUrl} devolvió ${response.status()}, fin de paginación`);
-            return { ok: false, viaUrl: true };
+            return { ok: false, viaUrl: true, urlMode: urlPaginationMode };
           }
-          return { ok: true, viaUrl: true };
+
+          // Modo mpage (scroll infinito): los productos se renderizan tras el load inicial.
+          // Esperar a que la red se calme y a que el conteo de tarjetas se estabilice.
+          if (urlPaginationMode === "mpage") {
+            try {
+              await page.waitForLoadState("networkidle", { timeout: 10000 });
+            } catch {
+              await onLog("DEBUG", "networkidle no se estabilizó en 10s, continuando");
+            }
+            if (productCardSelector) {
+              const finalCount = await this.waitForProductsToStabilize(page, productCardSelector);
+              await onLog("DEBUG", `mpage: ${finalCount} tarjetas visibles tras estabilizar`);
+            }
+          }
+
+          return { ok: true, viaUrl: true, urlMode: urlPaginationMode };
         } catch (err) {
           await onLog("DEBUG", `Error navegando a ${nextUrl}: ${(err as Error).message}`);
-          return { ok: false, viaUrl: true };
+          return { ok: false, viaUrl: true, urlMode: urlPaginationMode };
         }
       }
     }
 
     await onLog("DEBUG", "Botón de siguiente página no encontrado");
-    return { ok: false, viaUrl: false };
+    return { ok: false, viaUrl: false, urlMode: null };
   }
 
-  // Patrón Tienda Nube: /productos/ → /productos/page/2/ → /productos/page/3/...
-  private buildNextPageUrl(currentUrl: string): string | null {
+  /**
+   * Espera a que el conteo de elementos que matchea `selector` se mantenga estable.
+   * Polling cada 200ms; retorna apenas el conteo no cambia durante `stableMs`,
+   * o tras `maxWaitMs` si nunca se estabiliza.
+   */
+  private async waitForProductsToStabilize(
+    page: Page,
+    selector: string,
+    maxWaitMs = 5000,
+    stableMs = 1000
+  ): Promise<number> {
+    const start = Date.now();
+    let lastCount = await page.locator(selector).count().catch(() => 0);
+    let lastChange = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+      await page.waitForTimeout(200);
+      const count = await page.locator(selector).count().catch(() => lastCount);
+      if (count !== lastCount) {
+        lastCount = count;
+        lastChange = Date.now();
+      } else if (Date.now() - lastChange >= stableMs) {
+        return count;
+      }
+    }
+    return lastCount;
+  }
+
+  /**
+   * Determina qué estrategia de URL usar según pistas en el selector:
+   * - "mpage" o "load-more" → modo mpage (Tienda Nube scroll infinito: ?mpage=N)
+   * - "page" → modo path (Tienda Nube paginado clásico: /page/N/)
+   * - ninguno → null (sin paginación por URL)
+   */
+  private detectUrlPaginationMode(selector: string): "mpage" | "path" | null {
+    const s = selector.toLowerCase();
+    if (s.includes("mpage") || s.includes("load-more")) return "mpage";
+    if (s.includes("page")) return "path";
+    return null;
+  }
+
+  /**
+   * Construye la URL de la siguiente página según el modo:
+   * - path: /productos/ → /productos/page/2/ → /productos/page/3/...
+   * - mpage: /productos → ?mpage=2 → ?mpage=3... (Tienda Nube scroll infinito)
+   */
+  private buildNextPageUrl(currentUrl: string, mode: "mpage" | "path"): string | null {
     try {
       const url = new URL(currentUrl);
+
+      if (mode === "mpage") {
+        const current = url.searchParams.get("mpage");
+        const next = current ? parseInt(current, 10) + 1 : 2;
+        if (isNaN(next)) return null;
+        url.searchParams.set("mpage", String(next));
+        return url.toString();
+      }
+
+      // mode === "path"
       const match = url.pathname.match(/\/page\/(\d+)\/?$/);
       if (match) {
         const next = parseInt(match[1], 10) + 1;
