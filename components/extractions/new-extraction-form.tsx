@@ -3,7 +3,16 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Play, Loader2, CheckCircle, XCircle, ExternalLink, Download } from "lucide-react";
+import {
+  Play,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  ExternalLink,
+  Download,
+  Store,
+} from "lucide-react";
+import { ProgressBar } from "@/components/ui/progress-bar";
 
 interface Provider {
   id: string;
@@ -13,6 +22,7 @@ interface Provider {
 
 interface Props {
   providers: Provider[];
+  initialProviderId?: string;
 }
 
 interface JobStatus {
@@ -25,9 +35,24 @@ interface JobStatus {
   logs: { level: string; message: string; createdAt: string }[];
 }
 
-export function NewExtractionForm({ providers }: Props) {
+const levelColor: Record<string, string> = {
+  INFO: "text-muted-foreground",
+  WARN: "text-amber-400",
+  ERROR: "text-red-400",
+  DEBUG: "text-muted-foreground/40",
+};
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+export function NewExtractionForm({ providers, initialProviderId }: Props) {
   const router = useRouter();
-  const [providerId, setProviderId] = useState("");
+  const [providerId, setProviderId] = useState(initialProviderId ?? "");
   const [startUrl, setStartUrl] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
@@ -40,7 +65,6 @@ export function NewExtractionForm({ providers }: Props) {
     e.preventDefault();
     if (!providerId) return toast.error("Seleccioná un proveedor");
     setLoading(true);
-
     try {
       const res = await fetch("/api/extractions/start", {
         method: "POST",
@@ -61,7 +85,6 @@ export function NewExtractionForm({ providers }: Props) {
     }
   }
 
-  // Polling
   useEffect(() => {
     if (!jobId) return;
     const interval = setInterval(async () => {
@@ -76,98 +99,124 @@ export function NewExtractionForm({ providers }: Props) {
     return () => clearInterval(interval);
   }, [jobId]);
 
-  // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [jobStatus?.logs]);
 
-  const levelColor: Record<string, string> = {
-    INFO: "text-blue-700",
-    WARN: "text-amber-600",
-    ERROR: "text-red-600",
-    DEBUG: "text-muted-foreground",
-  };
-
-  const inputCls = "w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-background";
-
   return (
-    <div className="space-y-5">
-      {/* Form */}
+    <div className="space-y-6">
       {!jobId && (
-        <form onSubmit={handleStart} className="bg-card border rounded-xl p-6 space-y-5 max-w-xl">
+        <form onSubmit={handleStart} className="space-y-6">
+          {/* Provider cards */}
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5 uppercase tracking-wide">
-              Proveedor *
+            <label className="block text-[11px] font-medium text-muted-foreground mb-3 uppercase tracking-wider">
+              Proveedor
             </label>
             {providers.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No hay proveedores activos.{" "}
-                <a href="/providers/new" className="text-primary hover:underline">Crear uno</a>
-              </p>
+              <div className="bg-card border border-border rounded-xl p-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No hay proveedores activos.{" "}
+                  <a
+                    href="/providers/new"
+                    className="text-primary hover:underline"
+                  >
+                    Crear uno
+                  </a>
+                </p>
+              </div>
             ) : (
-              <select
-                className={inputCls}
-                value={providerId}
-                onChange={(e) => {
-                  setProviderId(e.target.value);
-                  setStartUrl("");
-                }}
-                required
-              >
-                <option value="">Seleccioná un proveedor...</option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {providers.map((p) => {
+                  const active = providerId === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setProviderId(p.id);
+                        setStartUrl("");
+                      }}
+                      className={`text-left bg-card border rounded-xl p-4 flex items-center gap-3 transition-all ${
+                        active
+                          ? "border-primary ring-2 ring-primary/30 bg-primary/5"
+                          : "border-border hover:border-primary/40"
+                      }`}
+                    >
+                      <div
+                        className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                          active
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted/50 text-muted-foreground"
+                        }`}
+                      >
+                        <Store className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">{p.name}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {hostnameOf(p.baseUrl)}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
 
           {selectedProvider && (
-            <div className="p-3 bg-muted/50 rounded-lg text-xs text-muted-foreground flex items-center gap-2">
-              <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
-              URL base: <span className="font-mono text-foreground">{selectedProvider.baseUrl}</span>
-            </div>
+            <>
+              <div className="bg-muted/20 border border-border rounded-lg px-3 py-2 text-xs flex items-center gap-2">
+                <ExternalLink className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" />
+                <span className="text-muted-foreground">URL base:</span>
+                <span className="font-mono text-foreground truncate">
+                  {selectedProvider.baseUrl}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">
+                  URL inicial (opcional)
+                </label>
+                <input
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  type="url"
+                  value={startUrl}
+                  onChange={(e) => setStartUrl(e.target.value)}
+                  placeholder={selectedProvider.baseUrl}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Si está vacío, se usa la URL base del proveedor
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 shadow-lg shadow-primary/20"
+              >
+                {loading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                {loading ? "Iniciando..." : "Iniciar extracción"}
+              </button>
+            </>
           )}
-
-          <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5 uppercase tracking-wide">
-              URL inicial (opcional)
-            </label>
-            <input
-              className={inputCls}
-              type="url"
-              value={startUrl}
-              onChange={(e) => setStartUrl(e.target.value)}
-              placeholder={selectedProvider?.baseUrl ?? "https://..."}
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Si está vacío, se usa la URL base del proveedor
-            </p>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading || providers.length === 0}
-            className="flex items-center gap-2 bg-primary text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {loading ? "Iniciando..." : "Iniciar extracción"}
-          </button>
         </form>
       )}
 
-      {/* Status + logs */}
       {jobId && jobStatus && (
-        <div className="bg-card border rounded-xl overflow-hidden">
-          {/* Header */}
-          <div className="px-6 py-4 border-b flex items-center justify-between">
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-3">
               {jobStatus.status === "RUNNING" || jobStatus.status === "PENDING" ? (
-                <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
               ) : jobStatus.status === "COMPLETED" ? (
-                <CheckCircle className="w-5 h-5 text-emerald-600" />
+                <CheckCircle className="w-5 h-5 text-accent" />
               ) : (
-                <XCircle className="w-5 h-5 text-red-500" />
+                <XCircle className="w-5 h-5 text-red-400" />
               )}
               <div>
                 <p className="font-semibold text-sm">
@@ -186,16 +235,16 @@ export function NewExtractionForm({ providers }: Props) {
                 <a
                   href={jobStatus.excelFileUrl}
                   download
-                  className="flex items-center gap-1.5 bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition-colors"
+                  className="flex items-center gap-1.5 bg-accent text-white text-xs px-3 py-1.5 rounded-lg hover:bg-accent/90 transition-colors font-medium"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  Descargar Excel
+                  <Download className="w-3.5 h-3.5" /> Descargar Excel
                 </a>
               )}
-              {(jobStatus.status === "COMPLETED" || jobStatus.status === "FAILED") && (
+              {(jobStatus.status === "COMPLETED" ||
+                jobStatus.status === "FAILED") && (
                 <button
                   onClick={() => router.push(`/extractions/${jobId}`)}
-                  className="text-xs text-primary border border-primary/30 px-3 py-1.5 rounded-lg hover:bg-primary hover:text-white transition-colors"
+                  className="text-xs text-primary border border-primary/30 px-3 py-1.5 rounded-lg hover:bg-primary hover:text-primary-foreground transition-colors"
                 >
                   Ver detalle
                 </button>
@@ -203,36 +252,36 @@ export function NewExtractionForm({ providers }: Props) {
             </div>
           </div>
 
-          {/* Progress bar */}
-          {(jobStatus.status === "RUNNING" || jobStatus.status === "PENDING") && (
-            <div className="px-6 py-2 border-b bg-muted/30">
-              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
-                <span>Progreso</span>
-                <span className="font-mono">{jobStatus.progress}%</span>
-              </div>
-              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                  style={{ width: `${jobStatus.status === "PENDING" ? 2 : jobStatus.progress}%` }}
-                />
-              </div>
+          {(jobStatus.status === "RUNNING" ||
+            jobStatus.status === "PENDING") && (
+            <div className="px-6 py-3 border-b border-border bg-muted/20">
+              <ProgressBar
+                value={jobStatus.status === "PENDING" ? 2 : jobStatus.progress}
+                label={
+                  jobStatus.status === "PENDING"
+                    ? "Esperando al worker"
+                    : "Progreso"
+                }
+              />
             </div>
           )}
 
-          {/* Logs */}
-          <div className="h-72 overflow-y-auto p-4 bg-[hsl(214,30%,97%)] font-mono text-xs space-y-0.5">
+          <div className="h-72 overflow-y-auto p-4 bg-[hsl(var(--surface-row))] font-mono text-xs space-y-0.5">
             {jobStatus.logs.map((log, i) => (
               <div key={i} className="flex gap-2">
-                <span className="text-muted-foreground/50 select-none">
+                <span className="text-muted-foreground/40 select-none">
                   {new Date(log.createdAt).toLocaleTimeString("es-AR")}
                 </span>
-                <span className={`font-medium w-10 flex-shrink-0 ${levelColor[log.level] ?? ""}`}>
+                <span
+                  className={`font-medium w-12 flex-shrink-0 ${levelColor[log.level] ?? ""}`}
+                >
                   [{log.level}]
                 </span>
-                <span className="text-foreground/80">{log.message}</span>
+                <span className="text-foreground/90">{log.message}</span>
               </div>
             ))}
-            {(jobStatus.status === "PENDING" || jobStatus.status === "RUNNING") && (
+            {(jobStatus.status === "PENDING" ||
+              jobStatus.status === "RUNNING") && (
               <div className="flex gap-2 text-muted-foreground animate-pulse">
                 <span>—</span>
                 <span>Procesando...</span>

@@ -44,7 +44,38 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   return NextResponse.json(safe);
 }
 
+// PATCH: actualizaciones parciales (ej: { isActive: false } para desactivar)
+export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+  const body = await req.json();
+  const allowed: Record<string, unknown> = {};
+  if (typeof body.isActive === "boolean") allowed.isActive = body.isActive;
+
+  if (Object.keys(allowed).length === 0) {
+    return NextResponse.json({ error: "No hay campos válidos para actualizar" }, { status: 400 });
+  }
+
+  const provider = await prisma.provider.update({
+    where: { id: params.id },
+    data: allowed,
+  });
+  const { encryptedPassword: _, ...safe } = provider;
+  return NextResponse.json(safe);
+}
+
+// DELETE: borra el proveedor y en cascada manual sus jobs (que cascadean a products/logs).
+// La FK Provider→ExtractionJob no tiene onDelete:Cascade en el schema, por eso el borrado de
+// jobs es explícito y todo va dentro de una transacción.
 export async function DELETE(_: NextRequest, { params }: { params: { id: string } }) {
-  await prisma.provider.delete({ where: { id: params.id } });
-  return NextResponse.json({ ok: true });
+  try {
+    await prisma.$transaction([
+      prisma.extractionJob.deleteMany({ where: { providerId: params.id } }),
+      prisma.provider.delete({ where: { id: params.id } }),
+    ]);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message ?? "Error eliminando proveedor" },
+      { status: 500 }
+    );
+  }
 }

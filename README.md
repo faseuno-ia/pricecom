@@ -1,7 +1,8 @@
-# 🏪 Precio Mayorista
+# PriceHub
 
-Extractor de listas de precios desde páginas web de proveedores mayoristas.  
-Genera archivos Excel estructurados con productos, precios y stock.
+**Inteligencia de precios mayoristas.** Extractor de listas de precios desde
+páginas web de proveedores mayoristas. Genera archivos Excel estructurados con
+productos, precios y stock.
 
 ---
 

@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/db/client";
 import { NewExtractionForm } from "@/components/extractions/new-extraction-form";
 
-export default async function NewExtractionPage() {
+export default async function NewExtractionPage({
+  searchParams,
+}: {
+  searchParams: { providerId?: string };
+}) {
   const providers = await prisma.provider.findMany({
     where: { isActive: true },
     orderBy: { name: "asc" },
@@ -16,7 +20,10 @@ export default async function NewExtractionPage() {
           Seleccioná un proveedor y comenzá la extracción de productos
         </p>
       </div>
-      <NewExtractionForm providers={providers} />
+      <NewExtractionForm
+        providers={providers}
+        initialProviderId={searchParams.providerId}
+      />
     </div>
   );
 }

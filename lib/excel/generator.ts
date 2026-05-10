@@ -26,7 +26,7 @@ export async function generateExcel(
   jobId: string
 ): Promise<ExcelResult> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Precio Mayorista";
+  workbook.creator = "PriceHub";
   workbook.created = new Date();
 
   // ── Hoja Productos ──────────────────────────────────────────────
