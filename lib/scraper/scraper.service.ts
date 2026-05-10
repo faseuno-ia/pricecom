@@ -88,6 +88,7 @@ export class ScraperService {
 
       const maxPages = config?.maxPages ?? 10;
       let currentPage = 0;
+      let arrivedViaUrl = false;
 
       while (currentPage < maxPages) {
         currentPage++;
@@ -112,13 +113,20 @@ export class ScraperService {
         await onLog("INFO", `Página ${currentPage}: ${products.length} productos encontrados, ${added} nuevos`);
         await onProgress(currentPage, allProducts.length);
 
+        // En modo URL, una página sin productos nuevos indica fin del catálogo
+        if (arrivedViaUrl && added === 0) {
+          await onLog("INFO", "Paginación por URL sin productos nuevos, fin de paginación");
+          break;
+        }
+
         // Paginación
         const nextPageSelector = config?.nextPageSelector || "a[rel='next'], .next-page, [aria-label='Siguiente'], .pagination-next";
-        const hasNext = await this.goToNextPage(page, nextPageSelector, onLog);
-        if (!hasNext) {
+        const next = await this.goToNextPage(page, nextPageSelector, onLog);
+        if (!next.ok) {
           await onLog("INFO", "No hay más páginas, extracción completada");
           break;
         }
+        arrivedViaUrl = next.viaUrl;
 
         // Pequeña pausa para no sobrecargar el servidor
         await page.waitForTimeout(1500);
@@ -259,8 +267,9 @@ export class ScraperService {
     // Brand
     const brand = card.find(".brand, [class*='brand'], [class*='marca']").first().text().trim() || "";
 
-    // Image — orden de fallback: src → data-src → data-original → data-lazy-src → background-image (CSS).
+    // Image — orden de fallback: src → data-src → data-original → data-lazy-src → srcset → background-image (CSS).
     // Algunos sitios (Toys Palace) no usan <img> sino un <div style="background-image:url(...)">.
+    // Tienda Nube (Bazar 380) usa src=data:image/gif;base64... y la URL real está en srcset.
     const imageSelector = config?.imageSelector || "img";
     const imgEl = card.find(imageSelector).first();
     let imageUrl = "";
@@ -272,6 +281,14 @@ export class ScraperService {
         imgEl.attr("data-lazy-src"),
       ];
       imageUrl = candidates.find((v) => v && !v.startsWith("data:")) ?? "";
+      if (!imageUrl) {
+        const srcset = imgEl.attr("srcset") || imgEl.attr("data-srcset") || "";
+        if (srcset) {
+          // srcset: "url1 240w, url2 320w, ..." — tomar la primera URL (menor tamaño)
+          const first = srcset.split(",")[0]?.trim().split(/\s+/)[0];
+          if (first && !first.startsWith("data:")) imageUrl = first;
+        }
+      }
       if (!imageUrl) {
         const style = imgEl.attr("style") || "";
         const m = style.match(/background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
@@ -351,23 +368,69 @@ export class ScraperService {
     return null;
   }
 
-  private async goToNextPage(page: Page, selector: string, onLog: ScraperOptions["onLog"]): Promise<boolean> {
+  private async goToNextPage(
+    page: Page,
+    selector: string,
+    onLog: ScraperOptions["onLog"]
+  ): Promise<{ ok: boolean; viaUrl: boolean }> {
+    const urlPaginationMode = selector.toLowerCase().includes("page");
+
     try {
       const nextBtn = page.locator(selector).first();
       const visible = await nextBtn.isVisible({ timeout: 3000 }).catch(() => false);
-      if (!visible) return false;
-
-      const href = await nextBtn.getAttribute("href").catch(() => null);
-      if (href) {
-        await page.goto(href, { waitUntil: "domcontentloaded" });
-      } else {
-        await nextBtn.click();
-        await page.waitForLoadState("domcontentloaded");
+      if (visible) {
+        const href = await nextBtn.getAttribute("href").catch(() => null);
+        if (href) {
+          await page.goto(href, { waitUntil: "domcontentloaded" });
+        } else {
+          await nextBtn.click();
+          await page.waitForLoadState("domcontentloaded");
+        }
+        return { ok: true, viaUrl: false };
       }
-      return true;
     } catch {
-      await onLog("DEBUG", "Botón de siguiente página no encontrado");
-      return false;
+      // Cae al modo URL si está activado
+    }
+
+    if (urlPaginationMode) {
+      const nextUrl = this.buildNextPageUrl(page.url());
+      if (nextUrl) {
+        await onLog("INFO", `Selector no encontrado, paginando por URL: ${nextUrl}`);
+        try {
+          const response = await page.goto(nextUrl, { waitUntil: "domcontentloaded" });
+          if (response && response.status() >= 400) {
+            await onLog("DEBUG", `Página ${nextUrl} devolvió ${response.status()}, fin de paginación`);
+            return { ok: false, viaUrl: true };
+          }
+          return { ok: true, viaUrl: true };
+        } catch (err) {
+          await onLog("DEBUG", `Error navegando a ${nextUrl}: ${(err as Error).message}`);
+          return { ok: false, viaUrl: true };
+        }
+      }
+    }
+
+    await onLog("DEBUG", "Botón de siguiente página no encontrado");
+    return { ok: false, viaUrl: false };
+  }
+
+  // Patrón Tienda Nube: /productos/ → /productos/page/2/ → /productos/page/3/...
+  private buildNextPageUrl(currentUrl: string): string | null {
+    try {
+      const url = new URL(currentUrl);
+      const match = url.pathname.match(/\/page\/(\d+)\/?$/);
+      if (match) {
+        const next = parseInt(match[1], 10) + 1;
+        url.pathname = url.pathname.replace(/\/page\/\d+\/?$/, `/page/${next}/`);
+        return url.toString();
+      }
+      if (!url.pathname.includes("/page/")) {
+        url.pathname = url.pathname.endsWith("/") ? `${url.pathname}page/2/` : `${url.pathname}/page/2/`;
+        return url.toString();
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 }
