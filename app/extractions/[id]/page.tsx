@@ -18,8 +18,8 @@ export default async function ExtractionDetailPage({ params }: { params: { id: s
     where: { id: params.id },
     include: {
       provider: { select: { name: true } },
-      products: { orderBy: { extractedAt: "desc" }, take: 100 },
-      logs: { orderBy: { createdAt: "asc" }, take: 200 },
+      products: { orderBy: { extractedAt: "desc" }, take: 50 },
+      logs: { orderBy: { createdAt: "asc" }, take: 100 },
     },
   });
   if (!job) notFound();
@@ -82,7 +82,7 @@ export default async function ExtractionDetailPage({ params }: { params: { id: s
         <div className="bg-card border rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b flex items-center justify-between">
             <h2 className="font-semibold text-sm">
-              Productos ({job.products.length}{job.products.length === 100 ? "+" : ""})
+              Productos ({job.products.length}{job.products.length === 50 ? "+" : ""})
             </h2>
           </div>
           <div className="overflow-x-auto">
