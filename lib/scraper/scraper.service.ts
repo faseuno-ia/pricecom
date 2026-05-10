@@ -220,6 +220,8 @@ export class ScraperService {
         if (match) { sku = match[1]; return false; }
       });
     }
+    // "ART: 1129712" → "1129712", "ART: LS015" → "LS015": tomar el último token tras espacios.
+    if (sku) sku = sku.replace(/^.*\s/, "").trim();
 
     // Price
     let wholesalePrice: number | null = null;
