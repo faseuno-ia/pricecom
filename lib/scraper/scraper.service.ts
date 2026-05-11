@@ -110,6 +110,7 @@ export class ScraperService {
       // iterar N*pageSize cards cada vez (auto-calibrado al page size real del sitio).
       let inMpageMode = false;
       let cardOffset = 0;
+      let stopReason = "loop completado sin break";
 
       while (currentPage < maxPages) {
         currentPage++;
@@ -117,6 +118,7 @@ export class ScraperService {
 
         const html = await page.content();
         const offsetForExtract = inMpageMode ? cardOffset : 0;
+        const prevOffset = cardOffset;
         const { products, totalCards } = await this.extractProductsFromPage(
           html,
           page,
@@ -128,28 +130,40 @@ export class ScraperService {
 
         // Deduplicar
         let added = 0;
+        let dupSku = 0;
+        let dupUrl = 0;
+        let noKey = 0;
         for (const p of products) {
           const key = p.sku || p.productUrl;
-          if (!key) continue;
-          if (p.sku && seenSkus.has(p.sku)) continue;
-          if (p.productUrl && seenUrls.has(p.productUrl)) continue;
+          if (!key) { noKey++; continue; }
+          if (p.sku && seenSkus.has(p.sku)) { dupSku++; continue; }
+          if (p.productUrl && seenUrls.has(p.productUrl)) { dupUrl++; continue; }
           if (p.sku) seenSkus.add(p.sku);
           if (p.productUrl) seenUrls.add(p.productUrl);
           allProducts.push(p);
           added++;
         }
 
+        const domDelta = inMpageMode ? totalCards - prevOffset : totalCards;
         await onLog(
           "INFO",
-          `Página ${currentPage}: ${products.length} productos encontrados, ${added} nuevos (DOM: ${totalCards})`
+          `Página ${currentPage}: ${products.length} productos encontrados, ${added} nuevos (DOM: ${totalCards}, delta DOM: +${domDelta})`
         );
+        if (products.length > 0 && added === 0) {
+          await onLog(
+            "DEBUG",
+            `Dedup: descartados ${dupSku} por SKU, ${dupUrl} por URL, ${noKey} sin key`
+          );
+        }
         await onProgress(currentPage, allProducts.length);
 
         if (inMpageMode) cardOffset = totalCards;
 
         // En modo URL, una página sin productos nuevos indica fin del catálogo
         if (arrivedViaUrl && added === 0) {
+          stopReason = `stop: 0 productos nuevos tras navegación URL (DOM ${totalCards}, offset previo ${prevOffset}, delta ${domDelta}, products ${products.length}, dupSku ${dupSku}, dupUrl ${dupUrl})`;
           await onLog("INFO", "Paginación por URL sin productos nuevos, fin de paginación");
+          await onLog("DEBUG", stopReason);
           break;
         }
 
@@ -157,7 +171,11 @@ export class ScraperService {
         const nextPageSelector = config?.nextPageSelector || "a[rel='next'], .next-page, [aria-label='Siguiente'], .pagination-next";
         const next = await this.goToNextPage(page, nextPageSelector, config?.productCardSelector ?? null, onLog);
         if (!next.ok) {
+          stopReason = next.viaUrl
+            ? `stop: navegación URL falló (mode=${next.urlMode}) — ver logs previos para status/error`
+            : `stop: selector "${nextPageSelector}" no encontrado y sin paginación URL configurada`;
           await onLog("INFO", "No hay más páginas, extracción completada");
+          await onLog("DEBUG", stopReason);
           break;
         }
         arrivedViaUrl = next.viaUrl;
@@ -174,10 +192,13 @@ export class ScraperService {
       }
 
       if (currentPage >= maxPages) {
+        stopReason = `stop: maxPages=${maxPages} alcanzado`;
         await onLog("WARN", `Se alcanzó el límite de ${maxPages} páginas`);
+        await onLog("DEBUG", stopReason);
       }
 
       await onLog("INFO", `Extracción completada. Total: ${allProducts.length} productos`);
+      await onLog("DEBUG", `Motivo final de corte: ${stopReason}`);
       return allProducts;
     } finally {
       await this.close();
@@ -449,9 +470,21 @@ export class ScraperService {
         await onLog("INFO", `Selector no encontrado, paginando por URL (${urlPaginationMode}): ${nextUrl}`);
         try {
           const response = await page.goto(nextUrl, { waitUntil: "domcontentloaded" });
-          if (response && response.status() >= 400) {
-            await onLog("DEBUG", `Página ${nextUrl} devolvió ${response.status()}, fin de paginación`);
+          const status = response?.status() ?? 0;
+          const actualUrl = page.url();
+          await onLog(
+            "DEBUG",
+            `Navegación URL: solicitada ${nextUrl} → status ${status}, final ${actualUrl}`
+          );
+          if (response && status >= 400) {
+            await onLog("DEBUG", `Página ${nextUrl} devolvió ${status}, fin de paginación`);
             return { ok: false, viaUrl: true, urlMode: urlPaginationMode };
+          }
+          if (actualUrl !== nextUrl) {
+            await onLog(
+              "WARN",
+              `Redirect: ${nextUrl} → ${actualUrl} (el sitio puede estar redirigiendo mpages fuera de rango)`
+            );
           }
 
           // Modo mpage (scroll infinito): los productos se renderizan tras el load inicial.
