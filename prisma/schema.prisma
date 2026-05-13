@@ -55,6 +55,12 @@ model ProviderScraperConfig {
   loginSubmitSelector   String?
   /// Prefijo opcional para nombres de archivo en descarga masiva de imágenes (ej: "ART_" → ART_12345.jpg)
   imageFilenamePrefix   String?
+  /// Para sitios sin paginación clásica que dividen el catálogo en categorías URL
+  /// (ej: Impotekno). Si está configurado, el scraper lee este <select> y itera
+  /// por cada option.value usando categoryParamName como query string.
+  categoryParamSelector String?
+  /// Nombre del parámetro URL para iterar categorías (ej: "rub" → ?rub=N)
+  categoryParamName     String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }

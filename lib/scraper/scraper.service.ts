@@ -106,8 +106,10 @@ export class ScraperService {
       await onLog("INFO", `Navegando a ${targetUrl}`);
       await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
-      // Login si es requerido
-      if (provider.requiresLogin && provider.username && provider.encryptedPassword) {
+      // Login si es requerido. Algunos sitios (Impotekno) solo piden contraseña,
+      // así que username queda opcional. Tras login confiamos en el redirect del
+      // form para llegar al catálogo (no forzamos re-navegación al targetUrl).
+      if (provider.requiresLogin && provider.encryptedPassword) {
         await onLog("INFO", "Realizando login...");
         await this.performLogin(page, provider, config, onLog);
       }
@@ -135,6 +137,94 @@ export class ScraperService {
         }
         const initialCount = await this.waitForProductsToStabilize(page, config.productCardSelector);
         await onLog("DEBUG", `Página inicial: ${initialCount} tarjetas tras estabilizar`);
+      }
+
+      // Modo iteración por categorías URL: sitios sin paginación clásica que dividen
+      // el catálogo en categorías accesibles via ?param=N (Impotekno con ?rub=N).
+      // Lee un <select> de la página, itera por cada option.value y acumula productos
+      // deduplicando por SKU (lógica de dedup compartida con el loop principal).
+      if (config?.categoryParamSelector && config?.categoryParamName) {
+        const categories = await page.evaluate((selector) => {
+          const sel = document.querySelector(selector) as HTMLSelectElement | null;
+          if (!sel) return [] as { value: string; label: string }[];
+          return Array.from(sel.options)
+            .map((o) => ({ value: o.value, label: (o.textContent || "").trim() }))
+            .filter((o) => /^\d+$/.test(o.value) && !o.label.includes("(0)"));
+        }, config.categoryParamSelector);
+
+        if (categories.length === 0) {
+          await onLog(
+            "WARN",
+            `No se encontraron categorías con productos en "${config.categoryParamSelector}" — cayendo a loop normal`
+          );
+        } else {
+          await onLog(
+            "INFO",
+            `Iterando por ${categories.length} categorías URL (param: ${config.categoryParamName})`
+          );
+          const catalogBase = page.url().split("?")[0];
+
+          for (let i = 0; i < categories.length; i++) {
+            const cat = categories[i];
+            const catUrl = `${catalogBase}?${config.categoryParamName}=${cat.value}`;
+            await onLog(
+              "INFO",
+              `Categoría ${i + 1}/${categories.length} "${cat.label}" → ${catUrl}`
+            );
+
+            try {
+              await page.goto(catUrl, { waitUntil: "domcontentloaded" });
+              if (config.waitForSelector) {
+                await page
+                  .waitForSelector(config.waitForSelector, { timeout: 10000 })
+                  .catch(() => {});
+              }
+            } catch (err) {
+              await onLog(
+                "WARN",
+                `Error navegando a ${catUrl}: ${(err as Error).message}`
+              );
+              continue;
+            }
+
+            const html = await page.content();
+            const { products, totalCards } = await this.extractProductsFromPage(
+              html,
+              page,
+              config,
+              provider.baseUrl,
+              onLog,
+              0
+            );
+
+            let added = 0;
+            let dupSku = 0;
+            for (const p of products) {
+              const key = p.sku || p.productUrl;
+              if (!key) continue;
+              if (p.sku && seenSkus.has(p.sku)) { dupSku++; continue; }
+              if (p.productUrl && seenUrls.has(p.productUrl)) continue;
+              if (p.sku) seenSkus.add(p.sku);
+              if (p.productUrl) seenUrls.add(p.productUrl);
+              allProducts.push(p);
+              added++;
+            }
+
+            await onLog(
+              "INFO",
+              `  → ${products.length} cards en DOM, ${added} nuevos (dup SKU: ${dupSku}) — total acumulado: ${allProducts.length}`
+            );
+            await onProgress(i + 1, allProducts.length);
+
+            await page.waitForTimeout(800);
+          }
+
+          await onLog(
+            "INFO",
+            `Extracción por categorías completada. Total: ${allProducts.length} productos`
+          );
+          return allProducts;
+        }
       }
 
       const maxPages = config?.maxPages ?? 10;
@@ -252,7 +342,10 @@ export class ScraperService {
       const passSelector = config?.loginPasswordSelector || 'input[type="password"], #password';
       const submitSelector = config?.loginSubmitSelector || 'button[type="submit"], input[type="submit"], .login-btn';
 
-      await page.fill(userSelector, provider.username!);
+      // Username es opcional: si el proveedor no lo configura, saltear el fill.
+      if (provider.username) {
+        await page.fill(userSelector, provider.username);
+      }
       await page.fill(passSelector, password);
       await page.click(submitSelector);
       await page.waitForLoadState("domcontentloaded");
@@ -425,7 +518,13 @@ export class ScraperService {
     }
 
     // Category
-    const category = get(config?.categorySelector) || card.find(".category, [class*='categ'], breadcrumb").first().text().trim() || "";
+    let category = get(config?.categorySelector) || card.find(".category, [class*='categ'], breadcrumb").first().text().trim() || "";
+    // Patrón Impotekno: "Codigo: 1260 Rubro: VARIEDADES (1 de 203) Ctdad. ...".
+    // Si el texto contiene "Rubro:", extraer solo esa parte (sin el contador "(X de Y)").
+    if (category && /\brubro\s*:/i.test(category)) {
+      const m = category.match(/rubro\s*:\s*([^(]+?)(?:\s*\(|$)/i);
+      if (m) category = m[1].trim();
+    }
 
     // Description — misma limpieza que name: el contenedor del producto puede traer
     // todo el texto interno mezclado.
