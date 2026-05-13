@@ -1,7 +1,7 @@
 import { chromium, Browser, Page } from "playwright";
 import * as cheerio from "cheerio";
 import { ProviderScraperConfig, Provider } from "@prisma/client";
-import { parsePrice } from "../utils/index";
+import { parsePrice, cleanProductName } from "../utils/index";
 import { decrypt } from "../utils/crypto";
 
 export interface ScrapedProduct {
@@ -30,6 +30,41 @@ export interface ScraperOptions {
 const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?/gi;
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
 const STOCK_LABELS = /(?:stock|disponible|sin\s+stock|unidades|cantidad|existencia)/i;
+
+// Tienda Nube (y otros lazy-loaders) usan data:image/gif;base64,... como placeholder en src.
+// El valor existe pero no es la URL real, así que hay que descartarlo en cada paso del fallback.
+function isValidImageUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith("data:")) return false;
+  return true;
+}
+
+// Elige la URL de mayor ancho de un srcset ("url1 240w, url2 1024w" → "url2").
+// Si no hay descriptores de ancho, devuelve la última entrada (suele ser la mayor).
+// Devuelve undefined si vacío o si todas las candidatas son data URIs.
+function bestFromSrcset(srcset: string | undefined): string | undefined {
+  if (!srcset) return undefined;
+  const candidates = srcset.split(",").map((s) => s.trim()).filter(Boolean);
+  let bestUrl = "";
+  let bestWidth = 0;
+  for (const candidate of candidates) {
+    const parts = candidate.split(/\s+/);
+    const url = parts[0];
+    const widthDescriptor = parts[1] ?? "";
+    const width = parseInt(widthDescriptor.replace("w", ""), 10) || 0;
+    if (url && !url.startsWith("data:") && width > bestWidth) {
+      bestWidth = width;
+      bestUrl = url;
+    }
+  }
+  if (!bestUrl && candidates.length > 0) {
+    const last = candidates[candidates.length - 1].split(/\s+/)[0] ?? "";
+    if (!last.startsWith("data:")) bestUrl = last;
+  }
+  return isValidImageUrl(bestUrl) ? bestUrl : undefined;
+}
 
 export class ScraperService {
   private browser: Browser | null = null;
@@ -236,6 +271,61 @@ export class ScraperService {
     onLog: ScraperOptions["onLog"],
     offset = 0
   ): Promise<{ products: ScrapedProduct[]; totalCards: number }> {
+    // Tienda Nube inyecta el <img> con data-srcset vía JS después del render,
+    // así que el HTML estático que llega a Cheerio no lo tiene. Capturamos las URLs
+    // directamente del DOM con Playwright (que sí ejecutó el JS) y las mapeamos
+    // por posición. Si el selector no matchea (otro proveedor), el array queda
+    // vacío y se cae a la lógica de atributos existente.
+    // Pasamos el código como string literal para que esbuild/tsx no lo transforme
+    // (function declarations / nombres de fn inyectan __name() que no existe en el
+    // browser context y rompen con ReferenceError). Las barras invertidas de los
+    // regex van escapadas porque están dentro de un string.
+    const imageUrlsFromDom = (await page.evaluate(`(function() {
+  var getBestFromSrcset = function(srcset) {
+    if (!srcset) return "";
+    var candidates = srcset.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+    var bestUrl = "";
+    var bestWidth = 0;
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var parts = candidates[ci].split(/\\s+/);
+      var url = parts[0];
+      var widthDescriptor = parts[1] || "";
+      var width = parseInt(widthDescriptor.replace("w", ""), 10) || 0;
+      if (url && url.indexOf("data:") !== 0 && width > bestWidth) {
+        bestWidth = width;
+        bestUrl = url;
+      }
+    }
+    if (!bestUrl && candidates.length > 0) {
+      bestUrl = (candidates[candidates.length - 1].split(/\\s+/)[0]) || "";
+    }
+    return (bestUrl.indexOf("data:") === 0) ? "" : bestUrl;
+  };
+
+  var upgradeResolution = function(url) {
+    return url.replace(/-\\d+-(\\d+)(\\.[a-zA-Z]+)(\\?|$)/, "-1024-$1$2$3");
+  };
+
+  var withProtocol = function(url) {
+    return url.indexOf("//") === 0 ? "https:" + url : url;
+  };
+
+  var imgs = document.querySelectorAll(
+    "div.js-item-quickshop-or-colors-container img.js-product-item-image-private:not(.js-product-item-secondary-image-private)"
+  );
+
+  return Array.from(imgs).map(function(img) {
+    var src = img.getAttribute("src") || "";
+    if (src && src.indexOf("data:") !== 0) {
+      return withProtocol(upgradeResolution(src));
+    }
+    var srcset = img.getAttribute("data-srcset") || img.getAttribute("srcset") || "";
+    var best = getBestFromSrcset(srcset);
+    if (best) return withProtocol(best);
+    return "";
+  });
+})()`)) as string[];
+
     const $ = cheerio.load(html);
     const products: ScrapedProduct[] = [];
 
@@ -249,6 +339,7 @@ export class ScraperService {
     const allCards = $(cardSelector);
     const totalCards = allCards.length;
     const cards = offset > 0 ? allCards.slice(offset) : allCards;
+    const imageUrlsSliced = offset > 0 ? imageUrlsFromDom.slice(offset) : imageUrlsFromDom;
 
     await onLog(
       "DEBUG",
@@ -257,9 +348,10 @@ export class ScraperService {
       }`
     );
 
-    cards.each((_, el) => {
+    cards.each((index, el) => {
       const card = $(el);
-      const product = this.extractFromCard(card, $, config, baseUrl);
+      const playwrightImageUrl = imageUrlsSliced[index] ?? "";
+      const product = this.extractFromCard(card, $, config, baseUrl, playwrightImageUrl);
       if (product.name) {
         products.push(product);
       }
@@ -272,7 +364,8 @@ export class ScraperService {
     card: cheerio.Cheerio<cheerio.Element>,
     $: cheerio.CheerioAPI,
     config: ProviderScraperConfig | null,
-    baseUrl: string
+    baseUrl: string,
+    playwrightImageUrl = ""
   ): ScrapedProduct {
     const get = (selector: string | null | undefined): string => {
       if (!selector) return "";
@@ -284,11 +377,13 @@ export class ScraperService {
       return card.find(selector).first().attr(attr) ?? "";
     };
 
-    // Name
-    const name =
+    // Name — limpiar: cuando el selector matchea el contenedor en vez del título exacto,
+    // .text() concatena todo el texto interno (precio, descuento, "Comprar", etc.) con \n.
+    const rawName =
       get(config?.nameSelector) ||
       card.find("h1, h2, h3, h4, .product-title, .product-name, [class*='title'], [class*='name']").first().text().trim() ||
       "";
+    const name = cleanProductName(rawName);
 
     // SKU
     let sku = get(config?.skuSelector);
@@ -332,45 +427,53 @@ export class ScraperService {
     // Category
     const category = get(config?.categorySelector) || card.find(".category, [class*='categ'], breadcrumb").first().text().trim() || "";
 
-    // Description
-    const description = get(config?.descriptionSelector) || card.find("p, .description, [class*='desc']").first().text().trim() || "";
+    // Description — misma limpieza que name: el contenedor del producto puede traer
+    // todo el texto interno mezclado.
+    const rawDescription = get(config?.descriptionSelector) || card.find("p, .description, [class*='desc']").first().text().trim() || "";
+    const description = cleanProductName(rawDescription);
 
     // Brand
     const brand = card.find(".brand, [class*='brand'], [class*='marca']").first().text().trim() || "";
 
-    // Image — orden de fallback: src → data-src → data-original → data-lazy-src → srcset → background-image (CSS).
-    // Algunos sitios (Toys Palace) no usan <img> sino un <div style="background-image:url(...)">.
-    // Tienda Nube (Bazar 380) usa src=data:image/gif;base64... y la URL real está en srcset.
-    const imageSelector = config?.imageSelector || "img";
-    const imgEl = card.find(imageSelector).first();
+    // Image — si Playwright ya resolvió la URL desde el DOM (Tienda Nube), usar eso.
+    // Si no, cae a la cadena de atributos: src → data-src → data-lazy → data-original →
+    //   data-lazy-src → srcset → data-srcset → background-image inline → bg global.
     let imageUrl = "";
-    if (imgEl.length) {
-      const candidates = [
-        imgEl.attr("src"),
-        imgEl.attr("data-src"),
-        imgEl.attr("data-original"),
-        imgEl.attr("data-lazy-src"),
-      ];
-      imageUrl = candidates.find((v) => v && !v.startsWith("data:")) ?? "";
-      if (!imageUrl) {
-        const srcset = imgEl.attr("srcset") || imgEl.attr("data-srcset") || "";
-        if (srcset) {
-          // srcset: "url1 240w, url2 320w, ..." — tomar la primera URL (menor tamaño)
-          const first = srcset.split(",")[0]?.trim().split(/\s+/)[0];
-          if (first && !first.startsWith("data:")) imageUrl = first;
+    if (isValidImageUrl(playwrightImageUrl)) {
+      imageUrl = playwrightImageUrl;
+    } else {
+      const imageSelector = config?.imageSelector || "img";
+      const imgEl = card.find(imageSelector).first();
+      if (imgEl.length) {
+        const attrCandidates = [
+          imgEl.attr("src"),
+          imgEl.attr("data-src"),
+          imgEl.attr("data-lazy"),
+          imgEl.attr("data-original"),
+          imgEl.attr("data-lazy-src"),
+        ];
+        imageUrl = attrCandidates.find(isValidImageUrl) ?? "";
+
+        if (!imageUrl) {
+          const fromSrcset = bestFromSrcset(imgEl.attr("srcset"));
+          if (fromSrcset) imageUrl = fromSrcset;
+        }
+        if (!imageUrl) {
+          const fromDataSrcset = bestFromSrcset(imgEl.attr("data-srcset"));
+          if (fromDataSrcset) imageUrl = fromDataSrcset;
+        }
+        if (!imageUrl) {
+          const style = imgEl.attr("style") || "";
+          const m = style.match(/background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
+          if (m && isValidImageUrl(m[1])) imageUrl = m[1];
         }
       }
+      // Fallback global: buscar cualquier elemento dentro de la card con background-image inline
       if (!imageUrl) {
-        const style = imgEl.attr("style") || "";
-        const m = style.match(/background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
-        if (m) imageUrl = m[1];
+        const bg = card.find("[style*='background-image']").first().attr("style") || "";
+        const m = bg.match(/background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
+        if (m && isValidImageUrl(m[1])) imageUrl = m[1];
       }
-    }
-    // Fallback global: buscar cualquier elemento dentro de la card con background-image inline
-    if (!imageUrl) {
-      const bg = card.find("[style*='background-image']").first().attr("style") || "";
-      const m = bg.match(/background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
-      if (m) imageUrl = m[1];
     }
     if (imageUrl && !imageUrl.startsWith("http")) {
       try { imageUrl = new URL(imageUrl, baseUrl).href; } catch { imageUrl = ""; }

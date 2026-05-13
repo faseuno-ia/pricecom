@@ -27,6 +27,7 @@ export const scraperConfigSchema = z.object({
   loginUsernameSelector: z.string().optional().nullable(),
   loginPasswordSelector: z.string().optional().nullable(),
   loginSubmitSelector: z.string().optional().nullable(),
+  imageFilenamePrefix: z.string().optional().nullable(),
   maxPages: z.number().int().min(1).max(500).default(10),
 });
 

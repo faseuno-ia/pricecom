@@ -53,6 +53,8 @@ model ProviderScraperConfig {
   loginUsernameSelector String?
   loginPasswordSelector String?
   loginSubmitSelector   String?
+  /// Prefijo opcional para nombres de archivo en descarga masiva de imágenes (ej: "ART_" → ART_12345.jpg)
+  imageFilenamePrefix String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -111,6 +113,12 @@ model ExtractedProduct {
   brand         String?
   productUrl    String?
   imageUrl      String?
+  /// Nombre de archivo de la imagen descargada (sin path, ej: "ART_12345.jpg")
+  imageFileName String?
+  /// Ruta local en disco si la imagen fue descargada
+  imageFilePath String?
+  /// Cuándo se descargó la imagen
+  imageDownloadedAt DateTime?
   status        String?
   observations  String?
   rawData       Json?

@@ -33,7 +33,7 @@ export default async function ExtractionDetailPage({
     where: { id: params.id },
     include: {
       provider: { select: { name: true } },
-      products: { orderBy: { extractedAt: "desc" }, take: 200 },
+      products: { orderBy: { extractedAt: "desc" } },
       logs: { orderBy: { createdAt: "asc" }, take: 200 },
     },
   });

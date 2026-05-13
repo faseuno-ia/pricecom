@@ -15,6 +15,7 @@ interface Config {
   stockSelector: string | null;
   categorySelector: string | null;
   imageSelector: string | null;
+  imageFilenamePrefix: string | null;
   productUrlSelector: string | null;
   nextPageSelector: string | null;
   waitForSelector: string | null;
@@ -29,7 +30,14 @@ interface Props {
   config: Config | null;
 }
 
-const fields: { key: keyof Config; label: string; hint: string; isNumber?: boolean }[] = [
+const fields: {
+  key: keyof Config;
+  label: string;
+  hint: string;
+  help?: string;
+  isNumber?: boolean;
+  monospace?: boolean;
+}[] = [
   { key: "productCardSelector", label: "Tarjeta de producto", hint: "Ej: .product-card, li.product, article" },
   { key: "nameSelector", label: "Nombre del producto", hint: "Ej: h2.product-title, .product-name" },
   { key: "skuSelector", label: "SKU / Código", hint: "Ej: .sku, [data-sku], .product-sku" },
@@ -39,6 +47,13 @@ const fields: { key: keyof Config; label: string; hint: string; isNumber?: boole
   { key: "stockSelector", label: "Stock", hint: "Ej: .stock, .availability, [data-stock]" },
   { key: "categorySelector", label: "Categoría", hint: "Ej: .product-category, .breadcrumb span:last" },
   { key: "imageSelector", label: "Imagen principal", hint: "Ej: img.product-image, .thumbnail img" },
+  {
+    key: "imageFilenamePrefix",
+    label: "Prefijo de nombre de imagen",
+    hint: "Ej: B380-",
+    help: 'Se antepone al SKU para nombrar los archivos descargados. Ejemplo: con prefijo "B380-" y SKU "21022" → "B380-21022.jpg"',
+    monospace: false,
+  },
   { key: "productUrlSelector", label: "Link al producto", hint: "Ej: a.product-link, h2 a, .product-title a" },
   { key: "nextPageSelector", label: "Botón siguiente página", hint: "Ej: a[rel=next], .next-page, .pagination-next" },
   { key: "waitForSelector", label: "Esperar selector (antes de extraer)", hint: "Selector que debe existir antes de leer el DOM" },
@@ -90,7 +105,8 @@ export function ScraperConfigForm({ providerId, config }: Props) {
     }
   }
 
-  const inputCls = "w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40 bg-background placeholder:font-sans placeholder:text-muted-foreground";
+  const inputBaseCls = "w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-background placeholder:font-sans placeholder:text-muted-foreground";
+  const monoCls = `${inputBaseCls} font-mono`;
   const labelCls = "block text-xs font-medium text-foreground mb-1";
 
   return (
@@ -104,20 +120,26 @@ export function ScraperConfigForm({ providerId, config }: Props) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-        {fields.map(({ key, label, hint, isNumber }) => (
-          <div key={key}>
-            <label className={labelCls}>{label}</label>
-            <input
-              className={inputCls}
-              type={isNumber ? "number" : "text"}
-              value={form[key]}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-              placeholder={hint}
-              min={isNumber ? 1 : undefined}
-              max={isNumber ? 500 : undefined}
-            />
-          </div>
-        ))}
+        {fields.map(({ key, label, hint, help, isNumber, monospace }) => {
+          const useMono = monospace !== false && !isNumber;
+          return (
+            <div key={key}>
+              <label className={labelCls}>{label}</label>
+              <input
+                className={useMono ? monoCls : inputBaseCls}
+                type={isNumber ? "number" : "text"}
+                value={form[key]}
+                onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                placeholder={hint}
+                min={isNumber ? 1 : undefined}
+                max={isNumber ? 500 : undefined}
+              />
+              {help && (
+                <p className="text-xs text-muted-foreground mt-1">{help}</p>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex gap-3 pt-2 border-t">

@@ -8,6 +8,9 @@ node_modules/
 out/
 build/
 
+# TypeScript build cache
+tsconfig.tsbuildinfo
+
 # env
 .env
 .env.local

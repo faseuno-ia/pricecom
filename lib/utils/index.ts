@@ -64,3 +64,16 @@ export function truncate(str: string, length: number): string {
   if (str.length <= length) return str;
   return str.slice(0, length) + "…";
 }
+
+/**
+ * Limpia un nombre/descripción extraído del scraper.
+ * Cuando el selector matchea un contenedor en vez del título exacto, .text() de cheerio
+ * concatena todo el texto interno (precio, descuento, "Comprar", etc.) separado por \n.
+ * Nos quedamos con la primera línea no vacía y quitamos sufijos como "Codigo 34712"
+ * o "Código.21774" que algunos sitios (Tienda Nube) agregan al final del título.
+ */
+export function cleanProductName(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  return firstLine.replace(/\s*[Cc][oó]d(igo)?\.?\s*\d+\s*$/, "").trim();
+}
