@@ -1,13 +1,15 @@
 import { prisma } from "@/lib/db/client";
 import { NewExtractionForm } from "@/components/extractions/new-extraction-form";
+import { requireSession } from "@/lib/auth";
 
 export default async function NewExtractionPage({
   searchParams,
 }: {
   searchParams: { providerId?: string };
 }) {
+  const session = await requireSession();
   const providers = await prisma.provider.findMany({
-    where: { isActive: true },
+    where: { userId: session.user.id, isActive: true },
     orderBy: { name: "asc" },
     select: { id: true, name: true, baseUrl: true },
   });

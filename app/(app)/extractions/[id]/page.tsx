@@ -6,6 +6,7 @@ import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { ProductsTable } from "@/components/extractions/products-table";
+import { requireSession } from "@/lib/auth";
 
 function formatDuration(start: Date | null, end: Date | null): string {
   if (!start) return "—";
@@ -29,8 +30,9 @@ export default async function ExtractionDetailPage({
 }: {
   params: { id: string };
 }) {
-  const job = await prisma.extractionJob.findUnique({
-    where: { id: params.id },
+  const session = await requireSession();
+  const job = await prisma.extractionJob.findFirst({
+    where: { id: params.id, userId: session.user.id },
     include: {
       provider: { select: { name: true } },
       products: { orderBy: { extractedAt: "desc" } },

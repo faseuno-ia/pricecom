@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOut, useSession } from "next-auth/react";
 import {
   LayoutDashboard,
   Store,
   Download,
   PlusCircle,
   Hexagon,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +22,8 @@ const navItems = [
 
 export function SidebarNav({ queueDepth }: { queueDepth: number }) {
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const userDisplay = session?.user?.name || session?.user?.email || "Sesión activa";
 
   return (
     <aside className="fixed left-0 top-0 h-full w-64 bg-[hsl(var(--sidebar))] text-foreground border-r border-border flex flex-col z-10">
@@ -70,9 +74,18 @@ export function SidebarNav({ queueDepth }: { queueDepth: number }) {
         })}
       </nav>
 
-      <div className="px-3 py-3 border-t border-border">
+      <div className="px-3 py-3 border-t border-border space-y-2">
+        <button
+          type="button"
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-muted-foreground hover:bg-muted/30 hover:text-foreground transition-colors"
+          title={userDisplay}
+        >
+          <LogOut className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1 text-left">{userDisplay}</span>
+        </button>
         <p className="text-[10px] text-muted-foreground/60 text-center">
-          v0.2.0 · Solo uso autorizado
+          v0.3.0 · Solo uso autorizado
         </p>
       </div>
     </aside>

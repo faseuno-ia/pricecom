@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/sidebar";
-import { Footer } from "@/components/layout/footer";
 import { Toaster } from "sonner";
+import { SessionProvider } from "@/components/auth/session-provider";
 
 export const metadata: Metadata = {
   title: "PricEcom — Inteligencia de precios",
@@ -12,14 +11,8 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="es" className="dark">
-      <body className="min-h-screen bg-background text-foreground flex">
-        <Sidebar />
-        <div className="flex-1 ml-64 flex flex-col min-h-screen">
-          <main className="flex-1">
-            <div className="max-w-7xl mx-auto p-8">{children}</div>
-          </main>
-          <Footer />
-        </div>
+      <body className="min-h-screen bg-background text-foreground">
+        <SessionProvider>{children}</SessionProvider>
         <Toaster richColors theme="dark" position="top-right" />
       </body>
     </html>

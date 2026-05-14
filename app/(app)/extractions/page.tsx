@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { requireSession } from "@/lib/auth";
 
 const PAGE_SIZE = 20;
 
@@ -27,12 +28,15 @@ export default async function ExtractionsPage({
 }: {
   searchParams: { page?: string };
 }) {
+  const session = await requireSession();
   const pageNum = Math.max(1, parseInt(searchParams.page ?? "1", 10) || 1);
   const skip = (pageNum - 1) * PAGE_SIZE;
+  const where = { userId: session.user.id };
 
   const [total, jobs] = await Promise.all([
-    prisma.extractionJob.count(),
+    prisma.extractionJob.count({ where }),
     prisma.extractionJob.findMany({
+      where,
       orderBy: { createdAt: "desc" },
       include: { provider: { select: { name: true } } },
       take: PAGE_SIZE,

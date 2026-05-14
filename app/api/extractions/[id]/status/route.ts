@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
+import { requireSession } from "@/lib/auth";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
-  const job = await prisma.extractionJob.findUnique({
-    where: { id: params.id },
+  const session = await requireSession();
+  const job = await prisma.extractionJob.findFirst({
+    where: { id: params.id, userId: session.user.id },
     select: {
       status: true,
       progress: true,

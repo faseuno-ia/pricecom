@@ -2,12 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { providerSchema } from "@/lib/utils/schemas";
 import { encrypt } from "@/lib/utils/crypto";
+import { requireSession } from "@/lib/auth";
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  const provider = await prisma.provider.findUnique({
-    where: { id: params.id },
+// Verifica que el provider exista Y pertenezca al usuario logueado.
+// Centralizado acá para no repetir el check en cada handler.
+async function findOwnedProvider(id: string, userId: string) {
+  const provider = await prisma.provider.findFirst({
+    where: { id, userId },
     include: { scraperConfig: true },
   });
+  return provider;
+}
+
+export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+  const session = await requireSession();
+  const provider = await findOwnedProvider(params.id, session.user.id);
   if (!provider) return NextResponse.json({ error: "Not found" }, { status: 404 });
   // Never expose password
   const { encryptedPassword: _, ...safe } = provider;
@@ -15,6 +24,10 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 }
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+  const session = await requireSession();
+  const existing = await findOwnedProvider(params.id, session.user.id);
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   const body = await req.json();
   const parsed = providerSchema.safeParse(body);
   if (!parsed.success) {
@@ -28,7 +41,6 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     username: data.requiresLogin ? data.username ?? null : null,
   };
 
-  // Only update password if provided
   if (data.requiresLogin && password) {
     updateData.encryptedPassword = encrypt(password);
   } else if (!data.requiresLogin) {
@@ -46,6 +58,10 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
 
 // PATCH: actualizaciones parciales (ej: { isActive: false } para desactivar)
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+  const session = await requireSession();
+  const existing = await findOwnedProvider(params.id, session.user.id);
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   const body = await req.json();
   const allowed: Record<string, unknown> = {};
   if (typeof body.isActive === "boolean") allowed.isActive = body.isActive;
@@ -66,6 +82,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 // La FK Provider→ExtractionJob no tiene onDelete:Cascade en el schema, por eso el borrado de
 // jobs es explícito y todo va dentro de una transacción.
 export async function DELETE(_: NextRequest, { params }: { params: { id: string } }) {
+  const session = await requireSession();
+  const existing = await findOwnedProvider(params.id, session.user.id);
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   try {
     await prisma.$transaction([
       prisma.extractionJob.deleteMany({ where: { providerId: params.id } }),

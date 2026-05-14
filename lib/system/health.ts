@@ -11,14 +11,14 @@ export interface WorkerHealth {
 }
 
 /**
- * Heurística para estado del worker basada en jobs RUNNING:
- * - active: worker actualizó un job RUNNING dentro de la ventana de heartbeat
- * - stalled: hay jobs RUNNING pero ninguno actualizado recientemente → worker muerto con lock
- * - idle: no hay jobs en RUNNING (no podemos saber si está vivo, pero no hay señal de problema)
+ * Heurística para estado del worker basada en jobs RUNNING del usuario:
+ * - active: el worker actualizó un job RUNNING dentro de la ventana de heartbeat
+ * - stalled: hay jobs RUNNING del user pero ninguno actualizado recientemente
+ * - idle: no hay jobs RUNNING del user (no podemos saber si está vivo, pero sin señal)
  */
-export async function getWorkerStatus(): Promise<WorkerHealth> {
+export async function getWorkerStatus(userId: string): Promise<WorkerHealth> {
   const running = await prisma.extractionJob.findMany({
-    where: { status: "RUNNING" },
+    where: { status: "RUNNING", userId },
     select: { updatedAt: true, workerLockedAt: true },
     orderBy: { updatedAt: "desc" },
   });
@@ -36,9 +36,9 @@ export async function getWorkerStatus(): Promise<WorkerHealth> {
   };
 }
 
-/** Jobs en cola que merecen badge en el sidebar: PENDING o RUNNING. */
-export async function getQueueDepth(): Promise<number> {
+/** Jobs en cola del usuario que merecen badge en el sidebar: PENDING o RUNNING. */
+export async function getQueueDepth(userId: string): Promise<number> {
   return prisma.extractionJob.count({
-    where: { status: { in: ["PENDING", "RUNNING"] } },
+    where: { userId, status: { in: ["PENDING", "RUNNING"] } },
   });
 }

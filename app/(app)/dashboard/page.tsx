@@ -11,8 +11,9 @@ import {
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getWorkerStatus } from "@/lib/system/health";
+import { requireSession } from "@/lib/auth";
 
-async function getDashboardStats() {
+async function getDashboardStats(userId: string) {
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
@@ -25,18 +26,19 @@ async function getDashboardStats() {
     lastJob,
     recentJobs,
   ] = await Promise.all([
-    prisma.provider.count({ where: { isActive: true } }),
-    prisma.provider.count(),
-    prisma.extractedProduct.count(),
+    prisma.provider.count({ where: { userId, isActive: true } }),
+    prisma.provider.count({ where: { userId } }),
+    prisma.extractedProduct.count({ where: { job: { userId } } }),
     prisma.extractionJob.count({
-      where: { createdAt: { gte: startOfMonth }, status: "COMPLETED" },
+      where: { userId, createdAt: { gte: startOfMonth }, status: "COMPLETED" },
     }),
     prisma.extractionJob.findFirst({
-      where: { status: "COMPLETED" },
+      where: { userId, status: "COMPLETED" },
       orderBy: { finishedAt: "desc" },
       include: { provider: { select: { name: true } } },
     }),
     prisma.extractionJob.findMany({
+      where: { userId },
       take: 5,
       orderBy: { createdAt: "desc" },
       include: { provider: { select: { name: true } } },
@@ -64,9 +66,10 @@ function formatDuration(start: Date | null, end: Date | null): string {
 }
 
 export default async function DashboardPage() {
+  const session = await requireSession();
   const [stats, worker] = await Promise.all([
-    getDashboardStats(),
-    getWorkerStatus(),
+    getDashboardStats(session.user.id),
+    getWorkerStatus(session.user.id),
   ]);
 
   const cards = [

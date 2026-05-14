@@ -11,9 +11,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ProviderActions } from "@/components/providers/provider-actions";
+import { requireSession } from "@/lib/auth";
 
 export default async function ProvidersPage() {
+  const session = await requireSession();
   const providers = await prisma.provider.findMany({
+    where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
     include: { _count: { select: { extractionJobs: true } } },
   });

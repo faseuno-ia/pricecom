@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/db/client";
 import { notFound } from "next/navigation";
 import { ScraperConfigForm } from "@/components/providers/scraper-config-form";
+import { requireSession } from "@/lib/auth";
 
 export default async function ConfigPage({ params }: { params: { id: string } }) {
-  const provider = await prisma.provider.findUnique({
-    where: { id: params.id },
+  const session = await requireSession();
+  const provider = await prisma.provider.findFirst({
+    where: { id: params.id, userId: session.user.id },
     include: { scraperConfig: true },
   });
   if (!provider) notFound();

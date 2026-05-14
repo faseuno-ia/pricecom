@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import JSZip from "jszip";
 import { format } from "date-fns";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // segundos
@@ -89,6 +90,7 @@ async function fetchImageWithFallback(
 }
 
 export async function POST(req: NextRequest) {
+  const session = await requireSession();
   let body: { productIds?: unknown };
   try {
     body = await req.json();
@@ -110,8 +112,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "productIds deben ser strings" }, { status: 400 });
   }
 
+  // Filtramos por jobs del usuario logueado: los productos heredan ownership de su job,
+  // así no exponemos imágenes de otros tenants aunque alguien intuya productIds ajenos.
   const products = await prisma.extractedProduct.findMany({
-    where: { id: { in: productIds as string[] } },
+    where: {
+      id: { in: productIds as string[] },
+      job: { userId: session.user.id },
+    },
     include: {
       job: {
         include: {

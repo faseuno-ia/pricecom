@@ -1,9 +1,13 @@
 import { prisma } from "@/lib/db/client";
 import { notFound } from "next/navigation";
 import { ProviderForm } from "@/components/providers/provider-form";
+import { requireSession } from "@/lib/auth";
 
 export default async function EditProviderPage({ params }: { params: { id: string } }) {
-  const provider = await prisma.provider.findUnique({ where: { id: params.id } });
+  const session = await requireSession();
+  const provider = await prisma.provider.findFirst({
+    where: { id: params.id, userId: session.user.id },
+  });
   if (!provider) notFound();
 
   return (
