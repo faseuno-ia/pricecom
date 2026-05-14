@@ -102,6 +102,8 @@ model ExtractionJob {
   updatedAt            DateTime           @updatedAt
   products             ExtractedProduct[]
   logs                 ExtractionLog[]
+  comparison           ExtractionComparison?
+  previousJobFor       ExtractionComparison[] @relation("PreviousJob")
 
   @@index([status, createdAt])
   @@index([userId])
@@ -113,6 +115,55 @@ enum JobStatus {
   COMPLETED
   FAILED
   CANCELLED
+}
+
+enum ProductChangeType {
+  NEW
+  REMOVED
+  PRICE_UP
+  PRICE_DOWN
+  STOCK_CHANGED
+}
+
+model ExtractionComparison {
+  id              String         @id @default(cuid())
+  jobId           String         @unique
+  job             ExtractionJob  @relation(fields: [jobId], references: [id])
+  previousJobId   String?
+  previousJob     ExtractionJob? @relation("PreviousJob", fields: [previousJobId], references: [id])
+  newProducts     Int            @default(0)
+  removedProducts Int            @default(0)
+  priceUp         Int            @default(0)
+  priceDown       Int            @default(0)
+  stockChanged    Int            @default(0)
+  unchanged       Int            @default(0)
+  createdAt       DateTime       @default(now())
+
+  changes ProductChange[]
+}
+
+model ProductChange {
+  id                 String               @id @default(cuid())
+  comparisonId       String
+  comparison         ExtractionComparison @relation(fields: [comparisonId], references: [id])
+  sku                String?
+  productUrl         String?
+  /// hash(name + brand) como fallback de identidad cuando no hay sku ni productUrl
+  nameHash           String?
+  name               String
+  changeType         ProductChangeType
+  previousPrice      Float?
+  currentPrice       Float?
+  priceChangePercent Float?
+  previousStock      String?
+  currentStock       String?
+  createdAt          DateTime             @default(now())
+
+  @@index([comparisonId])
+  @@index([comparisonId, changeType])
+  @@index([sku])
+  @@index([changeType])
+  @@index([createdAt])
 }
 
 model ExtractedProduct {

@@ -20,9 +20,6 @@ tsconfig.tsbuildinfo
 public/exports/
 /exports/
 
-# Scripts ad-hoc / debug (no se versionan)
-/scripts/
-
 # Claude Code (estado local de la herramienta)
 /.claude/
 

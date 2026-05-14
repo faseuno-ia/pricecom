@@ -6,6 +6,10 @@ import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { ProductsTable } from "@/components/extractions/products-table";
+import {
+  ComparisonSection,
+  type ComparisonData,
+} from "@/components/extractions/comparison-section";
 import { requireSession } from "@/lib/auth";
 
 function formatDuration(start: Date | null, end: Date | null): string {
@@ -37,11 +41,46 @@ export default async function ExtractionDetailPage({
       provider: { select: { name: true } },
       products: { orderBy: { extractedAt: "desc" } },
       logs: { orderBy: { createdAt: "asc" }, take: 200 },
+      comparison: {
+        include: {
+          changes: { orderBy: [{ changeType: "asc" }, { name: "asc" }] },
+          previousJob: { select: { createdAt: true } },
+        },
+      },
     },
   });
   if (!job) notFound();
 
   const running = job.status === "RUNNING" || job.status === "PENDING";
+
+  // Solo mostramos comparación si existe y tiene un job previo (la primera
+  // extracción de un proveedor no tiene base contra qué comparar).
+  const comparisonData: ComparisonData | null =
+    job.comparison && job.comparison.previousJobId
+      ? {
+          previousJobId: job.comparison.previousJobId,
+          newProducts: job.comparison.newProducts,
+          removedProducts: job.comparison.removedProducts,
+          priceUp: job.comparison.priceUp,
+          priceDown: job.comparison.priceDown,
+          stockChanged: job.comparison.stockChanged,
+          unchanged: job.comparison.unchanged,
+          previousJob: job.comparison.previousJob
+            ? { createdAt: job.comparison.previousJob.createdAt.toISOString() }
+            : null,
+          changes: job.comparison.changes.map((c) => ({
+            id: c.id,
+            sku: c.sku,
+            name: c.name,
+            changeType: c.changeType,
+            previousPrice: c.previousPrice,
+            currentPrice: c.currentPrice,
+            priceChangePercent: c.priceChangePercent,
+            previousStock: c.previousStock,
+            currentStock: c.currentStock,
+          })),
+        }
+      : null;
 
   return (
     <div className="space-y-6">
@@ -121,6 +160,9 @@ export default async function ExtractionDetailPage({
           <strong className="font-semibold">Error:</strong> {job.errorMessage}
         </div>
       )}
+
+      {/* Comparación contra la extracción anterior del proveedor */}
+      {comparisonData && <ComparisonSection comparison={comparisonData} />}
 
       {/* Products table with search/filter (client) */}
       {job.products.length > 0 && <ProductsTable products={job.products} />}

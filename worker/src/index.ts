@@ -10,6 +10,7 @@
 import { PrismaClient, Prisma } from "@prisma/client";
 import { ScraperService } from "../../lib/scraper/scraper.service";
 import { generateExcel } from "../../lib/excel/generator";
+import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 
@@ -149,6 +150,18 @@ async function processJob(jobId: string) {
     });
 
     await onLog("INFO", `✓ Completado — ${products.length} productos procesados.`);
+
+    // Comparar contra la extracción COMPLETED anterior del mismo proveedor.
+    // En try/catch propio: si la comparación falla, el job ya está COMPLETED
+    // y no queremos romper el worker.
+    try {
+      // Pasamos la instancia del worker para no abrir una segunda conexión.
+      await compareWithPreviousExtraction(jobId, prisma);
+      await onLog("INFO", "Comparación con extracción anterior generada.");
+    } catch (err) {
+      console.error("[comparison] Error al comparar:", err);
+      await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
+    }
 
   } catch (err) {
     const errorMsg = (err as Error).message;
