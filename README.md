@@ -1,6 +1,6 @@
-# PriceHub
+# PricEcom
 
-**Inteligencia de precios mayoristas.** Extractor de catálogos de proveedores
+**Inteligencia de precios.** Extractor de catálogos de proveedores
 mayoristas que genera Excel estructurados con productos, precios y stock, y
 permite descargar las imágenes de los productos en lote.
 
@@ -20,7 +20,7 @@ permite descargar las imágenes de los productos en lote.
 ## Arquitectura
 
 ```
-pricehub/
+pricecom/
 ├── app/                              ← Next.js 14 (App Router)
 │   ├── dashboard/                    ← KPIs + worker health + actividad reciente
 │   ├── providers/                    ← cards, edit, config de selectores
@@ -74,8 +74,8 @@ npx playwright install chromium
 **Alternativa local con Docker:**
 
 ```bash
-docker run -d --name pricehub-pg -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=pricehub -p 5432:5432 postgres:16
+docker run -d --name pricecom-pg -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=pricecom -p 5432:5432 postgres:16
 ```
 
 ### 3. Variables de entorno
@@ -272,7 +272,7 @@ El resto del código no cambia.
 
 ## Integración Ecommerce futura
 
-PriceHub no se queda en extraer y exportar a Excel. La siguiente fase convierte
+PricEcom no se queda en extraer y exportar a Excel. La siguiente fase convierte
 los catálogos extraídos en publicaciones reales en las tiendas del usuario,
 cerrando el ciclo proveedor → catálogo propio → venta online.
 

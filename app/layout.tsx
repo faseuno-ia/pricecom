@@ -5,7 +5,7 @@ import { Footer } from "@/components/layout/footer";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "PriceHub — Inteligencia de precios mayoristas",
+  title: "PricEcom — Inteligencia de precios",
   description: "Extractor y monitor de listas de precios de proveedores mayoristas",
 };
 

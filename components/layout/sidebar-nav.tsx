@@ -26,10 +26,12 @@ export function SidebarNav({ queueDepth }: { queueDepth: number }) {
       <Link href="/dashboard" className="px-5 py-5 border-b border-border flex items-center gap-3 hover:bg-muted/20 transition-colors">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-lg shadow-primary/20 relative">
           <Hexagon className="w-7 h-7 text-white/10 absolute" strokeWidth={1.5} />
-          <span className="font-bold text-white text-[13px] tracking-tight relative">PH</span>
+          <span className="font-bold text-white text-[13px] tracking-tight relative">PE</span>
         </div>
         <div>
-          <p className="font-semibold text-sm leading-none">PriceHub</p>
+          <span className="font-bold text-lg tracking-tight">
+            Pric<span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent font-extrabold">E</span>com
+          </span>
           <p className="text-[10px] text-muted-foreground mt-1.5 leading-none">
             Inteligencia de precios
           </p>
