@@ -2,15 +2,11 @@ FROM mcr.microsoft.com/playwright:v1.44.0-jammy
 
 WORKDIR /app
 
-# Instalar dependencias
-COPY package*.json ./
-RUN npm ci --production=false
-
-# Copiar código fuente
+# Copiar todo el código primero (necesario para prisma generate en postinstall)
 COPY . .
 
-# Generar Prisma client
-RUN npx prisma generate
+# Instalar dependencias
+RUN npm ci --production=false
 
 # Build Next.js
 RUN npm run build
@@ -18,5 +14,5 @@ RUN npm run build
 # Exponer puerto
 EXPOSE 3000
 
-# Script de inicio que corre Next.js y el worker en paralelo
+# Correr Next.js y el worker en paralelo
 CMD ["sh", "-c", "npx tsx worker/src/index.ts & npm start"]
