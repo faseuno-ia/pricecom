@@ -7,7 +7,7 @@
  *   worker/src/queues/bullmq-queue.stub.ts
  *   worker/src/queues/job-queue.interface.ts
  */
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import { ScraperService } from "../../lib/scraper/scraper.service";
 import { generateExcel } from "../../lib/excel/generator";
 import { DbPollingQueue } from "./queues/db-polling-queue";
@@ -34,7 +34,17 @@ async function writeLog(
   message: string,
   metadata?: Record<string, unknown>
 ) {
-  await prisma.extractionLog.create({ data: { jobId, level, message, metadata } });
+  // Cast al tipo JSON estricto de Prisma en el boundary de serialización.
+  // El scraper produce metadata genérica (Record<string, unknown>) por flexibilidad
+  // de logging; Prisma exige InputJsonValue (objeto JSON-serializable).
+  await prisma.extractionLog.create({
+    data: {
+      jobId,
+      level,
+      message,
+      metadata: metadata as Prisma.InputJsonValue | undefined,
+    },
+  });
   console.log(`[${level}][${new Date().toISOString()}] ${message}`, metadata ?? "");
 }
 
@@ -98,7 +108,9 @@ async function processJob(jobId: string) {
           brand:          p.brand,
           productUrl:     p.productUrl,
           imageUrl:       p.imageUrl,
-          rawData:        p.rawData,
+          // rawData del scraper es Record<string, unknown> por API genérica.
+          // Cast al InputJsonValue de Prisma para el boundary de persistencia.
+          rawData:        p.rawData as Prisma.InputJsonValue,
         })),
       });
     }

@@ -1,5 +1,10 @@
 import { chromium, Browser, Page } from "playwright";
 import * as cheerio from "cheerio";
+// Cheerio 1.x ya no re-exporta tipos del DOM subyacente; vienen de domhandler.
+// AnyNode cubre todos los nodos posibles (Element, Text, Comment, etc.); lo usamos
+// como tipo del parámetro `card` porque `cards.each((_, el) => $(el))` retorna
+// Cheerio<AnyNode>.
+import type { AnyNode } from "domhandler";
 import { ProviderScraperConfig, Provider } from "@prisma/client";
 import { parsePrice, cleanProductName } from "../utils/index";
 import { decrypt } from "../utils/crypto";
@@ -454,7 +459,7 @@ export class ScraperService {
   }
 
   private extractFromCard(
-    card: cheerio.Cheerio<cheerio.Element>,
+    card: cheerio.Cheerio<AnyNode>,
     $: cheerio.CheerioAPI,
     config: ProviderScraperConfig | null,
     baseUrl: string,

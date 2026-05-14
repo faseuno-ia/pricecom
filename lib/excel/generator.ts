@@ -34,7 +34,9 @@ export async function generateExcel(
     views: [{ state: "frozen", ySplit: 1 }],
   });
 
-  const columns: ExcelJS.Column[] = [
+  // Partial<Column>: ExcelJS espera definiciones parciales al setear sheet.columns;
+  // los campos completos (style, values, outlineLevel, etc.) se rellenan internamente.
+  const columns: Partial<ExcelJS.Column>[] = [
     { header: "SKU", key: "sku", width: 18 },
     { header: "Nombre", key: "name", width: 45 },
     { header: "Descripción", key: "description", width: 55 },
