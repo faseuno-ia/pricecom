@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { LoginForm } from "@/components/auth/login-form";
 import { Hexagon } from "lucide-react";
 
@@ -29,7 +30,9 @@ export default function LoginPage() {
         </div>
 
         <div className="bg-card border border-border rounded-2xl p-6 shadow-2xl shadow-black/20">
-          <LoginForm />
+          <Suspense fallback={null}>
+            <LoginForm />
+          </Suspense>
         </div>
 
         <p className="text-[10px] text-muted-foreground/60 text-center mt-6">
