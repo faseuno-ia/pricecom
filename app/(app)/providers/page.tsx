@@ -64,8 +64,17 @@ export default async function ProvidersPage() {
             return (
               <div
                 key={p.id}
-                className="bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/40 transition-colors"
+                className="relative bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/40 transition-colors"
               >
+                {/* Stretched link: toda la card lleva al dashboard del proveedor.
+                    Va primero en el DOM; los elementos interactivos llevan `relative`
+                    para quedar por encima y capturar sus propios clicks. */}
+                <Link
+                  href={`/providers/${p.id}`}
+                  className="absolute inset-0 rounded-xl"
+                  aria-label={`Ver ${p.name}`}
+                />
+
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -77,7 +86,7 @@ export default async function ProvidersPage() {
                         href={p.baseUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1"
+                        className="relative text-xs text-muted-foreground hover:text-primary flex items-center gap-1 w-fit"
                       >
                         <span className="truncate">{hostname}</span>
                         <ExternalLink className="w-3 h-3 flex-shrink-0" />
@@ -120,7 +129,7 @@ export default async function ProvidersPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 pt-2 border-t border-border">
+                <div className="relative flex items-center gap-1.5 pt-2 border-t border-border">
                   <Link
                     href={`/new-extraction?providerId=${p.id}`}
                     className="flex-1 flex items-center justify-center gap-1.5 text-xs bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground rounded-md px-2 py-1.5 transition-colors font-medium"
