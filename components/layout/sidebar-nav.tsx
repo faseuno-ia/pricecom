@@ -10,6 +10,7 @@ import {
   PlusCircle,
   Hexagon,
   LogOut,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +18,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, highlight: false, badge: false as const },
   { href: "/providers", label: "Proveedores", icon: Store, highlight: false, badge: false as const },
   { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" as const },
+  { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false as const },
   { href: "/new-extraction", label: "Nueva extracción", icon: PlusCircle, highlight: true, badge: false as const },
 ];
 
