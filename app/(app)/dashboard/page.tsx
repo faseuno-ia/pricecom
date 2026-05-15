@@ -12,9 +12,16 @@ import {
   XCircle,
   CheckCircle2,
   Lock,
+  PlusCircle,
+  MinusCircle,
+  TrendingUp,
+  TrendingDown,
+  Boxes,
+  Send,
 } from "lucide-react";
 import Link from "next/link";
-import { StatusBadge } from "@/components/ui/status-badge";
+import { formatDistanceToNow } from "date-fns";
+import { es } from "date-fns/locale";
 import { getWorkerStatus } from "@/lib/system/health";
 import { requireSession } from "@/lib/auth";
 
@@ -34,6 +41,7 @@ async function getDashboardStats(userId: string) {
     productsSinImagen,
     productsSinCategoria,
     extraccionesFallidas,
+    productsReadyToPublish,
   ] = await Promise.all([
     prisma.provider.count({ where: { userId, isActive: true } }),
     prisma.provider.count({ where: { userId } }),
@@ -52,7 +60,6 @@ async function getDashboardStats(userId: string) {
       orderBy: { createdAt: "desc" },
       include: { provider: { select: { name: true } } },
     }),
-    // Última extracción completada de cada proveedor activo, con su comparación.
     prisma.provider.findMany({
       where: { userId, isActive: true },
       orderBy: { name: "asc" },
@@ -77,7 +84,6 @@ async function getDashboardStats(userId: string) {
         },
       },
     }),
-    // Acciones pendientes
     prisma.extractedProduct.count({
       where: { job: { userId }, OR: [{ imageUrl: null }, { imageUrl: "" }] },
     }),
@@ -85,6 +91,11 @@ async function getDashboardStats(userId: string) {
       where: { job: { userId }, OR: [{ category: null }, { category: "" }] },
     }),
     prisma.extractionJob.count({ where: { userId, status: "FAILED" } }),
+    // Placeholder para feature futura de publicación masiva: cuenta productos
+    // ya marcados como "prepared" (workflow aún no implementado, dará 0).
+    prisma.extractedProduct.count({
+      where: { job: { userId }, publicationStatus: "prepared" },
+    }),
   ]);
 
   return {
@@ -98,17 +109,8 @@ async function getDashboardStats(userId: string) {
     productsSinImagen,
     productsSinCategoria,
     extraccionesFallidas,
+    productsReadyToPublish,
   };
-}
-
-function formatDuration(start: Date | null, end: Date | null): string {
-  if (!start) return "—";
-  const e = end ?? new Date();
-  const sec = Math.round((e.getTime() - start.getTime()) / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const rem = sec % 60;
-  return rem === 0 ? `${min}m` : `${min}m ${rem}s`;
 }
 
 function hostnameOf(url: string): string {
@@ -126,7 +128,7 @@ export default async function DashboardPage() {
     getWorkerStatus(session.user.id),
   ]);
 
-  const cards = [
+  const kpiCards = [
     {
       label: "Proveedores activos",
       value: stats.activeProviders,
@@ -135,10 +137,10 @@ export default async function DashboardPage() {
       tone: "primary" as const,
     },
     {
-      label: "Productos extraídos",
+      label: "Productos en catálogo",
       value: stats.totalProducts.toLocaleString("es-AR"),
-      sub: "Histórico",
-      icon: Package,
+      sub: "Histórico acumulado",
+      icon: Boxes,
       tone: "accent" as const,
     },
     {
@@ -157,56 +159,66 @@ export default async function DashboardPage() {
     },
   ];
 
-  // Proveedores con al menos una extracción completada (los que no tienen, se omiten).
   const providerCards = stats.providers
     .map((p) => ({ provider: p, job: p.extractionJobs[0] }))
     .filter((x) => x.job != null);
 
-  // Acciones pendientes (solo las que tienen valor > 0)
-  const pendingActions: {
-    key: string;
-    label: string;
-    count: number;
-    icon: typeof ImageOff;
-    tone: string;
-    href: string;
-    cta: string;
-  }[] = [
+  const catalogStatus = [
     {
       key: "sin-imagen",
-      label: "productos sin imagen",
-      count: stats.productsSinImagen,
       icon: ImageOff,
-      tone: "text-amber-400",
-      href: "/extractions",
+      tone: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+      count: stats.productsSinImagen,
+      label: "Productos sin imagen",
       cta: "Revisar",
+      href: "/extractions",
+      disabled: false,
     },
     {
       key: "sin-categoria",
-      label: "productos sin categoría",
-      count: stats.productsSinCategoria,
       icon: FolderX,
-      tone: "text-amber-400",
-      href: "/extractions",
+      tone: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+      count: stats.productsSinCategoria,
+      label: "Productos sin categoría",
       cta: "Revisar",
+      href: "/extractions",
+      disabled: false,
     },
     {
       key: "fallidas",
-      label: "extracciones fallidas",
-      count: stats.extraccionesFallidas,
       icon: XCircle,
-      tone: "text-red-400",
-      href: "/extractions?status=FAILED",
+      tone: "text-red-400 bg-red-500/10 border-red-500/20",
+      count: stats.extraccionesFallidas,
+      label: "Extracciones fallidas",
       cta: "Ver",
+      href: "/extractions?status=FAILED",
+      disabled: false,
     },
-  ].filter((a) => a.count > 0);
+    {
+      key: "publicar",
+      icon: Send,
+      tone: "text-blue-400 bg-blue-500/10 border-blue-500/20",
+      count: stats.productsReadyToPublish,
+      label: "Listos para publicar",
+      cta: "Próximamente",
+      href: "#",
+      disabled: true,
+    },
+  ];
+
+  const allCatalogClean =
+    stats.productsSinImagen === 0 &&
+    stats.productsSinCategoria === 0 &&
+    stats.extraccionesFallidas === 0;
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
+    <div className="space-y-10">
+      {/* ─── Header ────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Centro operativo</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Centro operativo
+          </h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Monitoreo de precios y cambios en tiempo real
           </p>
@@ -220,143 +232,55 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      {/* Worker health */}
-      <div className="bg-card border border-border rounded-xl px-5 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center w-9 h-9 rounded-lg bg-muted/40">
-            <Activity
-              className={cn(
-                "w-4.5 h-4.5",
-                worker.status === "active" && "text-accent",
-                worker.status === "stalled" && "text-red-400",
-                worker.status === "idle" && "text-muted-foreground"
-              )}
-            />
-            {worker.status === "active" && (
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-accent ring-2 ring-card animate-pulse" />
-            )}
-          </div>
-          <div>
-            <p className="text-sm font-semibold">
-              {worker.status === "active" && "Worker activo"}
-              {worker.status === "idle" && "Worker en espera"}
-              {worker.status === "stalled" && "Worker sin respuesta"}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {worker.status === "active" &&
-                `${worker.runningJobs} job${worker.runningJobs > 1 ? "s" : ""} procesando · último update ${formatDate(worker.lastSeenAt!)}`}
-              {worker.status === "idle" && "Sin jobs activos en este momento"}
-              {worker.status === "stalled" &&
-                `Último heartbeat: ${formatDate(worker.lastSeenAt!)}`}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Metric cards */}
+      {/* ─── KPIs ──────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        {cards.map((card) => (
+        {kpiCards.map((card) => (
           <div
             key={card.label}
-            className="bg-card border border-border rounded-xl p-5"
+            className="bg-card border border-border rounded-xl p-6"
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+              <div className="min-w-0 space-y-2">
                 <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">
                   {card.label}
                 </p>
-                <p className="text-2xl font-semibold mt-2 truncate">
+                <p className="text-3xl font-semibold leading-none truncate">
                   {card.value}
                 </p>
-                <p className="text-xs text-muted-foreground mt-1">{card.sub}</p>
+                <p className="text-xs text-muted-foreground">{card.sub}</p>
               </div>
               <div
                 className={cn(
-                  "w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0",
+                  "w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0",
                   card.tone === "primary"
                     ? "bg-primary/10 text-primary"
                     : "bg-accent/10 text-accent"
                 )}
               >
-                <card.icon className="w-4 h-4" />
+                <card.icon className="w-4.5 h-4.5" />
               </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Recent activity */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <h2 className="font-semibold text-sm">Actividad reciente</h2>
-          <Link
-            href="/extractions"
-            className="text-xs text-primary hover:underline flex items-center gap-1"
-          >
-            Ver todas <ArrowRight className="w-3 h-3" />
-          </Link>
-        </div>
-        {stats.recentJobs.length === 0 ? (
-          <div className="flex flex-col items-center py-12 text-muted-foreground">
-            <Clock className="w-8 h-8 mb-2 opacity-30" />
-            <p className="text-sm">Sin extracciones todavía</p>
-            <Link
-              href="/new-extraction"
-              className="text-primary text-sm mt-2 hover:underline"
-            >
-              Iniciar primera extracción
-            </Link>
-          </div>
-        ) : (
-          <div className="divide-y divide-border">
-            {stats.recentJobs.map((job) => (
-              <Link
-                key={job.id}
-                href={`/extractions/${job.id}`}
-                className="flex items-center justify-between px-6 py-3.5 hover:bg-muted/20 transition-colors"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-lg bg-muted/40 flex items-center justify-center flex-shrink-0">
-                    <Store className="w-3.5 h-3.5 text-muted-foreground" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {job.provider.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDate(job.createdAt)}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 flex-shrink-0">
-                  {job.totalProducts > 0 && (
-                    <span className="text-xs text-muted-foreground font-mono">
-                      {job.totalProducts} productos
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground font-mono">
-                    {formatDuration(job.startedAt, job.finishedAt)}
-                  </span>
-                  <StatusBadge status={job.status} />
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Inteligencia de precios */}
-      <div>
-        <div className="mb-3">
-          <h2 className="font-semibold text-sm">Inteligencia de precios</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Cambios detectados en la última extracción por proveedor
+      {/* ─── Inteligencia de precios ───────────────────────────────────── */}
+      <section>
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold tracking-tight">
+            Inteligencia de precios
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Cambios detectados en la última extracción de cada proveedor
           </p>
         </div>
 
         {providerCards.length === 0 ? (
-          <div className="bg-card border border-border rounded-xl py-10 text-center text-sm text-muted-foreground">
-            Sin extracciones completadas todavía
+          <div className="bg-card border border-border rounded-xl py-12 text-center text-sm text-muted-foreground">
+            Sin extracciones completadas todavía.{" "}
+            <Link href="/new-extraction" className="text-primary hover:underline">
+              Iniciar primera extracción →
+            </Link>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -370,84 +294,111 @@ export default async function DashboardPage() {
                   c!.priceDown +
                   c!.stockChanged
                 : 0;
+
+              const metrics: { icon: typeof PlusCircle; label: string; value: number; color: string }[] = [
+                { icon: PlusCircle, label: "Nuevos", value: c?.newProducts ?? 0, color: "text-green-400" },
+                { icon: MinusCircle, label: "Removidos", value: c?.removedProducts ?? 0, color: "text-red-400" },
+                { icon: TrendingUp, label: "Precio ↑", value: c?.priceUp ?? 0, color: "text-orange-400" },
+                { icon: TrendingDown, label: "Precio ↓", value: c?.priceDown ?? 0, color: "text-emerald-400" },
+                { icon: Package, label: "Stock", value: c?.stockChanged ?? 0, color: "text-blue-400" },
+              ];
+
               return (
                 <div
                   key={provider.id}
-                  className="bg-card border border-border rounded-xl p-5 flex flex-col gap-4"
+                  className="bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/30 transition-colors"
                 >
+                  {/* Header de la card */}
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-sm truncate">
-                        {provider.name}
-                      </p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {hostnameOf(provider.baseUrl)}
-                      </p>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                        <Store className="w-4.5 h-4.5 text-primary" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">
+                          {provider.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {hostnameOf(provider.baseUrl)}
+                        </p>
+                      </div>
                     </div>
                     {hasComparison && c!.createdAt && (
-                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                        {formatDate(c!.createdAt)}
+                      <span className="text-[10px] text-muted-foreground/70 bg-muted/30 border border-border px-2 py-0.5 rounded-full whitespace-nowrap">
+                        {formatDistanceToNow(c!.createdAt, {
+                          locale: es,
+                          addSuffix: true,
+                        })}
                       </span>
                     )}
                   </div>
 
+                  {/* Cuerpo: métricas o estado */}
                   {hasComparison ? (
                     <>
-                      <div className="space-y-1 text-xs">
-                        <div className="flex gap-4">
-                          <span className="text-green-400">
-                            +{c!.newProducts} nuevos
-                          </span>
-                          <span className="text-red-400">
-                            ×{c!.removedProducts} removidos
-                          </span>
-                        </div>
-                        <div className="flex gap-4">
-                          <span className="text-orange-400">
-                            ↑{c!.priceUp} precio subió
-                          </span>
-                          <span className="text-emerald-400">
-                            ↓{c!.priceDown} precio bajó
-                          </span>
-                        </div>
-                        <div className="text-blue-400">
-                          ~ {c!.stockChanged} stock cambió
-                        </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                        {metrics.map((m) => (
+                          <div key={m.label} className="flex items-center gap-2">
+                            <m.icon className={`w-3.5 h-3.5 ${m.color}`} />
+                            <span className="text-xs">
+                              <span className={`font-semibold ${m.color}`}>
+                                {m.value}
+                              </span>{" "}
+                              <span className="text-muted-foreground">
+                                {m.label}
+                              </span>
+                            </span>
+                          </div>
+                        ))}
                       </div>
-                      <p className="text-sm font-semibold">
-                        {total} cambio{total === 1 ? "" : "s"} totales
-                      </p>
+                      <div className="border-t border-border pt-3">
+                        <p className="text-xs text-muted-foreground">
+                          Total
+                        </p>
+                        <p className="text-2xl font-semibold leading-none mt-1">
+                          {total}{" "}
+                          <span className="text-sm font-normal text-muted-foreground">
+                            cambio{total === 1 ? "" : "s"}
+                          </span>
+                        </p>
+                      </div>
                     </>
                   ) : (
-                    <p className="text-xs text-muted-foreground py-2">
-                      Sin comparaciones disponibles aún
-                    </p>
+                    <div className="bg-muted/20 border border-border rounded-lg p-3 text-center">
+                      <p className="text-xs text-muted-foreground">
+                        Sin comparaciones disponibles aún
+                      </p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        La próxima extracción generará la primera comparación
+                      </p>
+                    </div>
                   )}
 
-                  <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-border">
+                  {/* Acciones */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <Link
                       href={`/providers/${provider.id}`}
-                      className="text-[11px] border border-border px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
-                      Ver historial
+                      Historial
                     </Link>
                     <Link
                       href={`/changes?providerId=${provider.id}`}
-                      className="text-[11px] border border-border px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
-                      Ver cambios
+                      Cambios
                     </Link>
                     <Link
                       href={`/extractions/${job!.id}`}
-                      className="text-[11px] border border-border px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
-                      Ver productos
+                      Productos
                     </Link>
                     <button
                       type="button"
                       disabled
                       title="Próximamente"
-                      className="text-[11px] border border-border px-2 py-1 rounded-md text-muted-foreground/50 inline-flex items-center gap-1 cursor-not-allowed"
+                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground/50 inline-flex items-center gap-1 cursor-not-allowed ml-auto"
                     >
                       <Lock className="w-2.5 h-2.5" /> Publicar
                     </button>
@@ -457,41 +408,177 @@ export default async function DashboardPage() {
             })}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Acciones pendientes */}
-      <div>
-        <h2 className="font-semibold text-sm mb-3">Acciones pendientes</h2>
-        {pendingActions.length === 0 ? (
-          <div className="bg-card border border-border rounded-xl px-5 py-4 flex items-center gap-2 text-sm">
-            <CheckCircle2 className="w-4 h-4 text-accent" />
-            <span>Todo al día — no hay acciones pendientes</span>
+      {/* ─── Estado del catálogo ──────────────────────────────────────── */}
+      <section>
+        <div className="mb-4 flex items-end justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">
+              Estado del catálogo
+            </h2>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Optimizaciones pendientes y preparación para publicación
+            </p>
           </div>
-        ) : (
-          <div className="bg-card border border-border rounded-xl divide-y divide-border">
-            {pendingActions.map((action) => (
-              <div
-                key={action.key}
-                className="flex items-center justify-between px-5 py-3.5 gap-4"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <action.icon className={`w-4 h-4 flex-shrink-0 ${action.tone}`} />
-                  <p className="text-sm">
-                    <span className="font-semibold">{action.count}</span>{" "}
-                    {action.label}
-                  </p>
-                </div>
-                <Link
-                  href={action.href}
-                  className="text-xs text-primary hover:underline flex-shrink-0"
+          {allCatalogClean && (
+            <div className="flex items-center gap-1.5 text-xs text-accent">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Catálogo al día
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {catalogStatus.map((item) => (
+            <div
+              key={item.key}
+              className={cn(
+                "bg-card border border-border rounded-xl p-5 flex flex-col gap-3",
+                item.disabled && "opacity-60"
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div
+                  className={cn(
+                    "w-9 h-9 rounded-lg border flex items-center justify-center flex-shrink-0",
+                    item.tone
+                  )}
                 >
-                  {action.cta}
-                </Link>
+                  <item.icon className="w-4.5 h-4.5" />
+                </div>
+                {item.disabled && (
+                  <Lock className="w-3 h-3 text-muted-foreground/40" />
+                )}
               </div>
-            ))}
+              <div>
+                <p className="text-3xl font-semibold leading-none">
+                  {item.count.toLocaleString("es-AR")}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  {item.label}
+                </p>
+              </div>
+              {item.disabled ? (
+                <span className="text-xs text-muted-foreground/60 self-start">
+                  {item.cta}
+                </span>
+              ) : (
+                <Link
+                  href={item.href}
+                  className="text-xs text-primary hover:underline self-start mt-auto"
+                >
+                  {item.cta} →
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ─── Pie: actividad reciente + worker (compactos, secundarios) ── */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-2">
+        {/* Actividad reciente (2/3) */}
+        <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Actividad reciente
+            </h3>
+            <Link
+              href="/extractions"
+              className="text-[11px] text-primary hover:underline"
+            >
+              Ver todas
+            </Link>
           </div>
-        )}
-      </div>
+          {stats.recentJobs.length === 0 ? (
+            <div className="px-5 py-6 text-center text-xs text-muted-foreground">
+              Sin extracciones todavía
+            </div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {stats.recentJobs.map((job) => {
+                const tone =
+                  job.status === "COMPLETED"
+                    ? "text-accent"
+                    : job.status === "FAILED"
+                    ? "text-red-400"
+                    : job.status === "RUNNING"
+                    ? "text-blue-400"
+                    : "text-muted-foreground";
+                const icon =
+                  job.status === "COMPLETED" ? "✔" :
+                  job.status === "FAILED" ? "✖" :
+                  job.status === "RUNNING" ? "•" : "·";
+                const statusLabel =
+                  job.status === "COMPLETED" ? "completado" :
+                  job.status === "FAILED" ? "falló" :
+                  job.status === "RUNNING" ? "en curso" :
+                  job.status === "PENDING" ? "pendiente" : "cancelado";
+                return (
+                  <li key={job.id}>
+                    <Link
+                      href={`/extractions/${job.id}`}
+                      className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-muted/20 transition-colors text-sm"
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <span className={`font-mono text-base leading-none ${tone}`}>
+                          {icon}
+                        </span>
+                        <span className="truncate">{job.provider.name}</span>
+                        <span className="text-muted-foreground text-xs">
+                          — {statusLabel}
+                        </span>
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">
+                        {formatDistanceToNow(job.createdAt, {
+                          locale: es,
+                          addSuffix: true,
+                        })}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Worker status (compacto, 1/3) */}
+        <div className="bg-card border border-border rounded-xl p-4 flex items-center gap-3">
+          <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-muted/40 flex-shrink-0">
+            <Activity
+              className={cn(
+                "w-4 h-4",
+                worker.status === "active" && "text-accent",
+                worker.status === "stalled" && "text-red-400",
+                worker.status === "idle" && "text-muted-foreground"
+              )}
+            />
+            {worker.status === "active" && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-card animate-pulse" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Sistema
+            </p>
+            <p className="text-sm font-semibold leading-tight">
+              {worker.status === "active" && "Worker activo"}
+              {worker.status === "idle" && "Worker en espera"}
+              {worker.status === "stalled" && "Sin respuesta"}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+              {worker.status === "active" &&
+                `${worker.runningJobs} en proceso`}
+              {worker.status === "idle" && "Sin jobs activos"}
+              {worker.status === "stalled" &&
+                worker.lastSeenAt &&
+                `Último: ${formatDistanceToNow(worker.lastSeenAt, { locale: es, addSuffix: true })}`}
+            </p>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
