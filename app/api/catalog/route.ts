@@ -89,8 +89,10 @@ export async function GET(req: NextRequest) {
       take: pageSize,
       include: {
         provider: { select: { id: true, name: true, baseUrl: true } },
+        // isPrimary primero (si está marcada), luego por posición. Cubre el caso
+        // en que la imagen primaria no es la de menor `position`.
         images: {
-          orderBy: { position: "asc" },
+          orderBy: [{ isPrimary: "desc" }, { position: "asc" }],
           take: 1,
           select: { id: true, url: true, isPrimary: true },
         },
