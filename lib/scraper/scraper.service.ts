@@ -32,6 +32,13 @@ export interface ScraperOptions {
   onProgress: (currentPage: number, totalFoundSoFar: number) => Promise<void>;
 }
 
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// Cada cuántas páginas reiniciar el contexto de Chromium. El browser acumula
+// memoria página a página y con catálogos pesados (lazy loading) puede crashear.
+const PAGE_RESTART_INTERVAL = 10;
+
 const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?/gi;
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
 const STOCK_LABELS = /(?:stock|disponible|sin\s+stock|unidades|cantidad|existencia)/i;
@@ -83,8 +90,7 @@ export class ScraperService {
     this.page = await this.browser.newPage();
     await this.page.setExtraHTTPHeaders({
       "Accept-Language": "es-AR,es;q=0.9",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": USER_AGENT,
     });
     this.page.setDefaultTimeout(30000);
     this.page.setDefaultNavigationTimeout(60000);
@@ -104,7 +110,9 @@ export class ScraperService {
     await onLog("INFO", `Iniciando extracción para ${provider.name}`);
 
     await this.init();
-    const page = this.page!;
+    // `let` (no `const`): se reasigna cuando reiniciamos el contexto del browser
+    // cada PAGE_RESTART_INTERVAL páginas para liberar memoria.
+    let page = this.page!;
 
     try {
       const targetUrl = startUrl || provider.baseUrl;
@@ -295,6 +303,38 @@ export class ScraperService {
           await onLog("INFO", "Paginación por URL sin productos nuevos, fin de paginación");
           await onLog("DEBUG", stopReason);
           break;
+        }
+
+        // Reinicio periódico del contexto del browser para liberar memoria.
+        // Chromium acumula memoria página a página; con catálogos pesados crashea
+        // alrededor de la página 15. Re-abrimos un contexto limpio cada N páginas.
+        if (currentPage > 0 && currentPage % PAGE_RESTART_INTERVAL === 0) {
+          await onLog(
+            "DEBUG",
+            `Reiniciando contexto del browser (página ${currentPage}) para liberar memoria`
+          );
+          const currentUrl = page.url();
+
+          await page.context().close();
+
+          const context = await this.browser!.newContext({ userAgent: USER_AGENT });
+          this.page = await context.newPage();
+          await this.page.setExtraHTTPHeaders({ "Accept-Language": "es-AR,es;q=0.9" });
+          this.page.setDefaultTimeout(30000);
+          this.page.setDefaultNavigationTimeout(60000);
+          page = this.page;
+
+          await page.goto(currentUrl, { waitUntil: "domcontentloaded" });
+
+          // El contexto nuevo no tiene cookies: si el sitio requiere login y nos
+          // redirigió fuera del catálogo, re-autenticar y volver a la URL.
+          const redirectedToLogin =
+            page.url().includes("login") || page.url() === provider.baseUrl;
+          if (redirectedToLogin && provider.requiresLogin && provider.encryptedPassword) {
+            await onLog("INFO", "Contexto reiniciado sin sesión, re-autenticando...");
+            await this.performLogin(page, provider, config, onLog);
+            await page.goto(currentUrl, { waitUntil: "domcontentloaded" });
+          }
         }
 
         // Paginación
