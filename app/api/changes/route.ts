@@ -33,24 +33,27 @@ export async function GET(req: NextRequest) {
     VALID_CHANGE_TYPES.includes(t as ProductChangeType)
   );
 
-  // Filtros sobre ProductChange. La pertenencia al usuario se aplica via la
-  // cadena change → comparison → job.userId.
+  // Filtros sobre ProductChange. La pertenencia al usuario y el filtro de fecha
+  // se aplican via la cadena change → comparison → job. Filtramos por
+  // job.finishedAt (cuándo ocurrió la extracción real) en vez de ProductChange.createdAt,
+  // porque los registros backfilleados tienen createdAt = fecha del backfill,
+  // no la fecha de la extracción original.
   const jobFilter: Prisma.ExtractionJobWhereInput = {
     userId: session.user.id,
     ...(providerId ? { providerId } : {}),
+    ...(fromParam ? { finishedAt: { gte: new Date(fromParam) } } : {}),
   };
 
   const where: Prisma.ProductChangeWhereInput = {
     comparison: { job: jobFilter },
     ...(changeTypes.length > 0 ? { changeType: { in: changeTypes } } : {}),
-    ...(fromParam ? { createdAt: { gte: new Date(fromParam) } } : {}),
   };
 
   const [total, changes] = await Promise.all([
     prisma.productChange.count({ where }),
     prisma.productChange.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: { comparison: { job: { finishedAt: "desc" } } },
       take: pageSize,
       skip: (page - 1) * pageSize,
       include: {
