@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
-import { Prisma, CatalogProductStatus, PublicationStatus } from "@prisma/client";
+import {
+  Prisma,
+  CatalogProductStatus,
+  PublicationStatus,
+  InternalPublicationStatus,
+} from "@prisma/client";
 
 const VALID_SUPPLIER: CatalogProductStatus[] = [
   "ACTIVE",
   "SUPPLIER_REMOVED",
+  "IGNORED",
+  "ARCHIVED",
+];
+const VALID_INTERNAL: InternalPublicationStatus[] = [
+  "NOT_PUBLISHED",
+  "PREPARED",
+  "PAUSED",
   "IGNORED",
   "ARCHIVED",
 ];
@@ -27,6 +39,7 @@ export async function GET(req: NextRequest) {
   const search = url.searchParams.get("search")?.trim();
   const providerId = url.searchParams.get("providerId");
   const supplierStatusParam = url.searchParams.get("supplierStatus");
+  const internalStatusParam = url.searchParams.get("internalStatus");
   const publicationStatusParam = url.searchParams.get("publicationStatus");
   const noImage = url.searchParams.get("noImage") === "true";
   const noCategory = url.searchParams.get("noCategory") === "true";
@@ -44,6 +57,13 @@ export async function GET(req: NextRequest) {
 
   if (supplierStatusParam && VALID_SUPPLIER.includes(supplierStatusParam as CatalogProductStatus)) {
     where.supplierStatus = supplierStatusParam as CatalogProductStatus;
+  }
+
+  if (
+    internalStatusParam &&
+    VALID_INTERNAL.includes(internalStatusParam as InternalPublicationStatus)
+  ) {
+    where.internalStatus = internalStatusParam as InternalPublicationStatus;
   }
 
   if (

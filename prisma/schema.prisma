@@ -270,6 +270,16 @@ enum ImageSource {
   GENERATED
 }
 
+/// Estado interno del workflow comercial del producto. Independiente de
+/// supplierStatus (que refleja si el scraper lo sigue viendo en el proveedor).
+enum InternalPublicationStatus {
+  NOT_PUBLISHED
+  PREPARED
+  PAUSED
+  IGNORED
+  ARCHIVED
+}
+
 /// Catálogo persistente por usuario × proveedor. Es la fuente de verdad comercial:
 /// el worker solo actualiza los campos "supplier*" en cada extracción, los campos
 /// comerciales (commercialName, assignedCategory, manualPrice, pricingRule, notes)
@@ -294,7 +304,8 @@ model CatalogProduct {
   supplierCategory    String?
   imageUrl            String?
   lastSeenAt          DateTime
-  supplierStatus      CatalogProductStatus @default(ACTIVE)
+  supplierStatus      CatalogProductStatus      @default(ACTIVE)
+  internalStatus      InternalPublicationStatus @default(NOT_PUBLISHED)
 
   // Referencia al último snapshot extraído (linea de tiempo)
   latestExtractedProductId String?
@@ -324,6 +335,8 @@ model CatalogProduct {
   @@index([providerId])
   @@index([supplierStatus])
   @@index([userId, providerId])
+  @@index([internalStatus])
+  @@index([userId, internalStatus])
 }
 
 model ProductPublication {

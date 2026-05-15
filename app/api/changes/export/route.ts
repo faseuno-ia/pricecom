@@ -17,6 +17,15 @@ const changeTypeLabel: Record<string, string> = {
   STOCK_CHANGED: "Stock cambió",
 };
 
+// Fondo de fila por tipo de cambio (ARGB).
+const CHANGE_TYPE_ROW_COLOR: Record<string, string> = {
+  NEW: "FFF0FFF4",
+  REMOVED: "FFFFF0F0",
+  PRICE_UP: "FFFFF7ED",
+  PRICE_DOWN: "FFECFDF5",
+  STOCK_CHANGED: "FFEFF6FF",
+};
+
 export async function POST(req: NextRequest) {
   const session = await requireSession();
 
@@ -135,7 +144,7 @@ export async function POST(req: NextRequest) {
     const enrich = c.sku
       ? productByKey.get(`${c.comparison.jobId}:${c.sku}`)
       : undefined;
-    sheet.addRow({
+    const row = sheet.addRow({
       providerName: c.comparison.job.provider.name,
       changeType: changeTypeLabel[c.changeType] ?? c.changeType,
       sku: c.sku ?? "",
@@ -150,6 +159,13 @@ export async function POST(req: NextRequest) {
       createdAt: format(new Date(c.createdAt), "dd/MM/yyyy HH:mm"),
       publicationStatus: enrich?.publicationStatus ?? "",
     });
+
+    const rowColor = CHANGE_TYPE_ROW_COLOR[c.changeType];
+    if (rowColor) {
+      row.eachCell((cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: rowColor } };
+      });
+    }
   }
 
   // Format precio columns

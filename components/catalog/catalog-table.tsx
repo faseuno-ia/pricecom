@@ -18,12 +18,18 @@ import {
   Ban,
   Archive,
   Eye,
+  Tag,
+  PlayCircle,
+  PauseCircle,
+  RotateCcw,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
+type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED" | "ARCHIVED";
 type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
+type BulkAction = "archive" | "ignore" | "restore" | "prepare" | "pause";
 
 interface CatalogRow {
   id: string;
@@ -40,6 +46,7 @@ interface CatalogRow {
   supplierCategory: string | null;
   imageUrl: string | null;
   supplierStatus: SupplierStatus;
+  internalStatus: InternalStatus;
   provider: { id: string; name: string; baseUrl: string };
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
@@ -118,21 +125,22 @@ const supplierBadgeFor: Record<SupplierStatus, { label: string; cls: string }> =
   ARCHIVED: { label: "Archivado", cls: "bg-muted/40 text-muted-foreground border-border" },
 };
 
-function pubBadge(pubs: CatalogRow["publications"]): { label: string; cls: string } {
-  if (pubs.length === 0) return { label: "Sin pub.", cls: "bg-muted/40 text-muted-foreground border-border" };
-  const hasActive = pubs.find((p) => p.status === "ACTIVE");
-  if (hasActive) return { label: "Activo", cls: "bg-accent/15 text-accent border-accent/30" };
-  const hasError = pubs.find((p) => p.status === "ERROR");
-  if (hasError) return { label: "Error", cls: "bg-red-500/15 text-red-300 border-red-500/30" };
-  const hasPaused = pubs.find((p) => p.status === "PAUSED");
-  if (hasPaused) return { label: "Pausado", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" };
-  return { label: "Borrador", cls: "bg-blue-500/15 text-blue-300 border-blue-500/30" };
-}
+const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> = {
+  NOT_PUBLISHED: { label: "Sin pub.", cls: "bg-muted/40 text-muted-foreground border-border" },
+  PREPARED: { label: "Preparado", cls: "bg-green-500/15 text-green-300 border-green-500/30" },
+  PAUSED: { label: "Pausado", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+  IGNORED: { label: "Ignorado", cls: "bg-muted/30 text-muted-foreground/70 border-border" },
+  ARCHIVED: {
+    label: "Archivado",
+    cls: "bg-muted/30 text-muted-foreground/70 border-border line-through",
+  },
+};
 
 export function CatalogTable({ providers, initialProviderId }: Props) {
   const [search, setSearch] = useState("");
   const [providerId, setProviderId] = useState<string>(initialProviderId ?? "all");
   const [supplierStatus, setSupplierStatus] = useState<SupplierStatus | "all">("all");
+  const [internalStatus, setInternalStatus] = useState<InternalStatus | "all">("all");
   const [pubFilter, setPubFilter] = useState<PubStatusFilter>("ALL");
   const [noImage, setNoImage] = useState(false);
   const [noCategory, setNoCategory] = useState(false);
@@ -153,7 +161,25 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
   // Reset page al cambiar filtros
   useEffect(() => {
     setPage(1);
-  }, [search, providerId, supplierStatus, pubFilter, noImage, noCategory]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, noImage, noCategory]);
+
+  // Construye los filtros activos para mandarlos al export (mismo formato que la API)
+  const currentFilters = useMemo(
+    () => ({
+      ...(search.trim() ? { search: search.trim() } : {}),
+      ...(providerId !== "all" ? { providerId } : {}),
+      ...(supplierStatus !== "all" ? { supplierStatus } : {}),
+      ...(internalStatus !== "all" ? { internalStatus } : {}),
+      ...(noImage ? { noImage: true } : {}),
+      ...(noCategory ? { noCategory: true } : {}),
+    }),
+    [search, providerId, supplierStatus, internalStatus, noImage, noCategory]
+  );
+
+  const [reloadKey, setReloadKey] = useState(0);
+  function refresh() {
+    setReloadKey((k) => k + 1);
+  }
 
   // Fetch
   useEffect(() => {
@@ -165,6 +191,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
         if (search.trim()) params.set("search", search.trim());
         if (providerId !== "all") params.set("providerId", providerId);
         if (supplierStatus !== "all") params.set("supplierStatus", supplierStatus);
+        if (internalStatus !== "all") params.set("internalStatus", internalStatus);
         if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
         if (noImage) params.set("noImage", "true");
         if (noCategory) params.set("noCategory", "true");
@@ -185,7 +212,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [search, providerId, supplierStatus, pubFilter, noImage, noCategory, page, pageSize]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, noImage, noCategory, page, pageSize, reloadKey]);
 
   // Cerrar menú al click fuera
   useEffect(() => {
@@ -235,40 +262,152 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
     URL.revokeObjectURL(url);
   }
 
-  // Reusa la API de download-images apuntando a los productos vinculados al
-  // último snapshot extraído. Como CatalogProduct no tiene relación 1:1 con
-  // ExtractedProduct, lo aproximamos buscando el latestExtractedProductId
-  // server-side via API. Para v1: deshabilitado con tooltip explicativo.
-  async function handleDownloadImages() {
-    toast.info("Próximamente — descarga masiva desde catálogo");
-  }
-
   async function handleExportExcel() {
-    toast.info("Próximamente — exportar catálogo a Excel");
-  }
-
-  async function handleSupplierStatusChange(
-    id: string,
-    status: "IGNORED" | "ARCHIVED" | "ACTIVE"
-  ) {
+    setExporting(true);
     try {
-      // ACTIVE no es válido en el endpoint pub para CatalogProduct; usamos el bypass:
-      // IGNORED y ARCHIVED van por /publication, "des-archivar" toca el campo directo.
-      // Para v1 sólo exponemos IGNORED y ARCHIVED en el menú.
-      const res = await fetch(`/api/catalog/${id}/publication`, {
-        method: "PATCH",
+      const body =
+        selectedIds.size > 0
+          ? { catalogProductIds: Array.from(selectedIds) }
+          : { filters: currentFilters };
+      const res = await fetch("/api/catalog/export", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Error");
+        throw new Error(err.error ?? `HTTP ${res.status}`);
       }
+      const blob = await res.blob();
+      const filename =
+        res.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/)?.[1] ??
+        "catalogo.xlsx";
+      triggerBlobDownload(blob, filename);
       toast.success(
-        status === "IGNORED" ? "Producto ignorado" : "Producto archivado"
+        `Excel descargado (${
+          selectedIds.size > 0 ? `${selectedIds.size} seleccionados` : `${data.total} productos`
+        })`
       );
-      // Refetch
-      setData((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // Descarga imágenes: si selección ≤ 100, un POST; si más, batches de 100
+  // y merge con JSZip en el cliente (mismo patrón que products-table).
+  async function handleDownloadImages() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      toast.error("Seleccioná al menos un producto");
+      return;
+    }
+    setDownloading(true);
+    try {
+      const BATCH = 100;
+      if (ids.length <= BATCH) {
+        const res = await fetch("/api/catalog/download-images", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ catalogProductIds: ids }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        const filename =
+          res.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/)?.[1] ??
+          "catalog-images.zip";
+        triggerBlobDownload(blob, filename);
+        toast.success(`ZIP descargado (${ids.length} imágenes)`);
+      } else {
+        const JSZip = (await import("jszip")).default;
+        const batches: string[][] = [];
+        for (let i = 0; i < ids.length; i += BATCH) batches.push(ids.slice(i, i + BATCH));
+        const merged = new JSZip();
+        let added = 0;
+        let failed = 0;
+        for (let i = 0; i < batches.length; i++) {
+          try {
+            const res = await fetch("/api/catalog/download-images", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ catalogProductIds: batches[i] }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buf = await res.arrayBuffer();
+            const z = await JSZip.loadAsync(buf);
+            for (const [name, file] of Object.entries(z.files)) {
+              if (file.dir) continue;
+              const content = await file.async("arraybuffer");
+              const finalName = merged.files[name]
+                ? name.replace(/(\.[^.]+)$/, `-lote${i + 1}$1`)
+                : name;
+              merged.file(finalName, content);
+              added++;
+            }
+          } catch (err) {
+            failed++;
+            toast.error(`Lote ${i + 1}/${batches.length} falló: ${(err as Error).message}`);
+          }
+        }
+        if (added === 0) throw new Error("Ningún lote pudo descargarse");
+        const zipBlob = await merged.generateAsync({ type: "blob" });
+        triggerBlobDownload(zipBlob, `catalog-images-${new Date().toISOString().slice(0, 10)}.zip`);
+        if (failed > 0)
+          toast.warning(`ZIP descargado (${added}). ${failed} lote(s) fallaron.`);
+        else toast.success(`ZIP descargado (${added} imágenes en ${batches.length} lotes)`);
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  // Acción masiva → /api/catalog/bulk-update. Confirma con window.confirm,
+  // refresca la tabla al terminar y limpia la selección.
+  async function handleBulkAction(action: BulkAction, ids?: string[]) {
+    const targetIds = ids ?? Array.from(selectedIds);
+    if (targetIds.length === 0) return;
+
+    const labels: Record<BulkAction, string> = {
+      archive: "archivar",
+      ignore: "ignorar",
+      restore: "restaurar",
+      prepare: "preparar para publicar",
+      pause: "pausar",
+    };
+    const verb = labels[action];
+
+    // confirm sólo para masivas (>1); las acciones individuales del menú contextual
+    // las disparamos sin doble confirm para no entorpecer el workflow.
+    if (targetIds.length > 1) {
+      if (!window.confirm(`¿${verb[0].toUpperCase() + verb.slice(1)} ${targetIds.length} productos?`)) {
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: targetIds, action }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { updated } = (await res.json()) as { updated: number };
+      toast.success(`${updated} productos: ${verb}`);
+      if (ids) {
+        // acción individual: vaciar el contextual no hace falta acá
+      } else {
+        deselectAll();
+      }
+      refresh();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -358,6 +497,19 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
         </select>
 
         <select
+          value={internalStatus}
+          onChange={(e) => setInternalStatus(e.target.value as InternalStatus | "all")}
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+        >
+          <option value="all">Estado interno: Todos</option>
+          <option value="NOT_PUBLISHED">Sin publicar</option>
+          <option value="PREPARED">Preparado</option>
+          <option value="PAUSED">Pausado</option>
+          <option value="IGNORED">Ignorado</option>
+          <option value="ARCHIVED">Archivado</option>
+        </select>
+
+        <select
           value={pubFilter}
           onChange={(e) => setPubFilter(e.target.value as PubStatusFilter)}
           className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
@@ -428,6 +580,9 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 100 }}>
                   Pr. venta
                 </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 100 }}>
+                  Pr. calc.
+                </th>
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
                   Margen
                 </th>
@@ -438,7 +593,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                   Prov. est.
                 </th>
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 80 }}>
-                  Publ. est.
+                  Estado int.
                 </th>
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
                   Acc.
@@ -448,7 +603,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={13} className="px-4 py-8 text-center text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
                     Cargando catálogo...
                   </td>
@@ -456,7 +611,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
               )}
               {!loading && data.products.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={13} className="px-4 py-12 text-center text-muted-foreground">
                     <Search className="w-6 h-6 mx-auto mb-2 opacity-30" />
                     Sin productos para los filtros aplicados
                   </td>
@@ -467,7 +622,14 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                   const margin = marginPercent(p);
                   const marginB = marginBadge(margin);
                   const sBadge = supplierBadgeFor[p.supplierStatus];
-                  const pBadge = pubBadge(p.publications);
+                  const iBadge = internalBadgeFor[p.internalStatus];
+                  // Precio calculado puro: solo con manualMargin sobre wholesale.
+                  // Si no hay manualMargin, mostramos "—". Es distinto a effectivePrice
+                  // (que usa finalPrice si está, sino margen).
+                  const calcPrice =
+                    p.wholesalePrice != null && p.manualMargin != null
+                      ? p.wholesalePrice * (1 + p.manualMargin / 100)
+                      : null;
                   const displayName = p.commercialTitle?.trim() || p.supplierName;
                   // Link href: URL original (puede ser http://) — el navegador permite navegar.
                   // Img src: normalizado a https:// para evitar mixed content inline.
@@ -541,6 +703,9 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                       <td className="px-3 py-2 font-mono whitespace-nowrap">
                         {formatPriceCompact(sellPrice)}
                       </td>
+                      <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">
+                        {formatPriceCompact(calcPrice)}
+                      </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         {marginB ? (
                           <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${marginB.cls}`}>
@@ -559,8 +724,8 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                         </span>
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${pBadge.cls}`}>
-                          {pBadge.label}
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${iBadge.cls}`}>
+                          {iBadge.label}
                         </span>
                       </td>
                       <td className="px-3 py-2 relative">
@@ -612,19 +777,23 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                             </button>
                             <button
                               type="button"
-                              disabled
-                              title="Próximamente"
-                              className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground/50 flex items-center gap-2 cursor-not-allowed"
+                              onClick={() => {
+                                handleBulkAction("prepare", [p.id]);
+                                setContextMenuFor(null);
+                              }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2"
                             >
-                              <Lock className="w-3 h-3" /> Activar publicación
+                              <PlayCircle className="w-3 h-3" /> Preparar para publicar
                             </button>
                             <button
                               type="button"
-                              disabled
-                              title="Próximamente"
-                              className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground/50 flex items-center gap-2 cursor-not-allowed"
+                              onClick={() => {
+                                handleBulkAction("pause", [p.id]);
+                                setContextMenuFor(null);
+                              }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2"
                             >
-                              <Lock className="w-3 h-3" /> Pausar publicación
+                              <PauseCircle className="w-3 h-3" /> Pausar
                             </button>
                             {p.productUrl && (
                               <a
@@ -641,7 +810,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                             <button
                               type="button"
                               onClick={() => {
-                                handleSupplierStatusChange(p.id, "IGNORED");
+                                handleBulkAction("ignore", [p.id]);
                                 setContextMenuFor(null);
                               }}
                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
@@ -651,13 +820,25 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                             <button
                               type="button"
                               onClick={() => {
-                                handleSupplierStatusChange(p.id, "ARCHIVED");
+                                handleBulkAction("archive", [p.id]);
                                 setContextMenuFor(null);
                               }}
                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
                             >
                               <Archive className="w-3 h-3" /> Archivar
                             </button>
+                            {(p.internalStatus === "ARCHIVED" || p.internalStatus === "IGNORED") && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleBulkAction("restore", [p.id]);
+                                  setContextMenuFor(null);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                              >
+                                <RotateCcw className="w-3 h-3" /> Restaurar
+                              </button>
+                            )}
                           </div>
                         )}
                       </td>
@@ -735,24 +916,57 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                 Imágenes
               </button>
-              {[
-                { label: "Activar pub.", icon: Lock },
-                { label: "Pausar pub.", icon: Lock },
-                { label: "Archivar", icon: Lock },
-                { label: "Ignorar", icon: Lock },
-                { label: "Categoría", icon: Lock },
-                { label: "Margen", icon: Lock },
-              ].map((b) => (
-                <button
-                  key={b.label}
-                  type="button"
-                  disabled
-                  title="Próximamente"
-                  className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
-                >
-                  <b.icon className="w-3 h-3" /> {b.label}
-                </button>
-              ))}
+              <button
+                type="button"
+                onClick={() => handleBulkAction("prepare")}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <PlayCircle className="w-3.5 h-3.5" /> Preparar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBulkAction("pause")}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <PauseCircle className="w-3.5 h-3.5" /> Pausar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBulkAction("archive")}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <Archive className="w-3.5 h-3.5" /> Archivar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBulkAction("ignore")}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <Ban className="w-3.5 h-3.5" /> Ignorar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBulkAction("restore")}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Restaurar
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Próximamente — gestión de categorías"
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
+              >
+                <Lock className="w-3 h-3" /> Categoría
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Próximamente — Pricing Rules"
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
+              >
+                <Tag className="w-3.5 h-3.5" /> Aplicar margen
+              </button>
             </div>
           </div>
         </div>
