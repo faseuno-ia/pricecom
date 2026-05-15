@@ -11,7 +11,7 @@ import {
   Plus,
   Power,
 } from "lucide-react";
-import { formatPrice } from "@/lib/utils";
+import { formatPrice, normalizeImageUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 
@@ -52,6 +52,8 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [togglingPub, setTogglingPub] = useState(false);
+  const [mainImageFailed, setMainImageFailed] = useState(false);
+  const [thumbImageFailed, setThumbImageFailed] = useState(false);
 
   // Editable fields (mirror of product, lifted while drawer is open)
   const [commercialTitle, setCommercialTitle] = useState("");
@@ -73,6 +75,9 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
       setProduct(null);
       return;
     }
+    // Reset image-failed flags al cambiar de producto
+    setMainImageFailed(false);
+    setThumbImageFailed(false);
     let cancelled = false;
     async function load() {
       setLoading(true);
@@ -158,11 +163,12 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   if (!productId) return null;
 
   const isActive = product?.publications.some((p) => p.status === "ACTIVE") ?? false;
-  const displayImage =
+  const rawImage =
     product?.images.find((i) => i.isPrimary)?.url ??
     product?.images[0]?.url ??
     product?.imageUrl ??
     null;
+  const displayImage = normalizeImageUrl(rawImage);
 
   return (
     <>
@@ -210,8 +216,13 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Imagen */}
             <div className="w-full aspect-square rounded-xl overflow-hidden bg-muted/30 border border-border">
-              {displayImage ? (
-                <img src={displayImage} alt="" className="w-full h-full object-cover" />
+              {displayImage && !mainImageFailed ? (
+                <img
+                  src={displayImage}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  onError={() => setMainImageFailed(true)}
+                />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <ImageOff className="w-12 h-12 text-muted-foreground/40" />
@@ -378,9 +389,14 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                 Imágenes
               </p>
               <div className="flex gap-2 flex-wrap">
-                {displayImage && (
+                {displayImage && !thumbImageFailed && (
                   <div className="w-16 h-16 rounded-md overflow-hidden bg-muted/30 border border-border">
-                    <img src={displayImage} alt="" className="w-full h-full object-cover" />
+                    <img
+                      src={displayImage}
+                      alt=""
+                      className="w-full h-full object-cover"
+                      onError={() => setThumbImageFailed(true)}
+                    />
                   </div>
                 )}
                 <button

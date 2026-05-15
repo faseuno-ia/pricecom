@@ -19,6 +19,7 @@ import {
   Archive,
   Eye,
 } from "lucide-react";
+import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
@@ -143,6 +144,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
   });
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -467,7 +469,11 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                   const sBadge = supplierBadgeFor[p.supplierStatus];
                   const pBadge = pubBadge(p.publications);
                   const displayName = p.commercialTitle?.trim() || p.supplierName;
-                  const displayImage = p.images[0]?.url ?? p.imageUrl ?? null;
+                  // Link href: URL original (puede ser http://) — el navegador permite navegar.
+                  // Img src: normalizado a https:// para evitar mixed content inline.
+                  const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
+                  const normalizedImage = normalizeImageUrl(rawImage);
+                  const imageFailed = failedImages.has(p.id);
                   const sellPrice = effectivePrice(p);
                   return (
                     <tr
@@ -483,21 +489,21 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                         />
                       </td>
                       <td className="sticky z-20 bg-card group-hover:bg-muted/20 px-2 py-2" style={{ left: sticky.image.left, width: sticky.image.width }}>
-                        {displayImage ? (
+                        {normalizedImage && !imageFailed ? (
                           <a
-                            href={displayImage}
+                            href={rawImage ?? normalizedImage}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="block w-9 h-9 rounded-md overflow-hidden bg-muted/30 border border-border hover:border-primary/50"
                           >
                             <img
-                              src={displayImage}
+                              src={normalizedImage}
                               alt=""
                               loading="lazy"
                               className="w-full h-full object-cover"
-                              onError={(e) => {
-                                (e.currentTarget as HTMLImageElement).style.display = "none";
-                              }}
+                              onError={() =>
+                                setFailedImages((s) => new Set(s).add(p.id))
+                              }
                             />
                           </a>
                         ) : (
