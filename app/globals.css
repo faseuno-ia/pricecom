@@ -44,6 +44,13 @@
   }
 }
 
+/* Sidebar adaptativo: el ancho lo controla el cliente via React state;
+   el main content adapta su margen vía data-attribute en <html>. */
+.app-sidebar { width: 280px; transition: width 200ms ease; }
+.app-main-content { margin-left: 280px; transition: margin-left 200ms ease; }
+html[data-sidebar="collapsed"] .app-sidebar { width: 72px; }
+html[data-sidebar="collapsed"] .app-main-content { margin-left: 72px; }
+
 /* Status badges — vibrant on dark */
 .badge-pending   { @apply bg-slate-500/15 text-slate-300 border border-slate-500/30; }
 .badge-running   { @apply bg-blue-500/15 text-blue-300 border border-blue-500/30; }

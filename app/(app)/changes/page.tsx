@@ -13,9 +13,6 @@ export default async function ChangesPage({
 }) {
   const session = await requireSession();
 
-  // Server-side: solo cargamos la lista de proveedores para el dropdown de
-  // filtros. El resto (cambios + paginación + filtros activos) lo maneja el
-  // ChangesTable consumiendo /api/changes via fetch.
   const providers = await prisma.provider.findMany({
     where: { userId: session.user.id },
     orderBy: { name: "asc" },
@@ -23,19 +20,9 @@ export default async function ChangesPage({
   });
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Cambios</h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Inteligencia comercial cross-proveedor: precios, stock, productos
-          nuevos y removidos
-        </p>
-      </div>
-
-      <ChangesTable
-        providers={providers}
-        initialProviderId={searchParams.providerId ?? null}
-      />
-    </div>
+    <ChangesTable
+      providers={providers}
+      initialProviderId={searchParams.providerId ?? null}
+    />
   );
 }

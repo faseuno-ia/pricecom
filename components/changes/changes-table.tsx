@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
-import { formatPrice, formatDate } from "@/lib/utils";
 import {
   ImageOff,
   Eye,
@@ -59,12 +58,40 @@ const changeTypeOrder: ChangeType[] = [
   "REMOVED",
 ];
 
-const changeTypeBadge: Record<ChangeType, { label: string; className: string }> = {
-  NEW: { label: "Nuevo", className: "bg-green-500/15 text-green-300 border-green-500/30" },
-  REMOVED: { label: "Removido", className: "bg-red-500/15 text-red-300 border-red-500/30" },
-  PRICE_UP: { label: "Precio ↑", className: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
-  PRICE_DOWN: { label: "Precio ↓", className: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
-  STOCK_CHANGED: { label: "Stock", className: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
+const changeTypeMeta: Record<
+  ChangeType,
+  { icon: string; label: string; short: string; className: string }
+> = {
+  NEW: {
+    icon: "+",
+    label: "Nuevo",
+    short: "Nuevo",
+    className: "bg-green-500/15 text-green-300 border-green-500/30",
+  },
+  REMOVED: {
+    icon: "×",
+    label: "Removido",
+    short: "Removido",
+    className: "bg-red-500/15 text-red-300 border-red-500/30",
+  },
+  PRICE_UP: {
+    icon: "↑",
+    label: "Precio subió",
+    short: "↑Precio",
+    className: "bg-orange-500/15 text-orange-300 border-orange-500/30",
+  },
+  PRICE_DOWN: {
+    icon: "↓",
+    label: "Precio bajó",
+    short: "↓Precio",
+    className: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  },
+  STOCK_CHANGED: {
+    icon: "~",
+    label: "Stock cambió",
+    short: "Stock",
+    className: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  },
 };
 
 const dateRangeLabel: Record<DateRange, string> = {
@@ -82,7 +109,6 @@ function fromForRange(range: DateRange): Date | null {
   return null;
 }
 
-// Color hash determinístico simple para badge de proveedor.
 function providerColorClass(name: string): string {
   const palette = [
     "bg-purple-500/15 text-purple-300 border-purple-500/30",
@@ -97,20 +123,32 @@ function providerColorClass(name: string): string {
   return palette[Math.abs(h) % palette.length];
 }
 
-function publicationStatusLabel(status: string | null): {
-  label: string;
-  className: string;
-} {
+function pubStatusBadge(
+  status: string | null
+): { label: string; className: string } {
   switch (status) {
     case "published":
-      return { label: "Publicado", className: "bg-accent/15 text-accent border-accent/30" };
+      return { label: "Pub.", className: "bg-accent/15 text-accent border-accent/30" };
     case "prepared":
-      return { label: "Pendiente", className: "bg-blue-500/15 text-blue-300 border-blue-500/30" };
+      return { label: "Pend.", className: "bg-blue-500/15 text-blue-300 border-blue-500/30" };
     case "selected":
-      return { label: "Seleccionado", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" };
+      return { label: "Sel.", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" };
     default:
       return { label: "Nuevo", className: "bg-muted/40 text-muted-foreground border-border" };
   }
+}
+
+// Precio compacto: $5.000 sin decimales si son .00, $5.000,50 si tiene decimales.
+function formatPriceCompact(p: number | null | undefined): string {
+  if (p == null) return "—";
+  if (Math.abs(p % 1) < 0.005) {
+    return "$" + Math.round(p).toLocaleString("es-AR");
+  }
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    minimumFractionDigits: 2,
+  }).format(p);
 }
 
 export function ChangesTable({ providers, initialProviderId }: Props) {
@@ -130,12 +168,10 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  // Resetear página al cambiar filtros del server
   useEffect(() => {
     setPage(1);
   }, [providerId, changeTypes, dateRange]);
 
-  // Fetch al servidor
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -165,19 +201,12 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
     };
   }, [providerId, changeTypes, dateRange, page, pageSize]);
 
-  // Filtrado client-side por pills (limitación: opera sobre la página actual)
   const filteredChanges = useMemo(() => {
     if (pills.size === 0) return data.changes;
     return data.changes.filter((c) => {
-      if (pills.has("noCategory")) {
-        if (c.product?.category) return false;
-      }
-      if (pills.has("noImage")) {
-        if (c.product?.imageUrl) return false;
-      }
-      if (pills.has("notPublished")) {
-        if (c.product?.publicationStatus === "published") return false;
-      }
+      if (pills.has("noCategory") && c.product?.category) return false;
+      if (pills.has("noImage") && c.product?.imageUrl) return false;
+      if (pills.has("notPublished") && c.product?.publicationStatus === "published") return false;
       return true;
     });
   }, [data.changes, pills]);
@@ -192,7 +221,6 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
       return next;
     });
   }
-
   function togglePill(p: CatalogPill) {
     setPills((prev) => {
       const next = new Set(prev);
@@ -201,7 +229,6 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
       return next;
     });
   }
-
   function toggleOne(id: string) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -229,7 +256,6 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
       return next;
     });
   }
-
   function deselectAll() {
     setSelectedIds(new Set());
   }
@@ -249,7 +275,6 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
     const productIds = filteredChanges
       .filter((c) => selectedIds.has(c.id) && c.product?.id)
       .map((c) => c.product!.id);
-
     if (productIds.length === 0) {
       toast.error("Ningún seleccionado tiene producto asociado para descargar imagen");
       return;
@@ -282,9 +307,16 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
     }
   }
 
-  async function handleExportExcel() {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
+  // Export Excel: si hay selección, exporta solo esos; si no, exporta la página actual.
+  async function handleExportExcel(scope: "selected" | "page") {
+    const ids =
+      scope === "selected"
+        ? Array.from(selectedIds)
+        : filteredChanges.map((c) => c.id);
+    if (ids.length === 0) {
+      toast.error("Nada para exportar");
+      return;
+    }
     setExporting(true);
     try {
       const res = await fetch("/api/changes/export", {
@@ -313,73 +345,108 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
     toast.info("Próximamente — feature en desarrollo");
   }
 
+  // Sticky positions (px). Tienen que coincidir con los anchos de las cols a la izquierda.
+  const sticky = {
+    checkbox: { left: 0, width: 40 },         // 40px
+    image: { left: 40, width: 56 },           // 56px
+    provider: { left: 96, width: 124 },       // 124px (min)
+    sku: { left: 220, width: 90 },            // 90px (min)
+    product: { left: 310, width: 220 },       // 220px (min)
+  };
+
   return (
     <div className="space-y-4">
-      {/* Filtros */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Dropdown proveedor */}
-          <select
-            value={providerId}
-            onChange={(e) => setProviderId(e.target.value)}
-            className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
-          >
-            <option value="all">Todos los proveedores</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+      {/* Header operativo con título + count + export */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Cambios comerciales
+          </h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            {data.total.toLocaleString("es-AR")} cambio
+            {data.total === 1 ? "" : "s"} detectado
+            {data.total === 1 ? "" : "s"}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => handleExportExcel(selectedIds.size > 0 ? "selected" : "page")}
+          disabled={exporting || data.total === 0}
+          className="flex items-center gap-2 text-xs border border-border bg-card px-3 py-2 rounded-lg hover:bg-muted/40 transition-colors disabled:opacity-60"
+        >
+          {exporting ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+          )}
+          {selectedIds.size > 0
+            ? `Exportar Excel (${selectedIds.size})`
+            : "Exportar Excel"}
+        </button>
+      </div>
 
-          {/* Tipo de cambio toggles */}
-          <div className="flex bg-muted/30 rounded-md p-0.5 gap-0.5 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setChangeTypes(new Set())}
-              className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
-                changeTypes.size === 0
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Todos
-            </button>
-            {changeTypeOrder.map((t) => {
-              const active = changeTypes.has(t);
-              return (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => toggleChangeType(t)}
-                  className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
-                    active
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {changeTypeBadge[t].label}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Rango de fechas */}
-          <select
-            value={dateRange}
-            onChange={(e) => setDateRange(e.target.value as DateRange)}
-            className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60 ml-auto"
+      {/* Filtros compactos */}
+      <div className="bg-card border border-border rounded-xl p-3 flex items-center gap-3 flex-wrap">
+        <div className="flex bg-muted/30 rounded-md p-0.5 gap-0.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setChangeTypes(new Set())}
+            className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
+              changeTypes.size === 0
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
-            {(["24h", "7d", "30d", "all"] as DateRange[]).map((r) => (
-              <option key={r} value={r}>
-                {dateRangeLabel[r]}
-              </option>
-            ))}
-          </select>
+            Todos
+          </button>
+          {changeTypeOrder.map((t) => {
+            const active = changeTypes.has(t);
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => toggleChangeType(t)}
+                title={changeTypeMeta[t].label}
+                className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
+                  active
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {changeTypeMeta[t].short}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Pills de estado del catálogo */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-muted-foreground/30 mx-1">|</span>
+
+        <select
+          value={providerId}
+          onChange={(e) => setProviderId(e.target.value)}
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+        >
+          <option value="all">Todos los proveedores</option>
+          {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={dateRange}
+          onChange={(e) => setDateRange(e.target.value as DateRange)}
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+        >
+          {(["24h", "7d", "30d", "all"] as DateRange[]).map((r) => (
+            <option key={r} value={r}>
+              {dateRangeLabel[r]}
+            </option>
+          ))}
+        </select>
+
+        <div className="flex items-center gap-1.5 flex-wrap ml-auto">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Estado:
           </span>
@@ -396,7 +463,7 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                 key={key}
                 type="button"
                 onClick={() => togglePill(key)}
-                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
                   active
                     ? "bg-primary/15 text-primary border-primary/40"
                     : "border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
@@ -406,21 +473,19 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
               </button>
             );
           })}
-          {pills.size > 0 && (
-            <span className="text-[10px] text-muted-foreground/60 ml-1">
-              (filtros aplicados sobre la página actual)
-            </span>
-          )}
         </div>
       </div>
 
-      {/* Tabla */}
+      {/* Tabla con columnas sticky */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto relative">
+          <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="border-b border-border bg-muted/20">
-                <th className="px-3 py-2.5 w-8">
+                <th
+                  className="sticky z-30 bg-muted/20 px-2 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  style={{ left: sticky.checkbox.left, width: sticky.checkbox.width }}
+                >
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
@@ -429,26 +494,52 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                     className="cursor-pointer accent-primary"
                   />
                 </th>
-                {[
-                  "Imagen",
-                  "Proveedor",
-                  "Tipo",
-                  "SKU",
-                  "Producto",
-                  "Precio ant.",
-                  "Precio actual",
-                  "Δ%",
-                  "Stock",
-                  "Estado pub.",
-                  "Acciones",
-                ].map((h) => (
-                  <th
-                    key={h}
-                    className="text-left px-4 py-2.5 font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
-                  >
-                    {h}
-                  </th>
-                ))}
+                <th
+                  className="sticky z-30 bg-muted/20 px-2 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  style={{ left: sticky.image.left, width: sticky.image.width }}
+                >
+                  Img
+                </th>
+                <th
+                  className="sticky z-30 bg-muted/20 px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  style={{ left: sticky.provider.left, minWidth: sticky.provider.width }}
+                >
+                  Proveedor
+                </th>
+                <th
+                  className="sticky z-30 bg-muted/20 px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  style={{ left: sticky.sku.left, minWidth: sticky.sku.width }}
+                >
+                  SKU
+                </th>
+                <th
+                  className="sticky z-30 bg-muted/20 px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  style={{ left: sticky.product.left, minWidth: sticky.product.width }}
+                >
+                  Producto
+                </th>
+                {/* Scrollables */}
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
+                  Tipo
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 90 }}>
+                  Precio ant.
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 90 }}>
+                  Precio actual
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
+                  Δ%
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 90 }}>
+                  Stock
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 80 }}>
+                  Estado
+                </th>
+                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 60 }}>
+                  Acc.
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -469,31 +560,36 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                 </tr>
               )}
               {!loading &&
-                filteredChanges.map((c, i) => {
+                filteredChanges.map((c) => {
                   const removed = c.changeType === "REMOVED";
                   const orphan = !removed && c.product == null;
-                  const badge = changeTypeBadge[c.changeType];
-                  const pubBadge = removed
+                  const typeMeta = changeTypeMeta[c.changeType];
+                  // Estado de publicación / catálogo (priorizado)
+                  const stateBadge = removed
                     ? null
                     : orphan
-                    ? { label: "Sin producto asociado", className: "bg-muted/40 text-muted-foreground border-border" }
+                    ? { label: "Orfan.", className: "bg-muted/40 text-muted-foreground border-border" }
                     : !c.product?.imageUrl
-                    ? { label: "Sin imagen", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" }
+                    ? { label: "Sin img", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" }
                     : !c.product?.category
-                    ? { label: "Sin categoría", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" }
-                    : publicationStatusLabel(c.product.publicationStatus);
-                  const rowClass = removed
-                    ? "opacity-60"
-                    : i % 2 === 1
-                    ? "bg-[hsl(var(--surface-row))]"
-                    : "";
+                    ? { label: "Sin cat", className: "bg-amber-500/15 text-amber-300 border-amber-500/30" }
+                    : pubStatusBadge(c.product.publicationStatus);
+                  // bg-card en celdas sticky para que no se transparenten
+                  const stickyBg = removed
+                    ? "bg-card opacity-100"
+                    : "bg-card";
+                  const rowOpacity = removed ? "opacity-60" : "";
 
                   return (
                     <tr
                       key={c.id}
-                      className={`hover:bg-muted/20 transition-colors ${rowClass}`}
+                      className={`group border-b border-border hover:bg-muted/10 transition-colors ${rowOpacity}`}
                     >
-                      <td className="px-3 py-2 w-8">
+                      {/* Sticky cells */}
+                      <td
+                        className={`sticky z-20 ${stickyBg} group-hover:bg-muted/20 px-2 py-2`}
+                        style={{ left: sticky.checkbox.left, width: sticky.checkbox.width }}
+                      >
                         <input
                           type="checkbox"
                           checked={selectedIds.has(c.id)}
@@ -503,13 +599,16 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                           className="cursor-pointer accent-primary disabled:cursor-not-allowed"
                         />
                       </td>
-                      <td className="px-4 py-2">
+                      <td
+                        className={`sticky z-20 ${stickyBg} group-hover:bg-muted/20 px-2 py-2`}
+                        style={{ left: sticky.image.left, width: sticky.image.width }}
+                      >
                         {!removed && c.product?.imageUrl ? (
                           <a
                             href={c.product.imageUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="block w-10 h-10 rounded overflow-hidden bg-muted/30 border border-border hover:border-primary/50 transition-colors"
+                            className="block w-9 h-9 rounded-md overflow-hidden bg-muted/30 border border-border hover:border-primary/50"
                           >
                             <img
                               src={c.product.imageUrl}
@@ -522,43 +621,58 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                             />
                           </a>
                         ) : (
-                          <div className="w-10 h-10 rounded bg-muted/20 border border-border flex items-center justify-center text-muted-foreground/50">
-                            <ImageOff className="w-4 h-4" />
+                          <div className="w-9 h-9 rounded-md bg-muted/20 border border-border flex items-center justify-center text-muted-foreground/50">
+                            <ImageOff className="w-3.5 h-3.5" />
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-2 whitespace-nowrap">
+                      <td
+                        className={`sticky z-20 ${stickyBg} group-hover:bg-muted/20 px-3 py-2`}
+                        style={{ left: sticky.provider.left, minWidth: sticky.provider.width }}
+                      >
                         <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${providerColorClass(c.providerName)}`}
+                          title={c.providerName}
+                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${providerColorClass(c.providerName)}`}
                         >
-                          {c.providerName}
+                          {c.providerName.length > 10
+                            ? c.providerName.slice(0, 10) + "…"
+                            : c.providerName}
                         </span>
                       </td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${badge.className}`}
-                        >
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 font-mono text-muted-foreground">
+                      <td
+                        className={`sticky z-20 ${stickyBg} group-hover:bg-muted/20 px-3 py-2 font-mono text-muted-foreground`}
+                        style={{ left: sticky.sku.left, minWidth: sticky.sku.width }}
+                      >
                         {c.sku ?? "—"}
                       </td>
-                      <td className="px-4 py-2 max-w-xs">
-                        <p className="font-medium truncate">{c.name}</p>
+                      <td
+                        className={`sticky z-20 ${stickyBg} group-hover:bg-muted/20 px-3 py-2`}
+                        style={{ left: sticky.product.left, minWidth: sticky.product.width, maxWidth: 220 }}
+                      >
+                        <p className="font-medium truncate" title={c.name}>
+                          {c.name}
+                        </p>
                         {c.product?.category && (
                           <p className="text-[10px] text-muted-foreground truncate">
                             {c.product.category}
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-2 font-mono text-muted-foreground">
-                        {c.previousPrice != null
-                          ? formatPrice(c.previousPrice)
-                          : "—"}
+
+                      {/* Scrollable cells */}
+                      <td className="px-3 py-2">
+                        <span
+                          title={typeMeta.label}
+                          className={`text-xs px-1.5 py-0.5 rounded-full border font-bold inline-flex items-center justify-center w-7 ${typeMeta.className}`}
+                        >
+                          {typeMeta.icon}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">
+                        {formatPriceCompact(c.previousPrice)}
                       </td>
                       <td
-                        className={`px-4 py-2 font-mono ${
+                        className={`px-3 py-2 font-mono whitespace-nowrap ${
                           c.changeType === "PRICE_DOWN"
                             ? "text-emerald-400"
                             : c.changeType === "PRICE_UP"
@@ -566,12 +680,10 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                             : ""
                         }`}
                       >
-                        {c.currentPrice != null
-                          ? formatPrice(c.currentPrice)
-                          : "—"}
+                        {formatPriceCompact(c.currentPrice)}
                       </td>
                       <td
-                        className={`px-4 py-2 font-mono ${
+                        className={`px-3 py-2 font-mono whitespace-nowrap ${
                           c.priceChangePercent == null
                             ? "text-muted-foreground"
                             : c.priceChangePercent > 0
@@ -583,37 +695,38 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                           ? `${c.priceChangePercent > 0 ? "↑+" : "↓"}${c.priceChangePercent}%`
                           : "—"}
                       </td>
-                      <td className="px-4 py-2 text-muted-foreground">
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap font-mono text-xs">
                         {c.changeType === "STOCK_CHANGED"
                           ? `${c.previousStock ?? "—"} → ${c.currentStock ?? "—"}`
                           : "—"}
                       </td>
-                      <td className="px-4 py-2">
-                        {pubBadge && (
+                      <td className="px-3 py-2">
+                        {stateBadge && (
                           <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${pubBadge.className}`}
+                            className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${stateBadge.className}`}
                           >
-                            {pubBadge.label}
+                            {stateBadge.label}
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-3 py-2">
                         {removed ? (
                           <button
                             type="button"
                             disabled
                             title="Producto removido"
-                            className="text-[11px] text-muted-foreground/50 cursor-not-allowed inline-flex items-center gap-1"
+                            className="text-muted-foreground/50 cursor-not-allowed"
                           >
-                            <Lock className="w-3 h-3" /> Ver
+                            <Lock className="w-3.5 h-3.5" />
                           </button>
                         ) : (
                           <button
                             type="button"
                             onClick={() => setDrawerChange(c)}
-                            className="text-[11px] text-primary hover:underline inline-flex items-center gap-1"
+                            title="Ver detalle"
+                            className="text-primary hover:text-primary/80"
                           >
-                            <Eye className="w-3 h-3" /> Ver
+                            <Eye className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </td>
@@ -684,27 +797,14 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}
-                Descargar imágenes
-              </button>
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                disabled={exporting}
-                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40 disabled:opacity-60"
-              >
-                {exporting ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                )}
-                Exportar Excel
+                Imágenes
               </button>
               <button
                 type="button"
                 onClick={notImplemented}
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
-                <Check className="w-3.5 h-3.5" /> Marcar revisado
+                <Check className="w-3.5 h-3.5" /> Revisado
               </button>
               <button
                 type="button"
@@ -719,7 +819,7 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                 title="Próximamente"
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
               >
-                <Lock className="w-3 h-3" /> Asignar categoría
+                <Lock className="w-3 h-3" /> Categoría
               </button>
               <button
                 type="button"
@@ -727,7 +827,7 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
                 title="Próximamente"
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
               >
-                <Lock className="w-3 h-3" /> Aplicar margen
+                <Lock className="w-3 h-3" /> Margen
               </button>
               <button
                 type="button"
@@ -742,7 +842,6 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
         </div>
       )}
 
-      {/* Drawer */}
       <ProductDrawer change={drawerChange} onClose={() => setDrawerChange(null)} />
     </div>
   );
