@@ -66,13 +66,21 @@ export function truncate(str: string, length: number): string {
 }
 
 /**
- * Fuerza HTTPS en una URL de imagen para evitar mixed content cuando la app
- * corre en HTTPS. Si la imagen no existe en HTTPS, el <img> dispara onError
- * y el componente debería mostrar un fallback.
+ * Normaliza una URL de imagen para evitar mixed content cuando la app corre en HTTPS:
+ * - https://  → tal cual
+ * - http://   → la enrutamos por /api/image-proxy (sirve la imagen desde el server,
+ *               evitando que el browser bloquee el contenido mixto)
+ * - //...     → asumimos https
+ * - cualquier otro caso → tal cual
  */
 export function normalizeImageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  return url.replace(/^http:\/\//i, "https://");
+  if (url.startsWith("https://")) return url;
+  if (url.startsWith("http://")) {
+    return `/api/image-proxy?url=${encodeURIComponent(url)}`;
+  }
+  if (url.startsWith("//")) return "https:" + url;
+  return url;
 }
 
 /**
