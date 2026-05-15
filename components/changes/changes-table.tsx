@@ -123,6 +123,9 @@ function providerColorClass(name: string): string {
   return palette[Math.abs(h) % palette.length];
 }
 
+// TODO: enriquecer con CatalogProduct.supplierStatus y .publications[].status
+// cuando la UI de gestión de catálogo esté disponible. Hoy seguimos leyendo el
+// flag legacy ExtractedProduct.publicationStatus del snapshot.
 function pubStatusBadge(
   status: string | null
 ): { label: string; className: string } {

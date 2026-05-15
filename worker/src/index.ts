@@ -11,6 +11,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 import { ScraperService } from "../../lib/scraper/scraper.service";
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
+import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 
@@ -114,6 +115,17 @@ async function processJob(jobId: string) {
           rawData:        p.rawData as Prisma.InputJsonValue,
         })),
       });
+
+      // Sincronizar el catálogo persistente. Aislado en try/catch porque su
+      // fallo no debe abortar la extracción (Excel, comparación, etc. siguen).
+      try {
+        await upsertCatalogProducts(jobId, prisma);
+        await onLog("DEBUG", "CatalogProduct upsert completado");
+      } catch (err) {
+        await onLog("WARN", "Error en upsert de CatalogProduct — no rompe la extracción", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     // Estadísticas

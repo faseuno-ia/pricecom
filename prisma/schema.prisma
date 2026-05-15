@@ -11,14 +11,15 @@ datasource db {
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
-  password  String   // hash bcrypt
+  password  String // hash bcrypt
   name      String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  providers      Provider[]
-  extractionJobs ExtractionJob[]
+  providers       Provider[]
+  extractionJobs  ExtractionJob[]
+  catalogProducts CatalogProduct[]
 }
 
 model Provider {
@@ -37,6 +38,7 @@ model Provider {
   updatedAt         DateTime               @updatedAt
   scraperConfig     ProviderScraperConfig?
   extractionJobs    ExtractionJob[]
+  catalogProducts   CatalogProduct[]
 
   @@index([userId])
 }
@@ -74,21 +76,21 @@ model ProviderScraperConfig {
 }
 
 model ExtractionJob {
-  id                   String             @id @default(cuid())
+  id                   String                 @id @default(cuid())
   providerId           String
-  provider             Provider           @relation(fields: [providerId], references: [id])
+  provider             Provider               @relation(fields: [providerId], references: [id])
   userId               String?
-  user                 User?              @relation(fields: [userId], references: [id])
-  status               JobStatus          @default(PENDING)
+  user                 User?                  @relation(fields: [userId], references: [id])
+  status               JobStatus              @default(PENDING)
   startUrl             String?
   startedAt            DateTime?
   finishedAt           DateTime?
   /// Porcentaje de progreso 0-100 (actualizado por el worker página a página)
-  progress             Int                @default(0)
-  totalProducts        Int                @default(0)
-  productsWithPrice    Int                @default(0)
-  productsWithoutPrice Int                @default(0)
-  productsWithoutSku   Int                @default(0)
+  progress             Int                    @default(0)
+  totalProducts        Int                    @default(0)
+  productsWithPrice    Int                    @default(0)
+  productsWithoutPrice Int                    @default(0)
+  productsWithoutSku   Int                    @default(0)
   /// Ruta local del archivo Excel generado (relativa a /public)
   excelFilePath        String?
   /// URL pública para descarga desde el navegador
@@ -98,8 +100,8 @@ model ExtractionJob {
   workerLockedAt       DateTime?
   /// ID del proceso worker que bloqueó el job (útil para debug multi-instancia)
   workerPid            Int?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
   products             ExtractedProduct[]
   logs                 ExtractionLog[]
   comparison           ExtractionComparison?
@@ -167,33 +169,34 @@ model ProductChange {
 }
 
 model ExtractedProduct {
-  id                String               @id @default(cuid())
-  jobId             String
-  job               ExtractionJob        @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  providerId        String
-  sku               String?
-  name              String
-  description       String?
-  wholesalePrice    Decimal?             @db.Decimal(10, 2)
-  oldPrice          Decimal?             @db.Decimal(10, 2)
-  stock             String?
-  category          String?
-  brand             String?
-  productUrl        String?
-  imageUrl          String?
+  id                     String           @id @default(cuid())
+  jobId                  String
+  job                    ExtractionJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  providerId             String
+  sku                    String?
+  name                   String
+  description            String?
+  wholesalePrice         Decimal?         @db.Decimal(10, 2)
+  oldPrice               Decimal?         @db.Decimal(10, 2)
+  stock                  String?
+  category               String?
+  brand                  String?
+  productUrl             String?
+  imageUrl               String?
   /// Nombre de archivo de la imagen descargada (sin path, ej: "ART_12345.jpg")
-  imageFileName     String?
+  imageFileName          String?
   /// Ruta local en disco si la imagen fue descargada
-  imageFilePath     String?
+  imageFilePath          String?
   /// Cuándo se descargó la imagen
-  imageDownloadedAt DateTime?
-  status            String?
-  observations      String?
-  rawData           Json?
-  extractedAt       DateTime             @default(now())
-  /// null | "selected" | "prepared" | "published" — set por flujo de publicación a tiendas
-  publicationStatus String?
-  publications      ProductPublication[]
+  imageDownloadedAt      DateTime?
+  status                 String?
+  observations           String?
+  rawData                Json?
+  extractedAt            DateTime         @default(now())
+  /// null | "selected" | "prepared" | "published" — flag legacy del flow de publicación
+  /// a nivel snapshot. Para el estado canónico ver CatalogProduct.publications.
+  publicationStatus      String?
+  catalogProductSnapshot CatalogProduct[] @relation("LatestSnapshot")
 
   @@index([jobId])
   @@index([providerId])
@@ -244,19 +247,96 @@ model StoreIntegration {
   updatedAt DateTime @updatedAt
 }
 
+// ─── Catálogo persistente + publicaciones ────────────────────────────────────
+
+enum CatalogProductStatus {
+  ACTIVE
+  SUPPLIER_REMOVED
+  IGNORED
+  ARCHIVED
+}
+
+enum PublicationStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  REMOVED
+  ERROR
+}
+
+/// Catálogo persistente por usuario × proveedor. Es la fuente de verdad comercial:
+/// el worker solo actualiza los campos "supplier*" en cada extracción, los campos
+/// comerciales (commercialName, assignedCategory, manualPrice, pricingRule, notes)
+/// son editados exclusivamente por el usuario y nunca pisados por el scraper.
+model CatalogProduct {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id])
+
+  // Identidad del producto (clave de upsert)
+  sku          String?
+  productUrl   String?
+  identityHash String? // hash(name + providerId) como fallback
+
+  // Datos del proveedor (sync automático)
+  supplierName        String
+  supplierDescription String?
+  wholesalePrice      Float?
+  stock               String?
+  supplierCategory    String?
+  imageUrl            String?
+  lastSeenAt          DateTime
+  supplierStatus      CatalogProductStatus @default(ACTIVE)
+
+  // Referencia al último snapshot extraído (linea de tiempo)
+  latestExtractedProductId String?
+  latestExtractedProduct   ExtractedProduct? @relation("LatestSnapshot", fields: [latestExtractedProductId], references: [id])
+
+  // Datos comerciales editados por el usuario (worker NUNCA toca)
+  commercialName        String?
+  commercialDescription String?
+  assignedCategoryId    String?
+  assignedCategory      Category?    @relation(fields: [assignedCategoryId], references: [id])
+  manualPrice           Float?
+  pricingRuleId         String?
+  pricingRule           PricingRule? @relation(fields: [pricingRuleId], references: [id])
+  notes                 String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  publications ProductPublication[]
+
+  @@unique([userId, providerId, sku])
+  @@index([userId])
+  @@index([providerId])
+  @@index([supplierStatus])
+  @@index([userId, providerId])
+}
+
 model ProductPublication {
-  id                String           @id @default(cuid())
-  productId         String
-  product           ExtractedProduct @relation(fields: [productId], references: [id])
+  id                String            @id @default(cuid())
+  catalogProductId  String
+  catalogProduct    CatalogProduct    @relation(fields: [catalogProductId], references: [id])
   storeId           String
-  store             Store            @relation(fields: [storeId], references: [id])
-  status            String           @default("selected") // selected | prepared | published | error_publication
-  externalProductId String? // ID del producto en la tienda destino
+  store             Store             @relation(fields: [storeId], references: [id])
+  status            PublicationStatus @default(DRAFT)
+  externalProductId String?
+  externalUrl       String?
   publishedAt       DateTime?
+  pausedAt          DateTime?
+  lastSyncAt        DateTime?
   errorMessage      String?
-  finalPrice        Float? // precio final después de aplicar margen
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  finalPrice        Float?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([catalogProductId, storeId])
+  @@index([catalogProductId])
+  @@index([storeId])
+  @@index([status])
 }
 
 model PricingRule {
@@ -269,6 +349,8 @@ model PricingRule {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  catalogProducts CatalogProduct[]
 }
 
 model Category {
@@ -281,6 +363,8 @@ model Category {
   mappings  ProductCategoryMapping[]
   createdAt DateTime                 @default(now())
   updatedAt DateTime                 @updatedAt
+
+  catalogProducts CatalogProduct[]
 }
 
 model ProductCategoryMapping {

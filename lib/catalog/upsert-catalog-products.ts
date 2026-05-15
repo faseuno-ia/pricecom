@@ -1,0 +1,148 @@
+// Mantenemos el import relativo (no `@/...`) porque este módulo lo consume el
+// worker (tsx) además de Next.js, y el alias `@` puede no resolver en tsx.
+import type { PrismaClient } from "@prisma/client";
+import { createHash } from "crypto";
+
+interface IdentityInputs {
+  sku?: string | null;
+  productUrl?: string | null;
+  name: string;
+  providerId: string;
+}
+
+interface IdentityKey {
+  sku?: string;
+  productUrl?: string;
+  identityHash?: string;
+}
+
+function identityKey(p: IdentityInputs): IdentityKey {
+  if (p.sku?.trim()) return { sku: p.sku.trim() };
+  if (p.productUrl?.trim()) return { productUrl: p.productUrl.trim() };
+  const hash = createHash("sha256")
+    .update((p.name + p.providerId).toLowerCase().trim())
+    .digest("hex")
+    .slice(0, 16);
+  return { identityHash: hash };
+}
+
+/**
+ * Upsert de CatalogProduct para todos los productos extraídos en `jobId`.
+ *
+ * Reglas:
+ *  - Sólo los campos `supplier*` y `lastSeenAt` se actualizan automáticamente.
+ *  - Los campos comerciales (commercialName, assignedCategory, manualPrice,
+ *    pricingRule, notes) NUNCA se tocan en updates.
+ *  - Productos del proveedor que ya estaban en el catálogo pero no aparecieron
+ *    en esta extracción se marcan como `SUPPLIER_REMOVED`.
+ */
+export async function upsertCatalogProducts(
+  jobId: string,
+  prismaClient: PrismaClient
+): Promise<void> {
+  const job = await prismaClient.extractionJob.findUnique({
+    where: { id: jobId },
+    include: { products: true },
+  });
+  if (!job || !job.userId) return;
+
+  const userId = job.userId;
+  const providerId = job.providerId;
+  const lastSeenAt = new Date();
+
+  for (const product of job.products) {
+    const identity = identityKey({
+      sku: product.sku,
+      productUrl: product.productUrl,
+      name: product.name,
+      providerId,
+    });
+
+    // Datos que el worker puede actualizar (siempre supplier*, nunca comerciales).
+    const supplierData = {
+      supplierName: product.name,
+      supplierDescription: product.description ?? null,
+      wholesalePrice:
+        product.wholesalePrice != null ? Number(product.wholesalePrice) : null,
+      stock: product.stock ?? null,
+      supplierCategory: product.category ?? null,
+      imageUrl: product.imageUrl ?? null,
+      productUrl: product.productUrl ?? null,
+      lastSeenAt,
+      supplierStatus: "ACTIVE" as const,
+      latestExtractedProductId: product.id,
+    };
+
+    if (identity.sku) {
+      // Upsert por la clave compuesta única userId+providerId+sku.
+      await prismaClient.catalogProduct.upsert({
+        where: {
+          userId_providerId_sku: {
+            userId,
+            providerId,
+            sku: identity.sku,
+          },
+        },
+        create: {
+          userId,
+          providerId,
+          sku: identity.sku,
+          ...supplierData,
+        },
+        update: supplierData,
+      });
+    } else {
+      // Sin SKU: buscar manualmente por productUrl o identityHash dentro del scope
+      // userId×providerId. Si no hay ninguno de los dos, no podemos identificar.
+      const orClauses: Array<
+        | { productUrl: string }
+        | { identityHash: string }
+      > = [];
+      if (identity.productUrl) orClauses.push({ productUrl: identity.productUrl });
+      if (identity.identityHash) orClauses.push({ identityHash: identity.identityHash });
+
+      if (orClauses.length === 0) continue;
+
+      const existing = await prismaClient.catalogProduct.findFirst({
+        where: { userId, providerId, OR: orClauses },
+        select: { id: true },
+      });
+
+      if (existing) {
+        await prismaClient.catalogProduct.update({
+          where: { id: existing.id },
+          data: supplierData,
+        });
+      } else {
+        await prismaClient.catalogProduct.create({
+          data: {
+            userId,
+            providerId,
+            ...(identity.productUrl ? { productUrl: identity.productUrl } : {}),
+            ...(identity.identityHash ? { identityHash: identity.identityHash } : {}),
+            ...supplierData,
+          },
+        });
+      }
+    }
+  }
+
+  // Marcar como SUPPLIER_REMOVED los CatalogProduct activos de este proveedor
+  // cuyo SKU no apareció en la extracción actual. Sólo aplicamos a productos con
+  // SKU: los identificados por URL/hash son menos confiables para detectar bajas.
+  const seenSkus = job.products
+    .map((p) => p.sku)
+    .filter((s): s is string => !!s && s.length > 0);
+
+  if (seenSkus.length > 0) {
+    await prismaClient.catalogProduct.updateMany({
+      where: {
+        userId,
+        providerId,
+        supplierStatus: "ACTIVE",
+        sku: { notIn: seenSkus },
+      },
+      data: { supplierStatus: "SUPPLIER_REMOVED" },
+    });
+  }
+}

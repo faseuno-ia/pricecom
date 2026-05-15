@@ -14,6 +14,7 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "comparison:backfill": "npx tsx scripts/comparison-backfill.ts",
+    "catalog:backfill": "npx tsx scripts/catalog-backfill.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
