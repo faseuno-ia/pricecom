@@ -795,6 +795,14 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                             >
                               <PauseCircle className="w-3 h-3" /> Pausar
                             </button>
+                            <button
+                              type="button"
+                              disabled
+                              title="Próximamente — requiere tienda ecommerce conectada"
+                              className="opacity-40 cursor-not-allowed w-full text-left px-3 py-1.5 text-xs flex items-center gap-2"
+                            >
+                              <Lock className="w-3 h-3" /> Publicar en tienda
+                            </button>
                             {p.productUrl && (
                               <a
                                 href={p.productUrl}
@@ -950,6 +958,14 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <RotateCcw className="w-3.5 h-3.5" /> Restaurar
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Próximamente — requiere tienda ecommerce conectada"
+                className="flex items-center gap-1.5 text-xs border border-border bg-background px-2.5 py-1 rounded-md opacity-40 cursor-not-allowed"
+              >
+                <Lock className="w-3.5 h-3.5" /> Publicar
               </button>
               <button
                 type="button"
