@@ -264,6 +264,12 @@ enum PublicationStatus {
   ERROR
 }
 
+enum ImageSource {
+  SUPPLIER
+  USER
+  GENERATED
+}
+
 /// Catálogo persistente por usuario × proveedor. Es la fuente de verdad comercial:
 /// el worker solo actualiza los campos "supplier*" en cada extracción, los campos
 /// comerciales (commercialName, assignedCategory, manualPrice, pricingRule, notes)
@@ -295,11 +301,14 @@ model CatalogProduct {
   latestExtractedProduct   ExtractedProduct? @relation("LatestSnapshot", fields: [latestExtractedProductId], references: [id])
 
   // Datos comerciales editados por el usuario (worker NUNCA toca)
+  commercialTitle       String?
   commercialName        String?
   commercialDescription String?
   assignedCategoryId    String?
   assignedCategory      Category?    @relation(fields: [assignedCategoryId], references: [id])
   manualPrice           Float?
+  manualMargin          Float? // porcentaje manual sobre wholesalePrice
+  finalPrice            Float? // precio de venta final (override del cálculo)
   pricingRuleId         String?
   pricingRule           PricingRule? @relation(fields: [pricingRuleId], references: [id])
   notes                 String?
@@ -308,6 +317,7 @@ model CatalogProduct {
   updatedAt DateTime @updatedAt
 
   publications ProductPublication[]
+  images       CatalogProductImage[]
 
   @@unique([userId, providerId, sku])
   @@index([userId])
@@ -337,6 +347,24 @@ model ProductPublication {
   @@index([catalogProductId])
   @@index([storeId])
   @@index([status])
+}
+
+/// Galería de imágenes por CatalogProduct. La imagen del proveedor puede
+/// importarse acá con source=SUPPLIER, pero también soporta imágenes
+/// subidas por el usuario (USER) o generadas (GENERATED) para editing.
+model CatalogProductImage {
+  id               String         @id @default(cuid())
+  catalogProductId String
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
+  url              String
+  position         Int            @default(0)
+  isPrimary        Boolean        @default(false)
+  source           ImageSource    @default(SUPPLIER)
+  altText          String?
+  createdAt        DateTime       @default(now())
+
+  @@index([catalogProductId])
+  @@index([catalogProductId, position])
 }
 
 model PricingRule {
