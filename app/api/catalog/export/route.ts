@@ -9,6 +9,10 @@ import {
 import ExcelJS from "exceljs";
 import { format } from "date-fns";
 import { z } from "zod";
+import {
+  resolvePricing,
+  type PricingRuleForCalc,
+} from "@/lib/pricing/pricing-engine";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -51,31 +55,6 @@ const bodySchema = z
     (b) => (b.catalogProductIds?.length ?? 0) > 0 || b.filters !== undefined,
     { message: "Se requiere catalogProductIds o filters" }
   );
-
-// Colores (ARGB) por estado, aplicados a la fila completa.
-const SUPPLIER_ROW_COLOR: Partial<Record<CatalogProductStatus, string>> = {
-  SUPPLIER_REMOVED: "FFFFF0F0",
-  IGNORED: "FFF5F5F5",
-  ARCHIVED: "FFEEEEEE",
-};
-const INTERNAL_ROW_COLOR: Partial<Record<InternalPublicationStatus, string>> = {
-  PREPARED: "FFF0FFF4",
-  PAUSED: "FFFFFBEB",
-};
-
-const supplierLabel: Record<CatalogProductStatus, string> = {
-  ACTIVE: "Activo",
-  SUPPLIER_REMOVED: "Removido por proveedor",
-  IGNORED: "Ignorado",
-  ARCHIVED: "Archivado",
-};
-const internalLabel: Record<InternalPublicationStatus, string> = {
-  NOT_PUBLISHED: "Sin publicar",
-  PREPARED: "Preparado",
-  PAUSED: "Pausado",
-  IGNORED: "Ignorado",
-  ARCHIVED: "Archivado",
-};
 
 function buildWhere(
   userId: string,
@@ -137,14 +116,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const products = await prisma.catalogProduct.findMany({
-    where,
-    orderBy: { updatedAt: "desc" },
-    include: {
-      provider: { select: { name: true } },
-      assignedCategory: { select: { name: true } },
-    },
-  });
+  const [products, rules] = await Promise.all([
+    prisma.catalogProduct.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      include: {
+        assignedCategory: { select: { name: true } },
+        images: {
+          orderBy: [{ isPrimary: "desc" }, { position: "asc" }],
+          take: 1,
+          select: { url: true },
+        },
+      },
+    }),
+    prisma.pricingRule.findMany({
+      where: { userId: session.user.id, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        scopeId: true,
+        marginPercent: true,
+        roundingMode: true,
+        isActive: true,
+        priority: true,
+      },
+    }),
+  ]);
+
+  const rulesForCalc: PricingRuleForCalc[] = rules;
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "PricEcom";
@@ -154,24 +154,13 @@ export async function POST(req: NextRequest) {
   });
 
   sheet.columns = [
-    { header: "SKU Comercial", key: "publicationSku", width: 18 },
-    { header: "SKU Proveedor", key: "sku", width: 18 },
-    { header: "Título comercial", key: "commercialTitle", width: 40 },
-    { header: "Nombre proveedor", key: "supplierName", width: 40 },
-    { header: "Proveedor", key: "providerName", width: 20 },
-    { header: "Costo mayorista", key: "wholesalePrice", width: 16 },
-    { header: "Precio final", key: "finalPrice", width: 16 },
-    { header: "Margen %", key: "marginPct", width: 12 },
-    { header: "Stock", key: "stock", width: 14 },
-    { header: "Categoría", key: "category", width: 22 },
-    { header: "Estado proveedor", key: "supplierStatus", width: 20 },
-    { header: "Estado interno", key: "internalStatus", width: 16 },
-    { header: "URL proveedor", key: "productUrl", width: 36 },
-    { header: "Imagen URL", key: "imageUrl", width: 36 },
-    { header: "Última vez visto", key: "lastSeenAt", width: 18 },
+    { header: "SKU", key: "publicationSku", width: 18 },
+    { header: "Descripción", key: "title", width: 50 },
+    { header: "Precio", key: "price", width: 15 },
+    { header: "Categoría", key: "category", width: 25 },
+    { header: "Imagen", key: "image", width: 60 },
   ] as Partial<ExcelJS.Column>[];
 
-  // Header styling
   const header = sheet.getRow(1);
   header.height = 22;
   header.eachCell((cell) => {
@@ -185,52 +174,33 @@ export async function POST(req: NextRequest) {
   });
 
   for (const p of products) {
-    const wholesale = p.wholesalePrice ?? null;
-    const finalP = p.finalPrice ?? p.manualPrice ?? null;
-    const margin =
-      wholesale != null && wholesale > 0 && finalP != null
-        ? Math.round(((finalP - wholesale) / wholesale) * 1000) / 10
-        : null;
+    const pricing = resolvePricing(
+      {
+        wholesalePrice: p.wholesalePrice,
+        manualMargin: p.manualMargin,
+        finalPrice: p.finalPrice,
+        assignedCategoryId: p.assignedCategoryId,
+        providerId: p.providerId,
+      },
+      rulesForCalc
+    );
+    const price = p.finalPrice ?? pricing.calculatedPrice ?? "";
 
-    const row = sheet.addRow({
+    sheet.addRow({
       publicationSku: p.publicationSku ?? p.sku ?? "",
-      sku: p.sku ?? "",
-      commercialTitle: p.commercialTitle ?? "",
-      supplierName: p.supplierName,
-      providerName: p.provider.name,
-      wholesalePrice: wholesale,
-      finalPrice: finalP,
-      marginPct: margin,
-      stock: p.stock ?? "",
+      title: p.commercialTitle ?? p.supplierName ?? "",
+      price,
       category: p.assignedCategory?.name ?? p.supplierCategory ?? "",
-      supplierStatus: supplierLabel[p.supplierStatus],
-      internalStatus: internalLabel[p.internalStatus],
-      productUrl: p.productUrl ?? "",
-      imageUrl: p.imageUrl ?? "",
-      lastSeenAt: format(new Date(p.lastSeenAt), "dd/MM/yyyy HH:mm"),
+      image: p.images[0]?.url ?? p.imageUrl ?? "",
     });
-
-    // Color de fila: precedencia internalStatus (PREPARED/PAUSED) sobre supplier;
-    // si ninguno aplica color especial, queda blanco.
-    const color =
-      INTERNAL_ROW_COLOR[p.internalStatus] ??
-      SUPPLIER_ROW_COLOR[p.supplierStatus];
-    if (color) {
-      row.eachCell((cell) => {
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: color } };
-      });
-    }
   }
 
-  // Format precio columns
-  sheet.getColumn("wholesalePrice").numFmt = '"$"#,##0.00';
-  sheet.getColumn("finalPrice").numFmt = '"$"#,##0.00';
-  sheet.getColumn("marginPct").numFmt = "0.0";
+  sheet.getColumn("price").numFmt = '"$"#,##0.00';
 
-  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 15 } };
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 5 } };
 
   const buffer = await wb.xlsx.writeBuffer();
-  const filename = `catalogo-pricecom-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;
+  const filename = `catalogo-comercial-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;
 
   return new NextResponse(buffer, {
     status: 200,
