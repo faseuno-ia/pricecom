@@ -7,6 +7,10 @@ import {
   PublicationStatus,
   InternalPublicationStatus,
 } from "@prisma/client";
+import {
+  resolvePricing,
+  type PricingRuleForCalc,
+} from "@/lib/pricing/pricing-engine";
 
 const VALID_SUPPLIER: CatalogProductStatus[] = [
   "ACTIVE",
@@ -100,7 +104,7 @@ export async function GET(req: NextRequest) {
     ];
   }
 
-  const [total, products] = await Promise.all([
+  const [total, products, rules] = await Promise.all([
     prisma.catalogProduct.count({ where }),
     prisma.catalogProduct.findMany({
       where,
@@ -122,7 +126,35 @@ export async function GET(req: NextRequest) {
         },
       },
     }),
+    // Reglas activas del usuario (cargadas una vez, aplicadas en cliente del motor)
+    prisma.pricingRule.findMany({
+      where: { userId: session.user.id, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        scopeId: true,
+        marginPercent: true,
+        roundingMode: true,
+        isActive: true,
+        priority: true,
+      },
+    }),
   ]);
 
-  return NextResponse.json({ products, total, page, pageSize });
+  const rulesForCalc: PricingRuleForCalc[] = rules;
+  const enriched = products.map((p) => {
+    const pricing = resolvePricing(
+      {
+        wholesalePrice: p.wholesalePrice,
+        manualMargin: p.manualMargin,
+        assignedCategoryId: p.assignedCategoryId,
+        providerId: p.providerId,
+      },
+      rulesForCalc
+    );
+    return { ...p, pricing };
+  });
+
+  return NextResponse.json({ products: enriched, total, page, pageSize });
 }

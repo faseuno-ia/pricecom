@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
+import { ApplyMarginModal } from "./apply-margin-modal";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
 type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED" | "ARCHIVED";
@@ -51,6 +52,14 @@ interface CatalogRow {
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
   publications: { status: string; storeId: string; externalProductId: string | null }[];
+  pricing?: {
+    calculatedPrice: number | null;
+    marginPercent: number | null;
+    ruleApplied: "manual" | "category" | "provider" | "global" | "none";
+    ruleName: string | null;
+    ruleId: string | null;
+  };
+  assignedCategoryId?: string | null;
 }
 
 interface Props {
@@ -154,6 +163,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [marginModalOpen, setMarginModalOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [contextMenuFor, setContextMenuFor] = useState<string | null>(null);
@@ -623,13 +633,16 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                   const marginB = marginBadge(margin);
                   const sBadge = supplierBadgeFor[p.supplierStatus];
                   const iBadge = internalBadgeFor[p.internalStatus];
-                  // Precio calculado puro: solo con manualMargin sobre wholesale.
-                  // Si no hay manualMargin, mostramos "—". Es distinto a effectivePrice
-                  // (que usa finalPrice si está, sino margen).
-                  const calcPrice =
-                    p.wholesalePrice != null && p.manualMargin != null
-                      ? p.wholesalePrice * (1 + p.manualMargin / 100)
-                      : null;
+                  // Precio calculado: lo computa el motor de pricing en el server
+                  // y viene como `p.pricing`. Si no hay regla aplicable → null.
+                  const calcPrice = p.pricing?.calculatedPrice ?? null;
+                  const ruleApplied = p.pricing?.ruleApplied ?? "none";
+                  const ruleTooltip =
+                    ruleApplied === "none"
+                      ? "Sin regla aplicable (falta costo o regla)"
+                      : ruleApplied === "manual"
+                        ? `Margen manual: ${p.pricing?.marginPercent}%`
+                        : `Regla ${ruleApplied}: ${p.pricing?.ruleName ?? "?"} (${p.pricing?.marginPercent}%)`;
                   const displayName = p.commercialTitle?.trim() || p.supplierName;
                   // Link href: URL original (puede ser http://) — el navegador permite navegar.
                   // Img src: normalizado a https:// para evitar mixed content inline.
@@ -703,7 +716,10 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                       <td className="px-3 py-2 font-mono whitespace-nowrap">
                         {formatPriceCompact(sellPrice)}
                       </td>
-                      <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">
+                      <td
+                        className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap"
+                        title={ruleTooltip}
+                      >
                         {formatPriceCompact(calcPrice)}
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
@@ -977,9 +993,8 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
               </button>
               <button
                 type="button"
-                disabled
-                title="Próximamente — Pricing Rules"
-                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md text-muted-foreground/50 cursor-not-allowed"
+                onClick={() => setMarginModalOpen(true)}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <Tag className="w-3.5 h-3.5" /> Aplicar margen
               </button>
@@ -1007,8 +1022,24 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 : p
             ),
           }));
+          refresh();
         }}
       />
+
+      {marginModalOpen && (
+        <ApplyMarginModal
+          selectedIds={Array.from(selectedIds)}
+          filters={{
+            providerId: providerId !== "all" ? providerId : undefined,
+          }}
+          onClose={() => setMarginModalOpen(false)}
+          onApplied={() => {
+            setMarginModalOpen(false);
+            deselectAll();
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
   LogOut,
   TrendingUp,
   BookOpen,
+  Tag,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" as const },
   { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false as const },
   { href: "/catalog", label: "Catálogo", icon: BookOpen, highlight: false, badge: false as const },
+  { href: "/pricing-rules", label: "Pricing", icon: Tag, highlight: false, badge: false as const },
   { href: "/new-extraction", label: "Nueva extracción", icon: PlusCircle, highlight: true, badge: false as const },
 ];
 

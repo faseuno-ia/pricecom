@@ -2,37 +2,67 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { z } from "zod";
+import {
+  resolvePricing,
+  type PricingRuleForCalc,
+} from "@/lib/pricing/pricing-engine";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireSession();
 
-  const product = await prisma.catalogProduct.findFirst({
-    where: { id: params.id, userId: session.user.id },
-    include: {
-      provider: {
-        select: { id: true, name: true, baseUrl: true, requiresLogin: true },
-      },
-      images: { orderBy: { position: "asc" } },
-      assignedCategory: { select: { id: true, name: true } },
-      publications: {
-        include: { store: { select: { id: true, name: true, platform: true } } },
-      },
-      latestExtractedProduct: {
-        select: {
-          id: true,
-          jobId: true,
-          extractedAt: true,
-          productUrl: true,
-          imageUrl: true,
+  const [product, rules] = await Promise.all([
+    prisma.catalogProduct.findFirst({
+      where: { id: params.id, userId: session.user.id },
+      include: {
+        provider: {
+          select: { id: true, name: true, baseUrl: true, requiresLogin: true },
+        },
+        images: { orderBy: { position: "asc" } },
+        assignedCategory: { select: { id: true, name: true } },
+        publications: {
+          include: { store: { select: { id: true, name: true, platform: true } } },
+        },
+        latestExtractedProduct: {
+          select: {
+            id: true,
+            jobId: true,
+            extractedAt: true,
+            productUrl: true,
+            imageUrl: true,
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.pricingRule.findMany({
+      where: { userId: session.user.id, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        scopeId: true,
+        marginPercent: true,
+        roundingMode: true,
+        isActive: true,
+        priority: true,
+      },
+    }),
+  ]);
 
   if (!product) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  return NextResponse.json(product);
+
+  const pricing = resolvePricing(
+    {
+      wholesalePrice: product.wholesalePrice,
+      manualMargin: product.manualMargin,
+      assignedCategoryId: product.assignedCategoryId,
+      providerId: product.providerId,
+    },
+    rules as PricingRuleForCalc[]
+  );
+
+  return NextResponse.json({ ...product, pricing });
 }
 
 // Solo campos comerciales editables — el worker NUNCA toca estos campos, y la

@@ -39,7 +39,22 @@ export interface CatalogProductDetail {
   images: { id: string; url: string; isPrimary: boolean; source: string }[];
   assignedCategory: { id: string; name: string } | null;
   publications: { status: string; storeId: string }[];
+  pricing?: {
+    calculatedPrice: number | null;
+    marginPercent: number | null;
+    ruleApplied: "manual" | "category" | "provider" | "global" | "none";
+    ruleName: string | null;
+    ruleId: string | null;
+  };
 }
+
+const ruleAppliedLabel: Record<string, string> = {
+  manual: "Margen manual",
+  category: "Regla por categoría",
+  provider: "Regla por proveedor",
+  global: "Regla global",
+  none: "Sin regla",
+};
 
 interface Props {
   productId: string | null;
@@ -292,6 +307,51 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                   Ver en proveedor <ExternalLink className="w-3 h-3" />
                 </a>
               )}
+            </section>
+
+            {/* Pricing — calculado por el motor con costo + regla aplicable */}
+            <section className="space-y-2 border-t border-border pt-4">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                Pricing
+              </p>
+              <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Costo mayorista</span>
+                  <span className="font-mono">
+                    {product.wholesalePrice != null
+                      ? formatPrice(product.wholesalePrice)
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Margen aplicado</span>
+                  <span>
+                    {product.pricing?.marginPercent != null
+                      ? `${product.pricing.marginPercent}% · ${ruleAppliedLabel[product.pricing.ruleApplied] ?? "?"}`
+                      : "—"}
+                  </span>
+                </div>
+                {product.pricing?.ruleName && product.pricing.ruleApplied !== "manual" && (
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground/80">
+                    <span>Regla</span>
+                    <span>{product.pricing.ruleName}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1.5 border-t border-border">
+                  <span className="text-muted-foreground">Precio calculado</span>
+                  <span className="font-mono text-base font-semibold text-accent">
+                    {product.pricing?.calculatedPrice != null
+                      ? formatPrice(product.pricing.calculatedPrice)
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Precio final (override)</span>
+                  <span className="font-mono">
+                    {product.finalPrice != null ? formatPrice(product.finalPrice) : "—"}
+                  </span>
+                </div>
+              </div>
             </section>
 
             {/* Datos comerciales (editables) */}

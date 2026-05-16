@@ -20,6 +20,7 @@ model User {
   providers       Provider[]
   extractionJobs  ExtractionJob[]
   catalogProducts CatalogProduct[]
+  pricingRules    PricingRule[]
 }
 
 model Provider {
@@ -380,18 +381,39 @@ model CatalogProductImage {
   @@index([catalogProductId, position])
 }
 
+enum PricingRuleScope {
+  GLOBAL
+  PROVIDER
+  CATEGORY
+}
+
+enum RoundingMode {
+  NONE
+  NEAREST_100
+  NEAREST_500
+  ENDING_990
+}
+
 model PricingRule {
-  id        String   @id @default(cuid())
-  scope     String // "global" | "provider" | "category" | "product"
-  scopeId   String? // providerId, categoryId o productId según scope
-  method    String // "markup" | "margin"
-  value     Float // porcentaje
-  rounding  Int? // redondear al múltiplo más cercano (ej: 100)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id])
+  name          String
+  scope         PricingRuleScope
+  scopeId       String? // providerId o categoryId según scope (null si GLOBAL)
+  marginPercent Float
+  method        String           @default("MARKUP_ON_COST")
+  roundingMode  RoundingMode     @default(NONE)
+  isActive      Boolean          @default(true)
+  priority      Int              @default(0)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
   catalogProducts CatalogProduct[]
+
+  @@index([userId])
+  @@index([userId, scope])
+  @@index([userId, isActive])
 }
 
 model Category {
