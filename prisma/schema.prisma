@@ -293,9 +293,12 @@ model CatalogProduct {
   provider   Provider @relation(fields: [providerId], references: [id])
 
   // Identidad del producto (clave de upsert)
-  sku          String?
-  productUrl   String?
-  identityHash String? // hash(name + providerId) como fallback
+  sku             String?
+  /// SKU comercial para tienda: prefijo del proveedor + supplierSku (ej: B380-94028).
+  /// Se setea al importar la tienda existente; no lo toca el worker.
+  publicationSku  String?
+  productUrl      String?
+  identityHash    String? // hash(name + providerId) como fallback
 
   // Datos del proveedor (sync automático)
   supplierName        String
@@ -338,6 +341,7 @@ model CatalogProduct {
   @@index([userId, providerId])
   @@index([internalStatus])
   @@index([userId, internalStatus])
+  @@index([userId, publicationSku])
 }
 
 model ProductPublication {

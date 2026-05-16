@@ -15,6 +15,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "comparison:backfill": "npx tsx scripts/comparison-backfill.ts",
     "catalog:backfill": "npx tsx scripts/catalog-backfill.ts",
+    "import:store-excel": "npx tsx scripts/import-store-excel.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -42,6 +43,7 @@
     "react-dom": "^18",
     "sonner": "^1.4.3",
     "tailwind-merge": "^2.2.1",
+    "xlsx": "^0.18.5",
     "zod": "^3.22.4"
   },
   "devDependencies": {
