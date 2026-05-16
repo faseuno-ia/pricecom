@@ -6,6 +6,7 @@ import {
   CatalogProductStatus,
   PublicationStatus,
   InternalPublicationStatus,
+  CatalogSourceType,
 } from "@prisma/client";
 import {
   resolvePricing,
@@ -33,6 +34,7 @@ const VALID_PUB: (PublicationStatus | "NONE")[] = [
   "ERROR",
   "NONE",
 ];
+const VALID_SOURCE: CatalogSourceType[] = ["SCRAPED", "MANUAL", "IMPORTED"];
 
 const MAX_PAGE_SIZE = 100;
 
@@ -45,6 +47,7 @@ export async function GET(req: NextRequest) {
   const supplierStatusParam = url.searchParams.get("supplierStatus");
   const internalStatusParam = url.searchParams.get("internalStatus");
   const publicationStatusParam = url.searchParams.get("publicationStatus");
+  const sourceTypeParam = url.searchParams.get("sourceType");
   const noImage = url.searchParams.get("noImage") === "true";
   const noCategory = url.searchParams.get("noCategory") === "true";
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
@@ -68,6 +71,13 @@ export async function GET(req: NextRequest) {
     VALID_INTERNAL.includes(internalStatusParam as InternalPublicationStatus)
   ) {
     where.internalStatus = internalStatusParam as InternalPublicationStatus;
+  }
+
+  if (
+    sourceTypeParam &&
+    VALID_SOURCE.includes(sourceTypeParam as CatalogSourceType)
+  ) {
+    where.sourceType = sourceTypeParam as CatalogSourceType;
   }
 
   if (

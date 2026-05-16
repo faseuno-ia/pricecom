@@ -1,14 +1,58 @@
 import { z } from "zod";
 
-export const providerSchema = z.object({
-  name: z.string().min(1, "El nombre es requerido").max(100),
-  baseUrl: z.string().url("URL inválida"),
-  requiresLogin: z.boolean().default(false),
-  username: z.string().optional().nullable(),
-  password: z.string().optional().nullable(),
-  isActive: z.boolean().default(true),
-  notes: z.string().optional().nullable(),
-});
+export const providerSchema = z
+  .object({
+    name: z.string().min(1, "El nombre es requerido").max(100),
+    providerType: z.enum(["SCRAPER", "MANUAL", "IMPORTED"]).default("SCRAPER"),
+    // baseUrl es opcional para MANUAL/IMPORTED, requerida (y URL válida) para SCRAPER.
+    // Aceptamos "" y lo normalizamos abajo.
+    baseUrl: z.string().optional().nullable(),
+    requiresLogin: z.boolean().default(false),
+    username: z.string().optional().nullable(),
+    password: z.string().optional().nullable(),
+    isActive: z.boolean().default(true),
+    notes: z.string().optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    const url = data.baseUrl?.trim() ?? "";
+    if (data.providerType === "SCRAPER") {
+      if (!url) {
+        ctx.addIssue({
+          path: ["baseUrl"],
+          code: z.ZodIssueCode.custom,
+          message: "URL base requerida para proveedores con scraping",
+        });
+        return;
+      }
+      try {
+        new URL(url);
+      } catch {
+        ctx.addIssue({
+          path: ["baseUrl"],
+          code: z.ZodIssueCode.custom,
+          message: "URL inválida",
+        });
+      }
+    } else if (url) {
+      // Si la cargaron igual, validamos que sea URL válida — no es requerida pero
+      // si la mandan tiene que estar bien formateada.
+      try {
+        new URL(url);
+      } catch {
+        ctx.addIssue({
+          path: ["baseUrl"],
+          code: z.ZodIssueCode.custom,
+          message: "URL inválida",
+        });
+      }
+    }
+  })
+  .transform((data) => ({
+    ...data,
+    baseUrl: data.baseUrl?.trim() || "",
+    // requiresLogin solo aplica para SCRAPER
+    requiresLogin: data.providerType === "SCRAPER" ? data.requiresLogin : false,
+  }));
 
 export const scraperConfigSchema = z.object({
   providerId: z.string(),

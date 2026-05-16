@@ -23,9 +23,20 @@ model User {
   pricingRules    PricingRule[]
 }
 
+enum ProviderType {
+  /// Catálogo obtenido vía web scraping automatizado.
+  SCRAPER
+  /// Carga manual producto por producto (sin scraping).
+  MANUAL
+  /// Carga masiva por archivo Excel/CSV.
+  IMPORTED
+}
+
 model Provider {
   id                String                 @id @default(cuid())
   name              String
+  /// Cómo se mantiene el catálogo de este proveedor.
+  providerType      ProviderType           @default(SCRAPER)
   baseUrl           String
   requiresLogin     Boolean                @default(false)
   username          String?
@@ -271,6 +282,16 @@ enum ImageSource {
   GENERATED
 }
 
+/// De dónde provino la fila del CatalogProduct. SCRAPED es el default histórico
+/// (alimentado por el worker); MANUAL es alta one-off por UI; IMPORTED viene de
+/// un upload Excel/CSV. Distinto de supplierStatus (que indica si el proveedor
+/// sigue mostrándolo).
+enum CatalogSourceType {
+  SCRAPED
+  MANUAL
+  IMPORTED
+}
+
 /// Estado interno del workflow comercial del producto. Independiente de
 /// supplierStatus (que refleja si el scraper lo sigue viendo en el proveedor).
 enum InternalPublicationStatus {
@@ -299,6 +320,14 @@ model CatalogProduct {
   publicationSku  String?
   productUrl      String?
   identityHash    String? // hash(name + providerId) como fallback
+
+  /// De dónde provino esta fila: scrape automático, alta manual o import por archivo.
+  sourceType       CatalogSourceType @default(SCRAPED)
+  /// Nota libre para productos cargados manualmente (referencia, contacto, etc.).
+  manualSourceNote String?
+  /// Identificador del lote de importación (cuando sourceType=IMPORTED). Útil
+  /// para revertir o agrupar lo importado en una sesión.
+  importBatchId    String?
 
   // Datos del proveedor (sync automático)
   supplierName        String
@@ -342,6 +371,8 @@ model CatalogProduct {
   @@index([internalStatus])
   @@index([userId, internalStatus])
   @@index([userId, publicationSku])
+  @@index([userId, sourceType])
+  @@index([importBatchId])
 }
 
 model ProductPublication {

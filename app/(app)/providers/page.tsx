@@ -8,17 +8,45 @@ import {
   Edit,
   Play,
   Lock,
+  Upload,
+  FileSpreadsheet,
+  Hand,
+  Globe,
 } from "lucide-react";
 import Link from "next/link";
 import { ProviderActions } from "@/components/providers/provider-actions";
 import { requireSession } from "@/lib/auth";
+import type { ProviderType } from "@prisma/client";
+
+const typeBadge: Record<
+  ProviderType,
+  { label: string; className: string; icon: typeof Globe }
+> = {
+  SCRAPER: {
+    label: "Automático",
+    className: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+    icon: Globe,
+  },
+  MANUAL: {
+    label: "Manual",
+    className: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    icon: Hand,
+  },
+  IMPORTED: {
+    label: "Importado",
+    className: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+    icon: FileSpreadsheet,
+  },
+};
 
 export default async function ProvidersPage() {
   const session = await requireSession();
   const providers = await prisma.provider.findMany({
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
-    include: { _count: { select: { extractionJobs: true } } },
+    include: {
+      _count: { select: { extractionJobs: true, catalogProducts: true } },
+    },
   });
 
   return (
@@ -61,14 +89,14 @@ export default async function ProvidersPage() {
                 return p.baseUrl;
               }
             })();
+            const tBadge = typeBadge[p.providerType];
+            const TypeIcon = tBadge.icon;
+            const isScraper = p.providerType === "SCRAPER";
             return (
               <div
                 key={p.id}
                 className="relative bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/40 transition-colors"
               >
-                {/* Stretched link: toda la card lleva al dashboard del proveedor.
-                    Va primero en el DOM; los elementos interactivos llevan `relative`
-                    para quedar por encima y capturar sus propios clicks. */}
                 <Link
                   href={`/providers/${p.id}`}
                   className="absolute inset-0 rounded-xl"
@@ -82,15 +110,21 @@ export default async function ProvidersPage() {
                     </div>
                     <div className="min-w-0">
                       <p className="font-semibold text-sm truncate">{p.name}</p>
-                      <a
-                        href={p.baseUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="relative text-xs text-muted-foreground hover:text-primary flex items-center gap-1 w-fit"
-                      >
-                        <span className="truncate">{hostname}</span>
-                        <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                      </a>
+                      {p.baseUrl ? (
+                        <a
+                          href={p.baseUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="relative text-xs text-muted-foreground hover:text-primary flex items-center gap-1 w-fit"
+                        >
+                          <span className="truncate">{hostname}</span>
+                          <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground/60">
+                          Sin URL
+                        </span>
+                      )}
                     </div>
                   </div>
                   <span
@@ -104,46 +138,98 @@ export default async function ProvidersPage() {
                   </span>
                 </div>
 
-                {p.requiresLogin && (
-                  <div className="inline-flex items-center gap-1.5 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded self-start">
-                    <Lock className="w-2.5 h-2.5" /> Requiere login
-                  </div>
-                )}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${tBadge.className}`}
+                  >
+                    <TypeIcon className="w-2.5 h-2.5" />
+                    {tBadge.label}
+                  </span>
+                  {p.requiresLogin && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                      <Lock className="w-2.5 h-2.5" /> Requiere login
+                    </span>
+                  )}
+                </div>
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
-                      Extracciones
-                    </p>
-                    <p className="font-mono font-semibold mt-0.5">
-                      {p._count.extractionJobs}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
-                      Última
-                    </p>
-                    <p className="font-medium mt-0.5 truncate">
-                      {p.lastExtractionAt ? formatDate(p.lastExtractionAt) : "—"}
-                    </p>
-                  </div>
+                  {isScraper ? (
+                    <>
+                      <div>
+                        <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
+                          Extracciones
+                        </p>
+                        <p className="font-mono font-semibold mt-0.5">
+                          {p._count.extractionJobs}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
+                          Última
+                        </p>
+                        <p className="font-medium mt-0.5 truncate">
+                          {p.lastExtractionAt ? formatDate(p.lastExtractionAt) : "—"}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
+                          Productos
+                        </p>
+                        <p className="font-mono font-semibold mt-0.5">
+                          {p._count.catalogProducts}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
+                          Creado
+                        </p>
+                        <p className="font-medium mt-0.5 truncate">
+                          {formatDate(p.createdAt)}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div className="relative flex items-center gap-1.5 pt-2 border-t border-border">
-                  <Link
-                    href={`/new-extraction?providerId=${p.id}`}
-                    className="flex-1 flex items-center justify-center gap-1.5 text-xs bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground rounded-md px-2 py-1.5 transition-colors font-medium"
-                    title="Nueva extracción"
-                  >
-                    <Play className="w-3 h-3" /> Extraer
-                  </Link>
-                  <Link
-                    href={`/providers/${p.id}/config`}
-                    className="flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md p-1.5 transition-colors"
-                    title="Selectores"
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                  </Link>
+                  {isScraper ? (
+                    <>
+                      <Link
+                        href={`/new-extraction?providerId=${p.id}`}
+                        className="flex-1 flex items-center justify-center gap-1.5 text-xs bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground rounded-md px-2 py-1.5 transition-colors font-medium"
+                        title="Nueva extracción"
+                      >
+                        <Play className="w-3 h-3" /> Extraer
+                      </Link>
+                      <Link
+                        href={`/providers/${p.id}/config`}
+                        className="flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md p-1.5 transition-colors"
+                        title="Selectores"
+                      >
+                        <Settings className="w-3.5 h-3.5" />
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      <Link
+                        href={`/catalog/new?providerId=${p.id}`}
+                        className="flex-1 flex items-center justify-center gap-1.5 text-xs bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground rounded-md px-2 py-1.5 transition-colors font-medium"
+                        title="Agregar producto manual"
+                      >
+                        <PlusCircle className="w-3 h-3" /> Agregar producto
+                      </Link>
+                      <Link
+                        href={`/catalog/import?providerId=${p.id}`}
+                        className="flex items-center justify-center gap-1 text-xs border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md px-2 py-1.5 transition-colors"
+                        title="Importar Excel"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                      </Link>
+                    </>
+                  )}
                   <Link
                     href={`/providers/${p.id}/edit`}
                     className="flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md p-1.5 transition-colors"

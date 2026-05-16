@@ -21,6 +21,7 @@ export default async function EditProviderPage({ params }: { params: { id: strin
           provider={{
             id: provider.id,
             name: provider.name,
+            providerType: provider.providerType,
             baseUrl: provider.baseUrl,
             requiresLogin: provider.requiresLogin,
             username: provider.username,

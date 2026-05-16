@@ -32,6 +32,7 @@ type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
 type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED" | "ARCHIVED";
 type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
 type BulkAction = "archive" | "ignore" | "restore" | "prepare" | "pause";
+type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
 
 interface CatalogRow {
   id: string;
@@ -49,6 +50,7 @@ interface CatalogRow {
   imageUrl: string | null;
   supplierStatus: SupplierStatus;
   internalStatus: InternalStatus;
+  sourceType: SourceType;
   provider: { id: string; name: string; baseUrl: string };
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
@@ -143,6 +145,24 @@ const supplierBadgeFor: Record<SupplierStatus, { label: string; cls: string }> =
   ARCHIVED: { label: "Archivado", cls: "bg-muted/40 text-muted-foreground border-border" },
 };
 
+const sourceBadgeFor: Record<SourceType, { label: string; cls: string; tooltip: string }> = {
+  SCRAPED: {
+    label: "Web",
+    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+    tooltip: "Producto obtenido por scraping del proveedor",
+  },
+  MANUAL: {
+    label: "Manual",
+    cls: "bg-violet-500/15 text-violet-300 border-violet-500/30",
+    tooltip: "Producto cargado manualmente",
+  },
+  IMPORTED: {
+    label: "Excel",
+    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    tooltip: "Producto importado por archivo Excel/CSV",
+  },
+};
+
 const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> = {
   NOT_PUBLISHED: { label: "Sin pub.", cls: "bg-muted/40 text-muted-foreground border-border" },
   PREPARED: { label: "Preparado", cls: "bg-green-500/15 text-green-300 border-green-500/30" },
@@ -160,6 +180,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
   const [supplierStatus, setSupplierStatus] = useState<SupplierStatus | "all">("all");
   const [internalStatus, setInternalStatus] = useState<InternalStatus | "all">("all");
   const [pubFilter, setPubFilter] = useState<PubStatusFilter>("ALL");
+  const [sourceFilter, setSourceFilter] = useState<SourceType | "all">("all");
   const [noImage, setNoImage] = useState(false);
   const [noCategory, setNoCategory] = useState(false);
   const [page, setPage] = useState(1);
@@ -180,7 +201,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
   // Reset page al cambiar filtros
   useEffect(() => {
     setPage(1);
-  }, [search, providerId, supplierStatus, internalStatus, pubFilter, noImage, noCategory]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory]);
 
   // Construye los filtros activos para mandarlos al export (mismo formato que la API)
   const currentFilters = useMemo(
@@ -189,10 +210,11 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
       ...(providerId !== "all" ? { providerId } : {}),
       ...(supplierStatus !== "all" ? { supplierStatus } : {}),
       ...(internalStatus !== "all" ? { internalStatus } : {}),
+      ...(sourceFilter !== "all" ? { sourceType: sourceFilter } : {}),
       ...(noImage ? { noImage: true } : {}),
       ...(noCategory ? { noCategory: true } : {}),
     }),
-    [search, providerId, supplierStatus, internalStatus, noImage, noCategory]
+    [search, providerId, supplierStatus, internalStatus, sourceFilter, noImage, noCategory]
   );
 
   const [reloadKey, setReloadKey] = useState(0);
@@ -212,6 +234,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
         if (supplierStatus !== "all") params.set("supplierStatus", supplierStatus);
         if (internalStatus !== "all") params.set("internalStatus", internalStatus);
         if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
+        if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
         if (noImage) params.set("noImage", "true");
         if (noCategory) params.set("noCategory", "true");
         params.set("page", String(page));
@@ -231,7 +254,7 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [search, providerId, supplierStatus, internalStatus, pubFilter, noImage, noCategory, page, pageSize, reloadKey]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, page, pageSize, reloadKey]);
 
   // Cerrar menú al click fuera
   useEffect(() => {
@@ -500,15 +523,20 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
             Exportar
           </button>
-          <button
-            type="button"
-            onClick={notImplemented}
-            disabled
-            title="Próximamente"
-            className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary border border-primary/30 px-3 py-2 rounded-lg cursor-not-allowed opacity-60"
+          <a
+            href="/catalog/new"
+            className="flex items-center gap-1.5 text-xs bg-primary/10 text-primary border border-primary/30 px-3 py-2 rounded-lg hover:bg-primary/20 transition-colors"
+            title="Agregar producto manual"
           >
             <Plus className="w-3.5 h-3.5" /> Agregar
-          </button>
+          </a>
+          <a
+            href="/catalog/import"
+            className="flex items-center gap-1.5 text-xs border border-border bg-card px-3 py-2 rounded-lg hover:bg-muted/40 transition-colors"
+            title="Importar Excel"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" /> Importar
+          </a>
         </div>
       </div>
 
@@ -573,6 +601,17 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
           <option value="DRAFT">Borrador</option>
           <option value="ACTIVE">Activo</option>
           <option value="PAUSED">Pausado</option>
+        </select>
+
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value as SourceType | "all")}
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+        >
+          <option value="all">Origen: Todos</option>
+          <option value="SCRAPED">Scrapeado</option>
+          <option value="MANUAL">Manual</option>
+          <option value="IMPORTED">Importado</option>
         </select>
 
         <div className="flex items-center gap-1.5 ml-auto">
@@ -755,11 +794,24 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                         <p className="font-medium truncate" title={displayName}>
                           {displayName}
                         </p>
-                        {(p.assignedCategory?.name || p.supplierCategory) && (
-                          <p className="text-[10px] text-muted-foreground truncate">
-                            {p.assignedCategory?.name ?? p.supplierCategory}
-                          </p>
-                        )}
+                        <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                          {(() => {
+                            const src = sourceBadgeFor[p.sourceType];
+                            return (
+                              <span
+                                title={src.tooltip}
+                                className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${src.cls} uppercase tracking-wide`}
+                              >
+                                {src.label}
+                              </span>
+                            );
+                          })()}
+                          {(p.assignedCategory?.name || p.supplierCategory) && (
+                            <span className="text-[10px] text-muted-foreground truncate">
+                              {p.assignedCategory?.name ?? p.supplierCategory}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span
