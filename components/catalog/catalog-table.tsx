@@ -22,6 +22,7 @@ import {
   PlayCircle,
   PauseCircle,
   RotateCcw,
+  X,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -433,6 +434,41 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
 
   function notImplemented() {
     toast.info("Próximamente — feature en desarrollo");
+  }
+
+  // Quita manualMargin (devuelve los productos a heredar la regla de pricing).
+  // Confirma sólo para masivas (>1); individual del menú contextual va directo.
+  async function handleClearMargin(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      ids.length > 1 &&
+      !window.confirm(
+        `¿Quitar margen manual de ${ids.length} producto${ids.length > 1 ? "s" : ""}? Volverán a heredar la regla de pricing activa.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, action: "clear_margin" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { updated } = (await res.json()) as { updated: number };
+      toast.success(
+        ids.length === 1
+          ? "Margen manual quitado"
+          : `Margen manual quitado de ${updated} producto${updated !== 1 ? "s" : ""}`
+      );
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   // Sticky positions (igual estructura que /changes)
@@ -883,6 +919,18 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                             >
                               <PauseCircle className="w-3 h-3" /> Pausar
                             </button>
+                            {p.manualMargin != null && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContextMenuFor(null);
+                                  handleClearMargin([p.id]);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2"
+                              >
+                                <X className="w-3 h-3" /> Quitar margen manual
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled
@@ -1069,6 +1117,13 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <Tag className="w-3.5 h-3.5" /> Aplicar margen
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearMargin(Array.from(selectedIds))}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+              >
+                <X className="w-3.5 h-3.5" /> Quitar margen
               </button>
             </div>
           </div>

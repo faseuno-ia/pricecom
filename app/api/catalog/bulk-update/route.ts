@@ -8,7 +8,14 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
-const ACTIONS = ["archive", "ignore", "restore", "prepare", "pause"] as const;
+const STATUS_ACTIONS = [
+  "archive",
+  "ignore",
+  "restore",
+  "prepare",
+  "pause",
+] as const;
+const ACTIONS = [...STATUS_ACTIONS, "clear_margin"] as const;
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).min(1).max(1000),
@@ -18,7 +25,7 @@ const bodySchema = z.object({
 // Mapeo acción → cambios en CatalogProduct.
 // `restore` reactiva el producto desde un estado terminal (ARCHIVED/IGNORED).
 const actionMap: Record<
-  (typeof ACTIONS)[number],
+  (typeof STATUS_ACTIONS)[number],
   {
     supplierStatus?: CatalogProductStatus;
     internalStatus: InternalPublicationStatus;
@@ -49,6 +56,16 @@ export async function POST(req: NextRequest) {
   }
 
   const { productIds, action } = parsed.data;
+
+  // clear_margin: solo limpia el margen manual, no toca estados.
+  if (action === "clear_margin") {
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      data: { manualMargin: null },
+    });
+    return NextResponse.json({ updated: result.count });
+  }
+
   const changes = actionMap[action];
 
   // Solo updateamos los campos que la acción cambia (no sobreescribir
