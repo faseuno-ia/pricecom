@@ -26,8 +26,70 @@ interface ImportReport {
 }
 
 // Aliases tolerantes para los nombres de columna del Excel.
-function pick(row: Record<string, unknown>, ...keys: string[]): string {
-  for (const k of keys) {
+// Cada campo lógico mapea a una lista de posibles nombres de header.
+const COL_ALIASES: Record<string, string[]> = {
+  sku: ["SKU", "sku", "Codigo", "CODIGO", "SKU PROVEEDOR", "COD", "Cod"],
+  publicationSku: [
+    "SKU WEB",
+    "SKU COMERCIAL",
+    "PUBLICATION SKU",
+    "publicationSku",
+  ],
+  name: [
+    "Nombre",
+    "NOMBRE",
+    "nombre",
+    "DESCRIPCION",
+    "Descripcion",
+    "DESCRIPCIÓN",
+    "Descripción",
+    "name",
+  ],
+  cost: [
+    "Costo",
+    "COSTO",
+    "Precio mayorista",
+    "PRECIO MAYORISTA",
+    "PRECIO WEB (MAYORISTA)",
+    "COSTO PROVEEDOR",
+    "Costo mayorista",
+    "costo",
+  ],
+  margin: [
+    "Margen",
+    "MARGEN",
+    "Margen %",
+    "MARGEN %",
+    "MARGEN WEB %",
+    "MARGEN WEB",
+    "margen",
+    "margin",
+  ],
+  finalPrice: [
+    "Precio final",
+    "PRECIO FINAL",
+    "Precio venta",
+    "PRECIO VENTA",
+    "PRECIO WEB",
+    "finalPrice",
+  ],
+  stock: ["Stock", "STOCK", "stock", "Cantidad", "CANTIDAD"],
+  category: ["Categoria", "CATEGORIA", "Categoría", "CATEGORÍA", "category"],
+  imageUrl: [
+    "Imagen",
+    "IMAGEN",
+    "imagen",
+    "Imagen URL",
+    "IMAGEN URL",
+    "LINK FOTO",
+    "imageUrl",
+    "foto",
+    "FOTO",
+  ],
+};
+
+function pickField(row: Record<string, unknown>, field: keyof typeof COL_ALIASES): string {
+  for (const k of COL_ALIASES[field]) {
     const v = row[k];
     if (v != null && String(v).trim() !== "") return String(v).trim();
   }
@@ -122,29 +184,46 @@ export async function POST(req: NextRequest) {
     const r = rows[i];
     const rowNum = i + 2; // +1 por header, +1 base-1
     try {
-      const sku = pick(r, "SKU", "Sku", "sku", "Código", "Codigo");
-      if (!sku || sku.toUpperCase() === "#N/A") {
+      // SKU: si hay tanto SKU PROVEEDOR como SKU WEB, usamos PROVEEDOR como sku
+      // y WEB como publicationSku (preserva la nomenclatura comercial cargada
+      // por el cliente). Si solo viene SKU, lo usamos para ambos (deriva).
+      const skuProveedor = pickField(r, "sku");
+      const skuWeb = pickField(r, "publicationSku");
+      const sku = skuProveedor || skuWeb;
+
+      // Validar SKU: vacío o literal "0" / "#N/A" / "0.0" → error explícito.
+      if (!sku || /^(0+(\.0+)?|#N\/A)$/i.test(sku)) {
+        report.errors.push({
+          row: rowNum,
+          message: `SKU inválido o ausente${sku ? ` ("${sku}")` : ""}`,
+        });
         report.skipped++;
         continue;
       }
-      const name = pick(r, "Nombre", "NOMBRE", "name", "Descripción", "DESCRIPCION");
+
+      const name = pickField(r, "name");
       if (!name) {
         report.errors.push({ row: rowNum, sku, message: "Falta nombre" });
         report.skipped++;
         continue;
       }
-      const description = pick(r, "Descripción", "DESCRIPCION", "description");
-      const costRaw = pick(r, "Costo", "COSTO", "wholesalePrice", "Precio Mayorista");
-      const marginRaw = pick(r, "Margen", "MARGEN", "marginPercent", "MARGEN WEB %");
-      const finalPriceRaw = pick(r, "Precio Final", "FinalPrice", "Precio");
-      const stock = pick(r, "Stock", "STOCK", "stock");
-      const categoryRaw = pick(r, "Categoría", "Categoria", "CATEGORIA", "category");
-      const imageUrl = pick(r, "Imagen URL", "Imagen", "IMAGEN", "image", "LINK FOTO");
+
+      const costRaw = pickField(r, "cost");
+      const marginRaw = pickField(r, "margin");
+      const finalPriceRaw = pickField(r, "finalPrice");
+      const stock = pickField(r, "stock");
+      const categoryRaw = pickField(r, "category");
+      const imageUrl = pickField(r, "imageUrl");
 
       const wholesalePrice = parseNumber(costRaw);
       const manualMargin = parseMargin(marginRaw);
       const finalPrice = parseNumber(finalPriceRaw);
-      const publicationSku = buildPublicationSku(prefix, sku);
+      // Si el Excel trae SKU WEB explícito lo respetamos; si no, derivamos del
+      // prefijo del proveedor.
+      const publicationSku = skuWeb || buildPublicationSku(prefix, sku);
+      // description: en estos archivos la "descripción" suele estar en NOMBRE/
+      // DESCRIPCION (que ya usamos como name). Por ahora no separamos.
+      const description = "";
 
       let assignedCategoryId: string | null = null;
       if (categoryRaw) {
