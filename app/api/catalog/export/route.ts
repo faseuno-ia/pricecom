@@ -154,7 +154,8 @@ export async function POST(req: NextRequest) {
   });
 
   sheet.columns = [
-    { header: "SKU", key: "sku", width: 18 },
+    { header: "SKU Comercial", key: "publicationSku", width: 18 },
+    { header: "SKU Proveedor", key: "sku", width: 18 },
     { header: "Título comercial", key: "commercialTitle", width: 40 },
     { header: "Nombre proveedor", key: "supplierName", width: 40 },
     { header: "Proveedor", key: "providerName", width: 20 },
@@ -192,6 +193,7 @@ export async function POST(req: NextRequest) {
         : null;
 
     const row = sheet.addRow({
+      publicationSku: p.publicationSku ?? p.sku ?? "",
       sku: p.sku ?? "",
       commercialTitle: p.commercialTitle ?? "",
       supplierName: p.supplierName,
@@ -225,7 +227,7 @@ export async function POST(req: NextRequest) {
   sheet.getColumn("finalPrice").numFmt = '"$"#,##0.00';
   sheet.getColumn("marginPct").numFmt = "0.0";
 
-  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 14 } };
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 15 } };
 
   const buffer = await wb.xlsx.writeBuffer();
   const filename = `catalogo-pricecom-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;
