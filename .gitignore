@@ -20,6 +20,9 @@ tsconfig.tsbuildinfo
 public/exports/
 /exports/
 
+# Datos privados del cliente — Excel fuente que no debe versionarse
+scripts/*.xlsx
+
 # Claude Code (estado local de la herramienta)
 /.claude/
 

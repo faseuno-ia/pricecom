@@ -2,6 +2,7 @@
 // worker (tsx) además de Next.js, y el alias `@` puede no resolver en tsx.
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
+import { buildPublicationSku } from "./publication-sku";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -50,6 +51,15 @@ export async function upsertCatalogProducts(
   const providerId = job.providerId;
   const lastSeenAt = new Date();
 
+  // Prefijo comercial del proveedor (vive en scraperConfig.imageFilenamePrefix
+  // — el mismo valor se usa para nombres de archivo de imágenes y para el
+  // publicationSku). Si no está configurado, publicationSku === sku.
+  const scraperConfig = await prismaClient.providerScraperConfig.findUnique({
+    where: { providerId },
+    select: { imageFilenamePrefix: true },
+  });
+  const publicationPrefix = scraperConfig?.imageFilenamePrefix ?? null;
+
   for (const product of job.products) {
     const identity = identityKey({
       sku: product.sku,
@@ -59,6 +69,8 @@ export async function upsertCatalogProducts(
     });
 
     // Datos que el worker puede actualizar (siempre supplier*, nunca comerciales).
+    // publicationSku se deriva auto: prefix + sku original. El sku original NO se
+    // sobrescribe.
     const supplierData = {
       supplierName: product.name,
       supplierDescription: product.description ?? null,
@@ -68,6 +80,7 @@ export async function upsertCatalogProducts(
       supplierCategory: product.category ?? null,
       imageUrl: product.imageUrl ?? null,
       productUrl: product.productUrl ?? null,
+      publicationSku: buildPublicationSku(publicationPrefix, identity.sku),
       lastSeenAt,
       supplierStatus: "ACTIVE" as const,
       latestExtractedProductId: product.id,
