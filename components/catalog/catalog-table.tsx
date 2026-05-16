@@ -54,6 +54,7 @@ interface CatalogRow {
   publications: { status: string; storeId: string; externalProductId: string | null }[];
   pricing?: {
     calculatedPrice: number | null;
+    effectivePrice: number | null;
     marginPercent: number | null;
     ruleApplied: "manual" | "category" | "provider" | "global" | "none";
     ruleName: string | null;
@@ -92,40 +93,47 @@ function formatPriceCompact(p: number | null | undefined): string {
   }).format(p);
 }
 
-// Precio de venta a mostrar: finalPrice si está, sino wholesalePrice + margen.
-function effectivePrice(p: CatalogRow): number | null {
-  if (p.finalPrice != null) return p.finalPrice;
-  if (p.manualPrice != null) return p.manualPrice;
-  if (p.wholesalePrice != null && p.manualMargin != null) {
-    return p.wholesalePrice * (1 + p.manualMargin / 100);
-  }
-  return null;
+// Margen efectivo: el del motor (cuando hay regla) o el real derivado del
+// effectivePrice cuando hay override sin regla aplicable.
+function effectiveMargin(p: CatalogRow): number | null {
+  if (p.pricing?.marginPercent != null) return p.pricing.marginPercent;
+  const eff = p.pricing?.effectivePrice ?? null;
+  if (eff == null || p.wholesalePrice == null || p.wholesalePrice <= 0) return null;
+  return ((eff - p.wholesalePrice) / p.wholesalePrice) * 100;
 }
 
-function marginPercent(p: CatalogRow): number | null {
-  const sell = effectivePrice(p);
-  if (sell == null || p.wholesalePrice == null || p.wholesalePrice <= 0) return null;
-  return ((sell - p.wholesalePrice) / p.wholesalePrice) * 100;
-}
+type RuleOrigin = "manual" | "category" | "provider" | "global" | "none";
 
-function marginBadge(margin: number | null): { label: string; cls: string } | null {
-  if (margin == null) return null;
-  const rounded = Math.round(margin);
-  if (margin >= 30)
-    return {
-      label: `${rounded}%`,
-      cls: "bg-green-500/15 text-green-300 border-green-500/30",
-    };
-  if (margin >= 15)
-    return {
-      label: `${rounded}%`,
-      cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-    };
-  return {
-    label: `${rounded}%`,
-    cls: "bg-red-500/15 text-red-300 border-red-500/30",
-  };
-}
+const originMeta: Record<
+  RuleOrigin,
+  { label: string; cls: string; tooltip: string }
+> = {
+  manual: {
+    label: "Manual",
+    cls: "bg-violet-500/15 text-violet-300 border-violet-500/30",
+    tooltip: "Margen manual cargado en el producto",
+  },
+  category: {
+    label: "Categoría",
+    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    tooltip: "Regla aplicada por categoría",
+  },
+  provider: {
+    label: "Proveedor",
+    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    tooltip: "Regla aplicada por proveedor",
+  },
+  global: {
+    label: "Global",
+    cls: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+    tooltip: "Regla global por defecto",
+  },
+  none: {
+    label: "—",
+    cls: "bg-muted/40 text-muted-foreground border-border",
+    tooltip: "Sin regla aplicable (falta costo o regla activa)",
+  },
+};
 
 const supplierBadgeFor: Record<SupplierStatus, { label: string; cls: string }> = {
   ACTIVE: { label: "Activo", cls: "bg-accent/15 text-accent border-accent/30" },
@@ -587,13 +595,25 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 90 }}>
                   Costo
                 </th>
-                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 100 }}>
-                  Pr. venta
+                <th
+                  className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
+                  style={{ minWidth: 120 }}
+                  title="Precio efectivo de venta. Si hay override manual, prevalece sobre el sugerido."
+                >
+                  Precio final
                 </th>
-                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 100 }}>
-                  Pr. calc.
+                <th
+                  className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
+                  style={{ minWidth: 130 }}
+                  title="Precio sugerido por el motor según la regla aplicable (manual, categoría, proveedor o global)."
+                >
+                  Precio sugerido
                 </th>
-                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
+                <th
+                  className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
+                  style={{ minWidth: 100 }}
+                  title="Margen efectivo sobre el costo. El color indica el origen de la regla."
+                >
                   Margen
                 </th>
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap" style={{ minWidth: 70 }}>
@@ -629,27 +649,32 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
               )}
               {!loading &&
                 data.products.map((p) => {
-                  const margin = marginPercent(p);
-                  const marginB = marginBadge(margin);
                   const sBadge = supplierBadgeFor[p.supplierStatus];
                   const iBadge = internalBadgeFor[p.internalStatus];
-                  // Precio calculado: lo computa el motor de pricing en el server
-                  // y viene como `p.pricing`. Si no hay regla aplicable → null.
+                  // Pricing del motor (resuelto en el server).
                   const calcPrice = p.pricing?.calculatedPrice ?? null;
-                  const ruleApplied = p.pricing?.ruleApplied ?? "none";
-                  const ruleTooltip =
-                    ruleApplied === "none"
-                      ? "Sin regla aplicable (falta costo o regla)"
-                      : ruleApplied === "manual"
-                        ? `Margen manual: ${p.pricing?.marginPercent}%`
-                        : `Regla ${ruleApplied}: ${p.pricing?.ruleName ?? "?"} (${p.pricing?.marginPercent}%)`;
+                  const effPrice = p.pricing?.effectivePrice ?? null;
+                  const origin: RuleOrigin = p.pricing?.ruleApplied ?? "none";
+                  const originInfo = originMeta[origin];
+                  const enginePct = p.pricing?.marginPercent ?? null;
+                  // Override manual: el usuario fijó finalPrice y difiere del sugerido.
+                  const hasManualOverride =
+                    p.finalPrice != null &&
+                    calcPrice != null &&
+                    Math.abs(p.finalPrice - calcPrice) > 0.005;
+                  const suggestedTooltip =
+                    origin === "none"
+                      ? originInfo.tooltip
+                      : `${originInfo.tooltip}${
+                          p.pricing?.ruleName ? ` — ${p.pricing.ruleName}` : ""
+                        }${enginePct != null ? ` (${enginePct}%)` : ""}`;
+                  const effMargin = effectiveMargin(p);
                   const displayName = p.commercialTitle?.trim() || p.supplierName;
                   // Link href: URL original (puede ser http://) — el navegador permite navegar.
                   // Img src: normalizado a https:// para evitar mixed content inline.
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);
-                  const sellPrice = effectivePrice(p);
                   return (
                     <tr
                       key={p.id}
@@ -713,22 +738,69 @@ export function CatalogTable({ providers, initialProviderId }: Props) {
                       <td className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap">
                         {formatPriceCompact(p.wholesalePrice)}
                       </td>
-                      <td className="px-3 py-2 font-mono whitespace-nowrap">
-                        {formatPriceCompact(sellPrice)}
+                      <td
+                        className="px-3 py-2 whitespace-nowrap"
+                        title={
+                          hasManualOverride
+                            ? `Override manual. Sugerido: ${formatPriceCompact(
+                                calcPrice
+                              )}`
+                            : "Precio efectivo de venta"
+                        }
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-semibold text-foreground">
+                            {formatPriceCompact(effPrice)}
+                          </span>
+                          {hasManualOverride && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-violet-500/15 text-violet-300 border-violet-500/30 uppercase tracking-wide">
+                              Manual
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td
-                        className="px-3 py-2 font-mono text-muted-foreground whitespace-nowrap"
-                        title={ruleTooltip}
+                        className="px-3 py-2 whitespace-nowrap"
+                        title={suggestedTooltip}
                       >
-                        {formatPriceCompact(calcPrice)}
+                        <div className="flex flex-col leading-tight">
+                          <span className="font-mono text-muted-foreground">
+                            {formatPriceCompact(calcPrice)}
+                          </span>
+                          {origin !== "none" && (
+                            <span
+                              className={`mt-0.5 inline-flex items-center gap-1 text-[9px] uppercase tracking-wide font-medium ${
+                                origin === "manual"
+                                  ? "text-violet-300/80"
+                                  : origin === "category"
+                                    ? "text-emerald-300/80"
+                                    : origin === "provider"
+                                      ? "text-amber-300/80"
+                                      : "text-zinc-300/80"
+                              }`}
+                            >
+                              {originInfo.label}
+                              {enginePct != null && (
+                                <span className="opacity-80">
+                                  · {Math.round(enginePct)}%
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {marginB ? (
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${marginB.cls}`}>
-                            {marginB.label}
+                        {effMargin != null ? (
+                          <span
+                            title={originInfo.tooltip}
+                            className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${originInfo.cls}`}
+                          >
+                            {Math.round(effMargin)}%
                           </span>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground" title={originInfo.tooltip}>
+                            —
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">

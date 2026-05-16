@@ -148,6 +148,7 @@ export async function GET(req: NextRequest) {
       {
         wholesalePrice: p.wholesalePrice,
         manualMargin: p.manualMargin,
+        finalPrice: p.finalPrice,
         assignedCategoryId: p.assignedCategoryId,
         providerId: p.providerId,
       },

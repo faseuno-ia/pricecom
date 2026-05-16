@@ -41,6 +41,7 @@ export interface CatalogProductDetail {
   publications: { status: string; storeId: string }[];
   pricing?: {
     calculatedPrice: number | null;
+    effectivePrice: number | null;
     marginPercent: number | null;
     ruleApplied: "manual" | "category" | "provider" | "global" | "none";
     ruleName: string | null;
@@ -48,12 +49,30 @@ export interface CatalogProductDetail {
   };
 }
 
-const ruleAppliedLabel: Record<string, string> = {
-  manual: "Margen manual",
-  category: "Regla por categoría",
-  provider: "Regla por proveedor",
-  global: "Regla global",
-  none: "Sin regla",
+const ruleAppliedMeta: Record<
+  "manual" | "category" | "provider" | "global" | "none",
+  { label: string; cls: string }
+> = {
+  manual: {
+    label: "Margen manual",
+    cls: "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  },
+  category: {
+    label: "Regla por categoría",
+    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  },
+  provider: {
+    label: "Regla por proveedor",
+    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  },
+  global: {
+    label: "Regla global",
+    cls: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+  },
+  none: {
+    label: "Sin regla",
+    cls: "bg-muted/40 text-muted-foreground border-border",
+  },
 };
 
 interface Props {
@@ -309,49 +328,93 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
               )}
             </section>
 
-            {/* Pricing — calculado por el motor con costo + regla aplicable */}
+            {/* Pricing — costo, precio sugerido por el motor y precio final
+                efectivo (con override visible si aplica). */}
             <section className="space-y-2 border-t border-border pt-4">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
                 Pricing
               </p>
-              <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Costo mayorista</span>
-                  <span className="font-mono">
-                    {product.wholesalePrice != null
-                      ? formatPrice(product.wholesalePrice)
-                      : "—"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Margen aplicado</span>
-                  <span>
-                    {product.pricing?.marginPercent != null
-                      ? `${product.pricing.marginPercent}% · ${ruleAppliedLabel[product.pricing.ruleApplied] ?? "?"}`
-                      : "—"}
-                  </span>
-                </div>
-                {product.pricing?.ruleName && product.pricing.ruleApplied !== "manual" && (
-                  <div className="flex items-center justify-between text-[10px] text-muted-foreground/80">
-                    <span>Regla</span>
-                    <span>{product.pricing.ruleName}</span>
+              {(() => {
+                const calc = product.pricing?.calculatedPrice ?? null;
+                const eff = product.pricing?.effectivePrice ?? null;
+                const origin = product.pricing?.ruleApplied ?? "none";
+                const originInfo = ruleAppliedMeta[origin];
+                const enginePct = product.pricing?.marginPercent ?? null;
+                const hasOverride =
+                  product.finalPrice != null &&
+                  calc != null &&
+                  Math.abs(product.finalPrice - calc) > 0.005;
+                return (
+                  <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-2 text-xs">
+                    {/* Costo */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Costo mayorista</span>
+                      <span className="font-mono">
+                        {product.wholesalePrice != null
+                          ? formatPrice(product.wholesalePrice)
+                          : "—"}
+                      </span>
+                    </div>
+
+                    {/* Precio sugerido (motor) */}
+                    <div className="pt-2 border-t border-border space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Precio sugerido
+                        </span>
+                        <span className="font-mono">
+                          {calc != null ? formatPrice(calc) : "—"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-muted-foreground/80">
+                          Origen
+                        </span>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${originInfo.cls}`}
+                        >
+                          {originInfo.label}
+                          {enginePct != null ? ` · ${enginePct}%` : ""}
+                        </span>
+                      </div>
+                      {product.pricing?.ruleName &&
+                        origin !== "manual" &&
+                        origin !== "none" && (
+                          <div className="flex items-center justify-between text-[10px] text-muted-foreground/70">
+                            <span>Regla</span>
+                            <span>{product.pricing.ruleName}</span>
+                          </div>
+                        )}
+                    </div>
+
+                    {/* Precio final efectivo (lo que el cliente paga) */}
+                    <div className="pt-2 border-t border-border">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Precio final
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {hasOverride && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-violet-500/15 text-violet-300 border-violet-500/30 uppercase tracking-wide">
+                              Override manual
+                            </span>
+                          )}
+                          <span className="font-mono text-base font-semibold text-accent">
+                            {eff != null ? formatPrice(eff) : "—"}
+                          </span>
+                        </div>
+                      </div>
+                      {hasOverride && (
+                        <p className="text-[10px] text-muted-foreground/70 mt-1 text-right">
+                          Difiere del sugerido (
+                          {formatPrice(calc as number)}) por override del
+                          usuario.
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )}
-                <div className="flex items-center justify-between pt-1.5 border-t border-border">
-                  <span className="text-muted-foreground">Precio calculado</span>
-                  <span className="font-mono text-base font-semibold text-accent">
-                    {product.pricing?.calculatedPrice != null
-                      ? formatPrice(product.pricing.calculatedPrice)
-                      : "—"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Precio final (override)</span>
-                  <span className="font-mono">
-                    {product.finalPrice != null ? formatPrice(product.finalPrice) : "—"}
-                  </span>
-                </div>
-              </div>
+                );
+              })()}
             </section>
 
             {/* Datos comerciales (editables) */}

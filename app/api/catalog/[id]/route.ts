@@ -56,6 +56,7 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
     {
       wholesalePrice: product.wholesalePrice,
       manualMargin: product.manualMargin,
+      finalPrice: product.finalPrice,
       assignedCategoryId: product.assignedCategoryId,
       providerId: product.providerId,
     },
