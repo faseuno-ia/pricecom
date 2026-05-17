@@ -284,6 +284,16 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
 
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
 
+  // Restaurar solo aplica a productos IGNORED. En la barra masiva, ocultamos
+  // el botón cuando no hay ninguno seleccionado en ese estado.
+  const hasIgnoredInSelection = useMemo(
+    () =>
+      data.products.some(
+        (p) => selectedIds.has(p.id) && p.internalStatus === "IGNORED"
+      ),
+    [data.products, selectedIds]
+  );
+
   const visibleIds = useMemo(() => data.products.map((p) => p.id), [data.products]);
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
@@ -1221,13 +1231,16 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
               >
                 <Ban className="w-3.5 h-3.5" /> Ignorar
               </button>
-              <button
-                type="button"
-                onClick={() => handleBulkAction("restore")}
-                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
-              >
-                <RotateCcw className="w-3.5 h-3.5" /> Restaurar
-              </button>
+              {hasIgnoredInSelection && (
+                <button
+                  type="button"
+                  onClick={() => handleBulkAction("restore")}
+                  className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+                  title="Solo aplica a productos IGNORED"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Restaurar
+                </button>
+              )}
               <button
                 type="button"
                 disabled
