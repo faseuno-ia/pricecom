@@ -119,3 +119,39 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   return NextResponse.json(updated);
 }
+
+// DELETE: solo permitido para productos del stock propio (providerType=OWN_STOCK).
+// Los productos scrapeados/importados no se borran a mano — se gestionan con
+// supplierStatus / internalStatus.
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const session = await requireSession();
+
+  const product = await prisma.catalogProduct.findFirst({
+    where: { id: params.id, userId: session.user.id },
+    include: { provider: { select: { providerType: true } } },
+  });
+
+  if (!product) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  if (product.provider.providerType !== "OWN_STOCK") {
+    return NextResponse.json(
+      { error: "Solo se pueden eliminar productos del stock propio" },
+      { status: 400 }
+    );
+  }
+
+  // CatalogProductImage tiene onDelete: Cascade, pero somos explícitos para
+  // que sea obvio si en el futuro alguien cambia esa relación.
+  await prisma.catalogProductImage.deleteMany({
+    where: { catalogProductId: params.id },
+  });
+
+  await prisma.catalogProduct.delete({ where: { id: params.id } });
+
+  return NextResponse.json({ deleted: true });
+}

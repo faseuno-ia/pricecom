@@ -24,6 +24,7 @@ import {
   X,
   Clock,
   Copy,
+  Trash2,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -54,7 +55,12 @@ interface CatalogRow {
   internalStatus: InternalStatus;
   sourceType: SourceType;
   stockSource: StockSource;
-  provider: { id: string; name: string; baseUrl: string };
+  provider: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    providerType: "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+  };
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
   publications: { status: string; storeId: string; externalProductId: string | null }[];
@@ -481,6 +487,29 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
 
   function notImplemented() {
     toast.info("Próximamente — feature en desarrollo");
+  }
+
+  // Elimina un producto del catálogo. Solo permitido para OWN_STOCK; el server
+  // valida providerType y devuelve 400 si no aplica.
+  async function handleDeleteOwnStock(id: string) {
+    if (
+      !window.confirm(
+        "¿Eliminar este producto del stock propio? Esta acción no se puede deshacer."
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/catalog/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      toast.success("Producto eliminado del stock propio");
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   // Copia productos al proveedor virtual "Mi stock" (OWN_STOCK). Idempotente
@@ -1130,6 +1159,22 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                                 >
                                   <Copy className="w-3 h-3" /> Copiar a stock
                                   propio
+                                </button>
+                              </>
+                            )}
+                            {p.provider.providerType === "OWN_STOCK" && (
+                              <>
+                                <div className="border-t border-border my-1" />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setContextMenuFor(null);
+                                    handleDeleteOwnStock(p.id);
+                                  }}
+                                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-red-500/10 flex items-center gap-2 text-red-400"
+                                >
+                                  <Trash2 className="w-3 h-3" /> Eliminar del
+                                  stock propio
                                 </button>
                               </>
                             )}

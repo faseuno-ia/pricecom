@@ -138,7 +138,9 @@ export async function GET(req: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
       include: {
-        provider: { select: { id: true, name: true, baseUrl: true } },
+        provider: {
+          select: { id: true, name: true, baseUrl: true, providerType: true },
+        },
         // isPrimary primero (si está marcada), luego por posición. Cubre el caso
         // en que la imagen primaria no es la de menor `position`.
         images: {
