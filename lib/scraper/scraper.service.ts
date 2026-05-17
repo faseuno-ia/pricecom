@@ -43,6 +43,17 @@ const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2}
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
 const STOCK_LABELS = /(?:stock|disponible|sin\s+stock|unidades|cantidad|existencia)/i;
 
+// Filtra valores de stock que en realidad son texto de un CTA (ej: el
+// stockSelector configurado de Toys Palace apunta a un botón "Agregar al
+// carrito"). Si encontramos alguna palabra de acción, descartamos el valor.
+function cleanStock(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  if (/agregar|carrito|comprar|ver/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 // Tienda Nube (y otros lazy-loaders) usan data:image/gif;base64,... como placeholder en src.
 // El valor existe pero no es la URL real, así que hay que descartarlo en cada paso del fallback.
 function isValidImageUrl(url: string | undefined): boolean {
@@ -553,12 +564,15 @@ export class ScraperService {
       if (oldEl.length) oldPrice = parsePrice(oldEl.text());
     }
 
-    // Stock
-    let stock = get(config?.stockSelector);
+    // Stock — cleanStock descarta texto de CTAs como "Agregar al carrito".
+    let stock = cleanStock(get(config?.stockSelector));
     if (!stock) {
       card.find("*").each((_, el) => {
         const text = $(el).text().trim();
-        if (STOCK_LABELS.test(text) && text.length < 60) { stock = text; return false; }
+        if (STOCK_LABELS.test(text) && text.length < 60) {
+          const cleaned = cleanStock(text);
+          if (cleaned) { stock = cleaned; return false; }
+        }
       });
     }
 
