@@ -6,10 +6,13 @@ export const metadata = {
   title: "Catálogo — PricEcom",
 };
 
+type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
+const VALID_SOURCE: SourceType[] = ["SCRAPED", "MANUAL", "IMPORTED"];
+
 export default async function CatalogPage({
   searchParams,
 }: {
-  searchParams: { providerId?: string };
+  searchParams: { providerId?: string; sourceType?: string };
 }) {
   const session = await requireSession();
 
@@ -19,10 +22,16 @@ export default async function CatalogPage({
     select: { id: true, name: true },
   });
 
+  const initialSourceType =
+    searchParams.sourceType && VALID_SOURCE.includes(searchParams.sourceType as SourceType)
+      ? (searchParams.sourceType as SourceType)
+      : null;
+
   return (
     <CatalogTable
       providers={providers}
       initialProviderId={searchParams.providerId ?? null}
+      initialSourceType={initialSourceType}
     />
   );
 }

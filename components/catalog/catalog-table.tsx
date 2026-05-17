@@ -69,6 +69,7 @@ interface CatalogRow {
 interface Props {
   providers: { id: string; name: string }[];
   initialProviderId: string | null;
+  initialSourceType?: SourceType | null;
 }
 
 const providerPalette = [
@@ -174,13 +175,15 @@ const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> =
   },
 };
 
-export function CatalogTable({ providers, initialProviderId }: Props) {
+export function CatalogTable({ providers, initialProviderId, initialSourceType }: Props) {
   const [search, setSearch] = useState("");
   const [providerId, setProviderId] = useState<string>(initialProviderId ?? "all");
   const [supplierStatus, setSupplierStatus] = useState<SupplierStatus | "all">("all");
   const [internalStatus, setInternalStatus] = useState<InternalStatus | "all">("all");
   const [pubFilter, setPubFilter] = useState<PubStatusFilter>("ALL");
-  const [sourceFilter, setSourceFilter] = useState<SourceType | "all">("all");
+  const [sourceFilter, setSourceFilter] = useState<SourceType | "all">(
+    initialSourceType ?? "all"
+  );
   const [noImage, setNoImage] = useState(false);
   const [noCategory, setNoCategory] = useState(false);
   const [page, setPage] = useState(1);

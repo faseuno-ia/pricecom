@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Loader2, Upload, FileSpreadsheet } from "lucide-react";
+import { Loader2, Upload, FileSpreadsheet, BookOpen } from "lucide-react";
 
 type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED";
 
@@ -184,6 +185,15 @@ export function CatalogImportForm({ providers, initialProviderId }: Props) {
           <div className="text-[10px] text-muted-foreground/70 font-mono pt-1 border-t border-border">
             batch: {report.importBatchId}
           </div>
+          {(report.created > 0 || report.updated > 0) && (
+            <Link
+              href={`/catalog?providerId=${providerId}&sourceType=IMPORTED`}
+              className="inline-flex items-center gap-2 bg-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-accent/90 transition-colors mt-2"
+            >
+              <BookOpen className="w-4 h-4" />
+              Ver productos importados
+            </Link>
+          )}
           {report.errors.length > 0 && (
             <details className="mt-2">
               <summary className="cursor-pointer text-red-400">
