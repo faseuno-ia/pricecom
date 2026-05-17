@@ -124,8 +124,15 @@ export default async function ProviderDashboardPage({
         where: {
           providerId: provider.id,
           userId: session.user.id,
-          supplierStatus: "ACTIVE",
-          internalStatus: { not: "IGNORED" },
+          NOT: [
+            { internalStatus: "IGNORED" },
+            {
+              AND: [
+                { supplierStatus: "SUPPLIER_REMOVED" },
+                { stockSource: "SUPPLIER" },
+              ],
+            },
+          ],
         },
       });
 

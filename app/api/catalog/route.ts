@@ -56,12 +56,24 @@ export async function GET(req: NextRequest) {
     userId: session.user.id,
   };
 
-  // Por defecto ocultamos productos removidos por proveedor e ignorados, salvo
-  // que el usuario haya activado el toggle showRemovedIgnored, o haya pedido
-  // explícitamente uno de esos estados desde el dropdown de filtro.
+  // Por defecto ocultamos:
+  //   - productos ignorados (acción del usuario)
+  //   - productos removidos por proveedor SOLO si dependen del proveedor
+  //     (stockSource=SUPPLIER). OWN/HYBRID sobreviven y siguen visibles.
+  // Si el usuario activa showRemovedIgnored, vemos todo. Si pide explícitamente
+  // un supplierStatus o internalStatus desde el dropdown, respetamos esa elección.
   if (!showRemovedIgnored) {
-    if (!supplierStatusParam) where.supplierStatus = "ACTIVE";
-    if (!internalStatusParam) where.internalStatus = { not: "IGNORED" };
+    const notClauses: Prisma.CatalogProductWhereInput[] = [];
+    if (!internalStatusParam) notClauses.push({ internalStatus: "IGNORED" });
+    if (!supplierStatusParam) {
+      notClauses.push({
+        AND: [
+          { supplierStatus: "SUPPLIER_REMOVED" },
+          { stockSource: "SUPPLIER" },
+        ],
+      });
+    }
+    if (notClauses.length > 0) where.NOT = notClauses;
   }
 
   if (providerId) where.providerId = providerId;

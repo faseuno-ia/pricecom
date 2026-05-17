@@ -54,12 +54,19 @@ export default async function ProvidersPage() {
       _count: {
         select: {
           extractionJobs: true,
-          // Solo productos activos y no ignorados — los conteos en cards
-          // deben reflejar el catálogo "usable".
+          // Conteo "usable": excluye ignorados y excluye removidos por proveedor
+          // **solo** cuando dependen del proveedor. OWN/HYBRID sobreviven.
           catalogProducts: {
             where: {
-              supplierStatus: "ACTIVE",
-              internalStatus: { not: "IGNORED" },
+              NOT: [
+                { internalStatus: "IGNORED" },
+                {
+                  AND: [
+                    { supplierStatus: "SUPPLIER_REMOVED" },
+                    { stockSource: "SUPPLIER" },
+                  ],
+                },
+              ],
             },
           },
         },

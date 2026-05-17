@@ -27,6 +27,7 @@ export interface CatalogProductDetail {
   imageUrl: string | null;
   lastSeenAt: string;
   supplierStatus: "ACTIVE" | "SUPPLIER_REMOVED";
+  stockSource: "SUPPLIER" | "OWN" | "HYBRID";
   commercialTitle: string | null;
   commercialName: string | null;
   commercialDescription: string | null;
@@ -48,6 +49,29 @@ export interface CatalogProductDetail {
     ruleId: string | null;
   };
 }
+
+const stockSourceMeta: Record<
+  "SUPPLIER" | "OWN" | "HYBRID",
+  { label: string; cls: string; description: string }
+> = {
+  SUPPLIER: {
+    label: "Stock del proveedor",
+    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+    description:
+      "Dependemos del proveedor. Si lo remueven, la publicación se pausa.",
+  },
+  OWN: {
+    label: "Stock propio",
+    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    description:
+      "El cliente tiene este producto físicamente. Sobrevive a SUPPLIER_REMOVED.",
+  },
+  HYBRID: {
+    label: "Stock híbrido",
+    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    description: "Mix de stock propio y del proveedor. No se auto-pausa.",
+  },
+};
 
 const ruleAppliedMeta: Record<
   "manual" | "category" | "provider" | "global" | "none",
@@ -269,6 +293,27 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
                 Datos del proveedor
               </p>
+              {(() => {
+                const ss = stockSourceMeta[product.stockSource];
+                return (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      title={ss.description}
+                      className={`inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border font-medium ${ss.cls}`}
+                    >
+                      {ss.label}
+                    </span>
+                    {product.supplierStatus === "SUPPLIER_REMOVED" && (
+                      <span
+                        title="Este producto ya no aparece en el proveedor. La publicación puede pausarse automáticamente según el origen del stock."
+                        className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border font-medium bg-red-500/15 text-red-300 border-red-500/30"
+                      >
+                        Removido por proveedor
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="space-y-1 text-xs">
                 <p>
                   <span className="text-muted-foreground">Proveedor:</span>{" "}

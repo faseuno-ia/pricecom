@@ -45,13 +45,21 @@ async function getDashboardStats(userId: string) {
   ] = await Promise.all([
     prisma.provider.count({ where: { userId, isActive: true } }),
     prisma.provider.count({ where: { userId } }),
-    // Catálogo activo del usuario: excluimos productos removidos por el proveedor
-    // y los que el usuario marcó como ignorados.
+    // Catálogo activo del usuario: excluimos los que el usuario marcó como
+    // ignorados, y los SUPPLIER_REMOVED **solo cuando** dependen del proveedor
+    // (stockSource=SUPPLIER). Los OWN/HYBRID sobreviven a SUPPLIER_REMOVED.
     prisma.catalogProduct.count({
       where: {
         userId,
-        supplierStatus: "ACTIVE",
-        internalStatus: { not: "IGNORED" },
+        NOT: [
+          { internalStatus: "IGNORED" },
+          {
+            AND: [
+              { supplierStatus: "SUPPLIER_REMOVED" },
+              { stockSource: "SUPPLIER" },
+            ],
+          },
+        ],
       },
     }),
     prisma.extractionJob.count({

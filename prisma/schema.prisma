@@ -292,6 +292,16 @@ enum CatalogSourceType {
   IMPORTED
 }
 
+/// Origen del stock que se vende.
+///   SUPPLIER → dependemos del proveedor; si lo remueven, deberíamos pausar.
+///   OWN      → el cliente lo tiene físicamente; sobrevive a SUPPLIER_REMOVED.
+///   HYBRID   → mixto (no se auto-pausa).
+enum StockSource {
+  SUPPLIER
+  OWN
+  HYBRID
+}
+
 /// Estado interno del workflow comercial del producto. Independiente de
 /// supplierStatus (que refleja si el scraper lo sigue viendo en el proveedor).
 enum InternalPublicationStatus {
@@ -327,6 +337,18 @@ model CatalogProduct {
   /// Identificador del lote de importación (cuando sourceType=IMPORTED). Útil
   /// para revertir o agrupar lo importado en una sesión.
   importBatchId    String?
+
+  /// Origen del stock. SUPPLIER es lo histórico (default). OWN para productos
+  /// que el cliente tiene físicamente y vende aunque el proveedor desaparezca.
+  /// HYBRID para casos mixtos. Determina si SUPPLIER_REMOVED debe auto-pausar
+  /// la publicación.
+  stockSource            StockSource     @default(SUPPLIER)
+  /// Si este producto fue copiado desde otro CatalogProduct (típicamente para
+  /// migrarlo a stock propio antes de que el proveedor lo dé de baja), apunta
+  /// al original. Self-relation.
+  sourceCatalogProductId String?
+  sourceCatalogProduct   CatalogProduct? @relation("CatalogProductSource", fields: [sourceCatalogProductId], references: [id])
+  derivedProducts        CatalogProduct[] @relation("CatalogProductSource")
 
   // Datos del proveedor (sync automático)
   supplierName        String
@@ -372,6 +394,8 @@ model CatalogProduct {
   @@index([userId, publicationSku])
   @@index([userId, sourceType])
   @@index([importBatchId])
+  @@index([sourceCatalogProductId])
+  @@index([userId, stockSource])
 }
 
 model ProductPublication {
@@ -382,10 +406,18 @@ model ProductPublication {
   store             Store             @relation(fields: [storeId], references: [id])
   status            PublicationStatus @default(DRAFT)
   externalProductId String?
+  /// Para tiendas que distinguen producto vs variante (ej: Shopify, Tienda Nube),
+  /// guardamos también el id de la variante específica publicada.
+  externalVariantId String?
   externalUrl       String?
   publishedAt       DateTime?
   pausedAt          DateTime?
   lastSyncAt        DateTime?
+  /// Última sincronización exitosa con la tienda externa (precio/stock/imagen).
+  /// Diferenciado de lastSyncAt por compatibilidad con integraciones nuevas.
+  lastSyncedAt      DateTime?
+  /// Último error de sync; null si la última operación fue exitosa.
+  syncError         String?
   errorMessage      String?
   finalPrice        Float?
   createdAt         DateTime          @default(now())

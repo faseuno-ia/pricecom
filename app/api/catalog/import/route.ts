@@ -331,22 +331,52 @@ export async function POST(req: NextRequest) {
   // (skuProveedor || skuWeb) para no marcar como removidos los que vienen sólo
   // con SKU WEB. Excluimos MANUAL — esos no son parte del snapshot del proveedor
   // y no deberían pisarse por una importación.
+  //
+  // Auto-pause: si el producto está PREPARED y stockSource=SUPPLIER, también lo
+  // pasamos a PAUSED para evitar publicar algo sin stock. OWN/HYBRID conservan
+  // estado; IGNORED queda fuera.
   const importedSkus = rows
     .map((r) => pickField(r, "sku") || pickField(r, "publicationSku"))
     .filter((s) => s && !/^(0+(\.0+)?|#N\/A)$/i.test(s));
 
   if (importedSkus.length > 0) {
-    const removed = await prisma.catalogProduct.updateMany({
+    const baseWhere = {
+      userId: session.user.id,
+      providerId,
+      supplierStatus: "ACTIVE" as const,
+      sourceType: { in: ["SCRAPED", "IMPORTED"] as ("SCRAPED" | "IMPORTED")[] },
+      sku: { notIn: importedSkus },
+    };
+
+    // Caso 1: PREPARED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED
+    const removedPaused = await prisma.catalogProduct.updateMany({
       where: {
-        userId: session.user.id,
-        providerId,
-        supplierStatus: "ACTIVE",
-        sourceType: { in: ["SCRAPED", "IMPORTED"] },
-        sku: { notIn: importedSkus },
+        ...baseWhere,
+        stockSource: "SUPPLIER",
+        internalStatus: "PREPARED",
+      },
+      data: {
+        supplierStatus: "SUPPLIER_REMOVED",
+        internalStatus: "PAUSED",
+      },
+    });
+
+    // Caso 2: el resto (excepto IGNORED y el caso 1) → solo SUPPLIER_REMOVED
+    const removedRest = await prisma.catalogProduct.updateMany({
+      where: {
+        ...baseWhere,
+        internalStatus: { not: "IGNORED" },
+        NOT: {
+          AND: [
+            { stockSource: "SUPPLIER" },
+            { internalStatus: "PREPARED" },
+          ],
+        },
       },
       data: { supplierStatus: "SUPPLIER_REMOVED" },
     });
-    report.removed = removed.count;
+
+    report.removed = removedPaused.count + removedRest.count;
   }
 
   return NextResponse.json(report);

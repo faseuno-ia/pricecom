@@ -145,17 +145,47 @@ export async function upsertCatalogProducts(
   // Marcar como SUPPLIER_REMOVED los CatalogProduct activos de este proveedor
   // cuyo SKU no apareció en la extracción actual. Sólo aplicamos a productos con
   // SKU: los identificados por URL/hash son menos confiables para detectar bajas.
+  //
+  // Auto-pause: si el producto está PREPARED y depende del proveedor (stockSource
+  // SUPPLIER), además de marcarlo removido lo pasamos a PAUSED para evitar que se
+  // publique algo que ya no tenemos cómo abastecer. Los OWN y HYBRID conservan
+  // internalStatus porque el cliente tiene stock propio. IGNORED no se toca.
   const seenSkus = job.products
     .map((p) => p.sku)
     .filter((s): s is string => !!s && s.length > 0);
 
   if (seenSkus.length > 0) {
+    // Caso 1: PREPARED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED
     await prismaClient.catalogProduct.updateMany({
       where: {
         userId,
         providerId,
         supplierStatus: "ACTIVE",
+        stockSource: "SUPPLIER",
+        internalStatus: "PREPARED",
         sku: { notIn: seenSkus },
+      },
+      data: {
+        supplierStatus: "SUPPLIER_REMOVED",
+        internalStatus: "PAUSED",
+      },
+    });
+
+    // Caso 2: resto (NOT_PUBLISHED, PAUSED, o cualquier estado con stockSource
+    // OWN/HYBRID) → sólo marcar SUPPLIER_REMOVED. IGNORED queda excluido.
+    await prismaClient.catalogProduct.updateMany({
+      where: {
+        userId,
+        providerId,
+        supplierStatus: "ACTIVE",
+        internalStatus: { not: "IGNORED" },
+        sku: { notIn: seenSkus },
+        NOT: {
+          AND: [
+            { stockSource: "SUPPLIER" },
+            { internalStatus: "PREPARED" },
+          ],
+        },
       },
       data: { supplierStatus: "SUPPLIER_REMOVED" },
     });

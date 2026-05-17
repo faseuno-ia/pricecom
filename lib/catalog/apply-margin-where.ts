@@ -16,12 +16,19 @@ export function buildApplyMarginWhere(
 ): Prisma.CatalogProductWhereInput | null {
   // Excluimos ignored por default — operaciones masivas no deberían tocar
   // estados terminales sin un flag explícito. También excluimos productos
-  // removidos por el proveedor: si el proveedor ya no los tiene, no tiene
-  // sentido aplicarles un margen comercial.
+  // removidos por el proveedor **cuando dependen del proveedor**: los OWN o
+  // HYBRID sobreviven a SUPPLIER_REMOVED y deberían seguir siendo elegibles.
   const base: Prisma.CatalogProductWhereInput = {
     userId,
-    internalStatus: { not: "IGNORED" },
-    supplierStatus: "ACTIVE",
+    NOT: [
+      { internalStatus: "IGNORED" },
+      {
+        AND: [
+          { supplierStatus: "SUPPLIER_REMOVED" },
+          { stockSource: "SUPPLIER" },
+        ],
+      },
+    ],
   };
 
   if (input.productIds && input.productIds.length > 0) {

@@ -22,6 +22,8 @@ import {
   PauseCircle,
   RotateCcw,
   X,
+  Clock,
+  Copy,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -32,6 +34,7 @@ type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED";
 type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
 type BulkAction = "ignore" | "restore" | "prepare" | "pause";
 type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
+type StockSource = "SUPPLIER" | "OWN" | "HYBRID";
 
 interface CatalogRow {
   id: string;
@@ -50,6 +53,7 @@ interface CatalogRow {
   supplierStatus: SupplierStatus;
   internalStatus: InternalStatus;
   sourceType: SourceType;
+  stockSource: StockSource;
   provider: { id: string; name: string; baseUrl: string };
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
@@ -138,11 +142,20 @@ const originMeta: Record<
   },
 };
 
-const supplierBadgeFor: Record<SupplierStatus, { label: string; cls: string }> = {
-  ACTIVE: { label: "Activo", cls: "bg-accent/15 text-accent border-accent/30" },
+const supplierBadgeFor: Record<
+  SupplierStatus,
+  { label: string; cls: string; tooltip: string }
+> = {
+  ACTIVE: {
+    label: "Activo",
+    cls: "bg-accent/15 text-accent border-accent/30",
+    tooltip: "El proveedor sigue mostrando este producto",
+  },
   SUPPLIER_REMOVED: {
     label: "Removido proveedor",
     cls: "bg-red-500/15 text-red-300 border-red-500/30",
+    tooltip:
+      "Este producto ya no aparece en el proveedor. La publicación puede pausarse automáticamente según el origen del stock.",
   },
 };
 
@@ -458,6 +471,43 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
 
   function notImplemented() {
     toast.info("Próximamente — feature en desarrollo");
+  }
+
+  // Copia productos al proveedor virtual "Mi stock" (OWN_STOCK). Idempotente
+  // del lado server: si ya hay un derivado, devuelve skipped.
+  async function handleCopyToOwnStock(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      !window.confirm(
+        `¿Copiar ${ids.length} producto${ids.length > 1 ? "s" : ""} a tu stock propio? Quedan como copia independiente del proveedor.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/copy-to-own-stock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { copied, skipped } = (await res.json()) as {
+        copied: number;
+        skipped: number;
+      };
+      toast.success(
+        `${copied} producto${copied !== 1 ? "s" : ""} copiado${copied !== 1 ? "s" : ""} a stock propio${
+          skipped > 0 ? ` (${skipped} ya existían)` : ""
+        }`
+      );
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   // Quita manualMargin (devuelve los productos a heredar la regla de pricing).
@@ -916,7 +966,10 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                         {p.stock ?? "—"}
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${sBadge.cls}`}>
+                        <span
+                          title={sBadge.tooltip}
+                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${sBadge.cls}`}
+                        >
                           {sBadge.label}
                         </span>
                       </td>
@@ -1036,8 +1089,10 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                                 <Ban className="w-3 h-3" /> Marcar ignorado
                               </button>
                             )}
-                            {(p.internalStatus === "IGNORED" ||
-                              p.supplierStatus === "SUPPLIER_REMOVED") && (
+                            {/* Restaurar: SOLO si el usuario lo había ignorado.
+                                SUPPLIER_REMOVED no se "restaura" — se espera la
+                                reaparición del proveedor o se copia a stock propio. */}
+                            {p.internalStatus === "IGNORED" && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1048,6 +1103,25 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                               >
                                 <RotateCcw className="w-3 h-3" /> Restaurar
                               </button>
+                            )}
+                            {p.supplierStatus === "SUPPLIER_REMOVED" && (
+                              <>
+                                <div className="px-3 py-1.5 text-[11px] text-muted-foreground/80 flex items-center gap-2">
+                                  <Clock className="w-3 h-3" />
+                                  Esperando reaparición del proveedor
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setContextMenuFor(null);
+                                    handleCopyToOwnStock([p.id]);
+                                  }}
+                                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                                >
+                                  <Copy className="w-3 h-3" /> Copiar a stock
+                                  propio
+                                </button>
+                              </>
                             )}
                           </div>
                         )}
@@ -1183,6 +1257,14 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <X className="w-3.5 h-3.5" /> Quitar margen
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCopyToOwnStock(Array.from(selectedIds))}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+                title="Copia los seleccionados al proveedor virtual 'Mi stock'"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copiar a stock propio
               </button>
             </div>
           </div>
