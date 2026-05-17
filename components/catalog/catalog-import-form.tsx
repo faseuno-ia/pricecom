@@ -26,6 +26,7 @@ interface ImportReport {
   skipped: number;
   categoriesCreated: number;
   imagesAdded: number;
+  removed: number;
   errors: { row: number; sku?: string; message: string }[];
   importBatchId: string;
 }
@@ -182,6 +183,11 @@ export function CatalogImportForm({ providers, initialProviderId }: Props) {
               <span className="font-mono">{report.imagesAdded}</span>
             </div>
           </div>
+          {report.removed > 0 && (
+            <p className="text-sm text-orange-400">
+              Removidos: {report.removed} (productos que ya no están en el Excel)
+            </p>
+          )}
           <div className="text-[10px] text-muted-foreground/70 font-mono pt-1 border-t border-border">
             batch: {report.importBatchId}
           </div>

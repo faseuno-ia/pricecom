@@ -21,6 +21,7 @@ interface ImportReport {
   skipped: number;
   categoriesCreated: number;
   imagesAdded: number;
+  removed: number;
   errors: { row: number; sku?: string; message: string }[];
   importBatchId: string;
 }
@@ -174,6 +175,7 @@ export async function POST(req: NextRequest) {
     skipped: 0,
     categoriesCreated: 0,
     imagesAdded: 0,
+    removed: 0,
     errors: [],
     importBatchId,
   };
@@ -320,6 +322,29 @@ export async function POST(req: NextRequest) {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // Reconciliación: marcar como SUPPLIER_REMOVED los productos del proveedor
+  // que no aparecieron en este Excel. Mismo criterio de SKU que el loop
+  // (skuProveedor || skuWeb) para no marcar como removidos los que vienen sólo
+  // con SKU WEB. Excluimos MANUAL — esos no son parte del snapshot del proveedor
+  // y no deberían pisarse por una importación.
+  const importedSkus = rows
+    .map((r) => pickField(r, "sku") || pickField(r, "publicationSku"))
+    .filter((s) => s && !/^(0+(\.0+)?|#N\/A)$/i.test(s));
+
+  if (importedSkus.length > 0) {
+    const removed = await prisma.catalogProduct.updateMany({
+      where: {
+        userId: session.user.id,
+        providerId,
+        supplierStatus: "ACTIVE",
+        sourceType: { in: ["SCRAPED", "IMPORTED"] },
+        sku: { notIn: importedSkus },
+      },
+      data: { supplierStatus: "SUPPLIER_REMOVED" },
+    });
+    report.removed = removed.count;
   }
 
   return NextResponse.json(report);
