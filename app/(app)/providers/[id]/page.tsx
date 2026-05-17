@@ -24,6 +24,7 @@ import {
   Hand,
   Globe,
   FileSpreadsheet,
+  Boxes,
 } from "lucide-react";
 import type { ProviderType } from "@prisma/client";
 import { normalizeImageUrl } from "@/lib/utils";
@@ -46,6 +47,11 @@ const typeBadge: Record<
     label: "Importado",
     className: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     icon: FileSpreadsheet,
+  },
+  OWN_STOCK: {
+    label: "Stock propio",
+    className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+    icon: Boxes,
   },
 };
 
@@ -115,7 +121,12 @@ export default async function ProviderDashboardPage({
   const catalogProductsTotal = isScraper
     ? 0
     : await prisma.catalogProduct.count({
-        where: { providerId: provider.id, userId: session.user.id },
+        where: {
+          providerId: provider.id,
+          userId: session.user.id,
+          supplierStatus: "ACTIVE",
+          internalStatus: { not: "IGNORED" },
+        },
       });
 
   // KPIs agregados

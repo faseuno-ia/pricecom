@@ -19,18 +19,12 @@ export const maxDuration = 60;
 
 const MAX_EXPORT = 10_000;
 
-const VALID_SUPPLIER: CatalogProductStatus[] = [
-  "ACTIVE",
-  "SUPPLIER_REMOVED",
-  "IGNORED",
-  "ARCHIVED",
-];
+const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
 const VALID_INTERNAL: InternalPublicationStatus[] = [
   "NOT_PUBLISHED",
   "PREPARED",
   "PAUSED",
   "IGNORED",
-  "ARCHIVED",
 ];
 
 const filtersSchema = z

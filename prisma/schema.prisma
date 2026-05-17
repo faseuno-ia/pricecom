@@ -30,6 +30,8 @@ enum ProviderType {
   MANUAL
   /// Carga masiva por archivo Excel/CSV.
   IMPORTED
+  /// Stock propio del cliente — productos sin proveedor externo.
+  OWN_STOCK
 }
 
 model Provider {
@@ -264,8 +266,6 @@ model StoreIntegration {
 enum CatalogProductStatus {
   ACTIVE
   SUPPLIER_REMOVED
-  IGNORED
-  ARCHIVED
 }
 
 enum PublicationStatus {
@@ -299,7 +299,6 @@ enum InternalPublicationStatus {
   PREPARED
   PAUSED
   IGNORED
-  ARCHIVED
 }
 
 /// Catálogo persistente por usuario × proveedor. Es la fuente de verdad comercial:

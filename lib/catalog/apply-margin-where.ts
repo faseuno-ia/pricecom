@@ -14,11 +14,14 @@ export function buildApplyMarginWhere(
   userId: string,
   input: ApplyMarginInput
 ): Prisma.CatalogProductWhereInput | null {
-  // Excluimos archived/ignored por default — operaciones masivas no deberían
-  // tocar estados terminales sin un flag explícito.
+  // Excluimos ignored por default — operaciones masivas no deberían tocar
+  // estados terminales sin un flag explícito. También excluimos productos
+  // removidos por el proveedor: si el proveedor ya no los tiene, no tiene
+  // sentido aplicarles un margen comercial.
   const base: Prisma.CatalogProductWhereInput = {
     userId,
-    internalStatus: { notIn: ["ARCHIVED", "IGNORED"] },
+    internalStatus: { not: "IGNORED" },
+    supplierStatus: "ACTIVE",
   };
 
   if (input.productIds && input.productIds.length > 0) {

@@ -265,9 +265,11 @@ export async function POST(req: NextRequest) {
           data: {
             // Solo refrescamos campos del lado comercial e indicadores de origen;
             // el supplierName lo dejamos quieto si ya estaba (el archivo puede ser
-            // menos confiable que el scrape).
+            // menos confiable que el scrape). Reaparición: si estaba como
+            // SUPPLIER_REMOVED, vuelve a ACTIVE; nunca tocamos internalStatus.
             sourceType: "IMPORTED",
             importBatchId,
+            supplierStatus: "ACTIVE",
             supplierDescription: description || undefined,
             wholesalePrice: wholesalePrice ?? undefined,
             stock: stock || undefined,

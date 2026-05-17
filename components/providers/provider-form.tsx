@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
 
 interface ProviderFormProps {
   provider?: {
@@ -34,6 +34,11 @@ const TYPE_OPTIONS: { value: ProviderType; label: string; hint: string }[] = [
     value: "IMPORTED",
     label: "Importado — Carga por Excel/CSV",
     hint: "Subís un archivo y el sistema hace upsert de productos.",
+  },
+  {
+    value: "OWN_STOCK",
+    label: "Stock propio — Productos del cliente",
+    hint: "Productos propios sin proveedor externo. Se administran como MANUAL.",
   },
 ];
 

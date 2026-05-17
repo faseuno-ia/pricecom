@@ -36,6 +36,8 @@ function identityKey(p: IdentityInputs): IdentityKey {
  *    pricingRule, notes) NUNCA se tocan en updates.
  *  - Productos del proveedor que ya estaban en el catálogo pero no aparecieron
  *    en esta extracción se marcan como `SUPPLIER_REMOVED`.
+ *  - Si un producto aparece de nuevo tras haber estado SUPPLIER_REMOVED, vuelve
+ *    a ACTIVE; NO tocamos `internalStatus` (esa decisión comercial es del usuario).
  */
 export async function upsertCatalogProducts(
   jobId: string,

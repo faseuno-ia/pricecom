@@ -1,20 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
-import {
-  CatalogProductStatus,
-  InternalPublicationStatus,
-  Prisma,
-} from "@prisma/client";
+import { InternalPublicationStatus } from "@prisma/client";
 import { z } from "zod";
 
-const STATUS_ACTIONS = [
-  "archive",
-  "ignore",
-  "restore",
-  "prepare",
-  "pause",
-] as const;
+// Acciones de usuario — NUNCA tocan supplierStatus (ese estado lo maneja
+// exclusivamente el worker / importador en base a presencia del producto en
+// el catálogo del proveedor).
+const STATUS_ACTIONS = ["ignore", "restore", "prepare", "pause"] as const;
 const ACTIONS = [...STATUS_ACTIONS, "clear_margin"] as const;
 
 const bodySchema = z.object({
@@ -22,20 +15,14 @@ const bodySchema = z.object({
   action: z.enum(ACTIONS),
 });
 
-// Mapeo acción → cambios en CatalogProduct.
-// `restore` reactiva el producto desde un estado terminal (ARCHIVED/IGNORED).
 const actionMap: Record<
   (typeof STATUS_ACTIONS)[number],
-  {
-    supplierStatus?: CatalogProductStatus;
-    internalStatus: InternalPublicationStatus;
-  }
+  InternalPublicationStatus
 > = {
-  archive: { internalStatus: "ARCHIVED" },
-  ignore: { internalStatus: "IGNORED" },
-  restore: { supplierStatus: "ACTIVE", internalStatus: "NOT_PUBLISHED" },
-  prepare: { internalStatus: "PREPARED" },
-  pause: { internalStatus: "PAUSED" },
+  ignore: "IGNORED",
+  restore: "NOT_PUBLISHED",
+  prepare: "PREPARED",
+  pause: "PAUSED",
 };
 
 export async function POST(req: NextRequest) {
@@ -57,7 +44,6 @@ export async function POST(req: NextRequest) {
 
   const { productIds, action } = parsed.data;
 
-  // clear_margin: solo limpia el margen manual, no toca estados.
   if (action === "clear_margin") {
     const result = await prisma.catalogProduct.updateMany({
       where: { id: { in: productIds }, userId: session.user.id },
@@ -66,18 +52,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ updated: result.count });
   }
 
-  const changes = actionMap[action];
-
-  // Solo updateamos los campos que la acción cambia (no sobreescribir
-  // supplierStatus en acciones que no lo tocan).
-  const data: Prisma.CatalogProductUpdateManyMutationInput = {
-    internalStatus: changes.internalStatus,
-  };
-  if (changes.supplierStatus) data.supplierStatus = changes.supplierStatus;
+  const internalStatus = actionMap[action];
 
   const result = await prisma.catalogProduct.updateMany({
     where: { id: { in: productIds }, userId: session.user.id },
-    data,
+    data: { internalStatus },
   });
 
   return NextResponse.json({ updated: result.count });

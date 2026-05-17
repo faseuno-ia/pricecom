@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   Hand,
   Globe,
+  Boxes,
 } from "lucide-react";
 import Link from "next/link";
 import { ProviderActions } from "@/components/providers/provider-actions";
@@ -37,6 +38,11 @@ const typeBadge: Record<
     className: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     icon: FileSpreadsheet,
   },
+  OWN_STOCK: {
+    label: "Stock propio",
+    className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+    icon: Boxes,
+  },
 };
 
 export default async function ProvidersPage() {
@@ -45,7 +51,19 @@ export default async function ProvidersPage() {
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
     include: {
-      _count: { select: { extractionJobs: true, catalogProducts: true } },
+      _count: {
+        select: {
+          extractionJobs: true,
+          // Solo productos activos y no ignorados — los conteos en cards
+          // deben reflejar el catálogo "usable".
+          catalogProducts: {
+            where: {
+              supplierStatus: "ACTIVE",
+              internalStatus: { not: "IGNORED" },
+            },
+          },
+        },
+      },
     },
   });
 

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { Loader2, Upload, FileSpreadsheet, BookOpen } from "lucide-react";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
 
 interface ProviderOpt {
   id: string;

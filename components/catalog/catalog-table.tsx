@@ -16,7 +16,6 @@ import {
   Lock,
   Plus,
   Ban,
-  Archive,
   Eye,
   Tag,
   PlayCircle,
@@ -28,10 +27,10 @@ import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 import { ApplyMarginModal } from "./apply-margin-modal";
 
-type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
-type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED" | "ARCHIVED";
+type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
+type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED";
 type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
-type BulkAction = "archive" | "ignore" | "restore" | "prepare" | "pause";
+type BulkAction = "ignore" | "restore" | "prepare" | "pause";
 type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
 
 interface CatalogRow {
@@ -141,9 +140,10 @@ const originMeta: Record<
 
 const supplierBadgeFor: Record<SupplierStatus, { label: string; cls: string }> = {
   ACTIVE: { label: "Activo", cls: "bg-accent/15 text-accent border-accent/30" },
-  SUPPLIER_REMOVED: { label: "Removido", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
-  IGNORED: { label: "Ignorado", cls: "bg-muted/40 text-muted-foreground border-border" },
-  ARCHIVED: { label: "Archivado", cls: "bg-muted/40 text-muted-foreground border-border" },
+  SUPPLIER_REMOVED: {
+    label: "Removido proveedor",
+    cls: "bg-red-500/15 text-red-300 border-red-500/30",
+  },
 };
 
 const sourceBadgeFor: Record<SourceType, { label: string; cls: string; tooltip: string }> = {
@@ -169,10 +169,6 @@ const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> =
   PREPARED: { label: "Preparado", cls: "bg-green-500/15 text-green-300 border-green-500/30" },
   PAUSED: { label: "Pausado", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   IGNORED: { label: "Ignorado", cls: "bg-muted/30 text-muted-foreground/70 border-border" },
-  ARCHIVED: {
-    label: "Archivado",
-    cls: "bg-muted/30 text-muted-foreground/70 border-border line-through",
-  },
 };
 
 export function CatalogTable({ providers, initialProviderId, initialSourceType }: Props) {
@@ -186,6 +182,7 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
   );
   const [noImage, setNoImage] = useState(false);
   const [noCategory, setNoCategory] = useState(false);
+  const [showRemovedIgnored, setShowRemovedIgnored] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(50);
   const [data, setData] = useState<{ products: CatalogRow[]; total: number }>({
@@ -204,7 +201,7 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
   // Reset page al cambiar filtros
   useEffect(() => {
     setPage(1);
-  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, showRemovedIgnored]);
 
   // Construye los filtros activos para mandarlos al export (mismo formato que la API)
   const currentFilters = useMemo(
@@ -216,8 +213,9 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
       ...(sourceFilter !== "all" ? { sourceType: sourceFilter } : {}),
       ...(noImage ? { noImage: true } : {}),
       ...(noCategory ? { noCategory: true } : {}),
+      ...(showRemovedIgnored ? { showRemovedIgnored: true } : {}),
     }),
-    [search, providerId, supplierStatus, internalStatus, sourceFilter, noImage, noCategory]
+    [search, providerId, supplierStatus, internalStatus, sourceFilter, noImage, noCategory, showRemovedIgnored]
   );
 
   const [reloadKey, setReloadKey] = useState(0);
@@ -240,6 +238,7 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
         if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
         if (noImage) params.set("noImage", "true");
         if (noCategory) params.set("noCategory", "true");
+        if (showRemovedIgnored) params.set("showRemovedIgnored", "true");
         params.set("page", String(page));
         params.set("pageSize", String(pageSize));
 
@@ -257,7 +256,7 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
     return () => {
       cancelled = true;
     };
-  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, page, pageSize, reloadKey]);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, showRemovedIgnored, page, pageSize, reloadKey]);
 
   // Cerrar menú al click fuera
   useEffect(() => {
@@ -419,7 +418,6 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
     if (targetIds.length === 0) return;
 
     const labels: Record<BulkAction, string> = {
-      archive: "archivar",
       ignore: "ignorar",
       restore: "restaurar",
       prepare: "preparar para publicar",
@@ -540,6 +538,24 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
           >
             <FileSpreadsheet className="w-3.5 h-3.5" /> Importar
           </a>
+          <button
+            type="button"
+            onClick={() => setShowRemovedIgnored((v) => !v)}
+            title={
+              showRemovedIgnored
+                ? "Volver a ocultar productos removidos por proveedor e ignorados"
+                : "Incluir en la vista productos removidos por proveedor e ignorados"
+            }
+            className={`text-xs px-2.5 py-2 rounded-md border transition-colors ${
+              showRemovedIgnored
+                ? "border-primary text-primary bg-primary/10"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            }`}
+          >
+            {showRemovedIgnored
+              ? "Ocultar removidos/ignorados"
+              : "Mostrar removidos/ignorados"}
+          </button>
         </div>
       </div>
 
@@ -576,9 +592,7 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
         >
           <option value="all">Estado prov.: Todos</option>
           <option value="ACTIVE">Activo</option>
-          <option value="SUPPLIER_REMOVED">Removido</option>
-          <option value="IGNORED">Ignorado</option>
-          <option value="ARCHIVED">Archivado</option>
+          <option value="SUPPLIER_REMOVED">Removido por proveedor</option>
         </select>
 
         <select
@@ -591,7 +605,6 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
           <option value="PREPARED">Preparado</option>
           <option value="PAUSED">Pausado</option>
           <option value="IGNORED">Ignorado</option>
-          <option value="ARCHIVED">Archivado</option>
         </select>
 
         <select
@@ -753,10 +766,15 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);
+                  const isInactive =
+                    p.supplierStatus === "SUPPLIER_REMOVED" ||
+                    p.internalStatus === "IGNORED";
                   return (
                     <tr
                       key={p.id}
-                      className="group border-b border-border hover:bg-muted/10 transition-colors"
+                      className={`group border-b border-border hover:bg-muted/10 transition-colors ${
+                        isInactive ? "opacity-50" : ""
+                      }`}
                     >
                       <td className="sticky z-20 bg-card group-hover:bg-muted/20 px-2 py-2" style={{ left: sticky.checkbox.left, width: sticky.checkbox.width }}>
                         <input
@@ -1006,27 +1024,20 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                               </a>
                             )}
                             <div className="border-t border-border my-1" />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleBulkAction("ignore", [p.id]);
-                                setContextMenuFor(null);
-                              }}
-                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
-                            >
-                              <Ban className="w-3 h-3" /> Marcar ignorado
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleBulkAction("archive", [p.id]);
-                                setContextMenuFor(null);
-                              }}
-                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
-                            >
-                              <Archive className="w-3 h-3" /> Archivar
-                            </button>
-                            {(p.internalStatus === "ARCHIVED" || p.internalStatus === "IGNORED") && (
+                            {p.internalStatus !== "IGNORED" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleBulkAction("ignore", [p.id]);
+                                  setContextMenuFor(null);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                              >
+                                <Ban className="w-3 h-3" /> Marcar ignorado
+                              </button>
+                            )}
+                            {(p.internalStatus === "IGNORED" ||
+                              p.supplierStatus === "SUPPLIER_REMOVED") && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1128,13 +1139,6 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <PauseCircle className="w-3.5 h-3.5" /> Pausar
-              </button>
-              <button
-                type="button"
-                onClick={() => handleBulkAction("archive")}
-                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
-              >
-                <Archive className="w-3.5 h-3.5" /> Archivar
               </button>
               <button
                 type="button"

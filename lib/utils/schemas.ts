@@ -3,7 +3,9 @@ import { z } from "zod";
 export const providerSchema = z
   .object({
     name: z.string().min(1, "El nombre es requerido").max(100),
-    providerType: z.enum(["SCRAPER", "MANUAL", "IMPORTED"]).default("SCRAPER"),
+    providerType: z
+      .enum(["SCRAPER", "MANUAL", "IMPORTED", "OWN_STOCK"])
+      .default("SCRAPER"),
     // baseUrl es opcional para MANUAL/IMPORTED, requerida (y URL válida) para SCRAPER.
     // Aceptamos "" y lo normalizamos abajo.
     baseUrl: z.string().optional().nullable(),

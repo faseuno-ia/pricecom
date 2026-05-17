@@ -26,7 +26,7 @@ export interface CatalogProductDetail {
   supplierCategory: string | null;
   imageUrl: string | null;
   lastSeenAt: string;
-  supplierStatus: "ACTIVE" | "SUPPLIER_REMOVED" | "IGNORED" | "ARCHIVED";
+  supplierStatus: "ACTIVE" | "SUPPLIER_REMOVED";
   commercialTitle: string | null;
   commercialName: string | null;
   commercialDescription: string | null;

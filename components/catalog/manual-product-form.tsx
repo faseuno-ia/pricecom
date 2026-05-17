@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
 
 interface ProviderOpt {
   id: string;
@@ -38,6 +38,7 @@ export function ManualProductForm({
   const sortedProviders = useMemo(() => {
     const score: Record<ProviderType, number> = {
       MANUAL: 0,
+      OWN_STOCK: 0,
       IMPORTED: 1,
       SCRAPER: 2,
     };

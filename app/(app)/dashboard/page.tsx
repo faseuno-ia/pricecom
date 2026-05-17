@@ -45,7 +45,15 @@ async function getDashboardStats(userId: string) {
   ] = await Promise.all([
     prisma.provider.count({ where: { userId, isActive: true } }),
     prisma.provider.count({ where: { userId } }),
-    prisma.extractedProduct.count({ where: { job: { userId } } }),
+    // Catálogo activo del usuario: excluimos productos removidos por el proveedor
+    // y los que el usuario marcó como ignorados.
+    prisma.catalogProduct.count({
+      where: {
+        userId,
+        supplierStatus: "ACTIVE",
+        internalStatus: { not: "IGNORED" },
+      },
+    }),
     prisma.extractionJob.count({
       where: { userId, createdAt: { gte: startOfMonth }, status: "COMPLETED" },
     }),

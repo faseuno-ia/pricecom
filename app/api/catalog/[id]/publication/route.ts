@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
-import { CatalogProductStatus, PublicationStatus } from "@prisma/client";
+import { InternalPublicationStatus, PublicationStatus } from "@prisma/client";
 import { z } from "zod";
 
 // ACTIVE/PAUSED/DRAFT → ProductPublication.status (requiere Store)
-// IGNORED/ARCHIVED → CatalogProduct.supplierStatus
+// IGNORED → CatalogProduct.internalStatus (acción del usuario, no del proveedor)
 const PUB_STATUSES = ["DRAFT", "ACTIVE", "PAUSED"] as const;
-const CATALOG_STATUSES = ["IGNORED", "ARCHIVED", "ACTIVE"] as const; // ACTIVE = "unignorar"
 
 const bodySchema = z.object({
-  status: z.enum([...PUB_STATUSES, "IGNORED", "ARCHIVED"]),
+  status: z.enum([...PUB_STATUSES, "IGNORED", "RESTORE"]),
   storeId: z.string().optional(),
 });
 
@@ -36,11 +35,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const { status, storeId } = parsed.data;
 
-  // Rama 1: status de catálogo (no requiere store)
-  if (status === "IGNORED" || status === "ARCHIVED") {
+  // Rama 1: status interno (no requiere store).
+  // - IGNORED  → CatalogProduct.internalStatus = IGNORED
+  // - RESTORE  → CatalogProduct.internalStatus = NOT_PUBLISHED
+  if (status === "IGNORED" || status === "RESTORE") {
+    const next: InternalPublicationStatus =
+      status === "IGNORED" ? "IGNORED" : "NOT_PUBLISHED";
     const updated = await prisma.catalogProduct.update({
       where: { id: params.id },
-      data: { supplierStatus: status as CatalogProductStatus },
+      data: { internalStatus: next },
     });
     return NextResponse.json(updated);
   }

@@ -13,18 +13,12 @@ import {
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
 
-const VALID_SUPPLIER: CatalogProductStatus[] = [
-  "ACTIVE",
-  "SUPPLIER_REMOVED",
-  "IGNORED",
-  "ARCHIVED",
-];
+const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
 const VALID_INTERNAL: InternalPublicationStatus[] = [
   "NOT_PUBLISHED",
   "PREPARED",
   "PAUSED",
   "IGNORED",
-  "ARCHIVED",
 ];
 const VALID_PUB: (PublicationStatus | "NONE")[] = [
   "DRAFT",
@@ -50,6 +44,8 @@ export async function GET(req: NextRequest) {
   const sourceTypeParam = url.searchParams.get("sourceType");
   const noImage = url.searchParams.get("noImage") === "true";
   const noCategory = url.searchParams.get("noCategory") === "true";
+  const showRemovedIgnored =
+    url.searchParams.get("showRemovedIgnored") === "true";
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const pageSize = Math.min(
     MAX_PAGE_SIZE,
@@ -59,6 +55,14 @@ export async function GET(req: NextRequest) {
   const where: Prisma.CatalogProductWhereInput = {
     userId: session.user.id,
   };
+
+  // Por defecto ocultamos productos removidos por proveedor e ignorados, salvo
+  // que el usuario haya activado el toggle showRemovedIgnored, o haya pedido
+  // explícitamente uno de esos estados desde el dropdown de filtro.
+  if (!showRemovedIgnored) {
+    if (!supplierStatusParam) where.supplierStatus = "ACTIVE";
+    if (!internalStatusParam) where.internalStatus = { not: "IGNORED" };
+  }
 
   if (providerId) where.providerId = providerId;
 
