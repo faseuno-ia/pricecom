@@ -37,7 +37,10 @@ const USER_AGENT =
 
 // Cada cuántas páginas reiniciar el contexto de Chromium. El browser acumula
 // memoria página a página y con catálogos pesados (lazy loading) puede crashear.
-const PAGE_RESTART_INTERVAL = 10;
+// Cada cuántas páginas reiniciamos el contexto del browser para liberar
+// memoria. Bajado de 10 a 5: Toys Palace crashea con "Target crashed!" alrededor
+// de la página 12 si dejamos correr más de 5 páginas con el mismo contexto.
+const PAGE_RESTART_INTERVAL = 5;
 
 const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?/gi;
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
@@ -402,13 +405,17 @@ export class ScraperService {
           );
           const currentUrl = page.url();
 
+          // page.close() explícito antes del context.close() libera memoria
+          // de manera más agresiva — Chromium difiere la limpieza del frame
+          // hasta que la página se cierra, no cuando se destruye el contexto.
+          await page.close().catch(() => {});
           await page.context().close();
 
           const context = await this.browser!.newContext({ userAgent: USER_AGENT });
           this.page = await context.newPage();
           await this.page.setExtraHTTPHeaders({ "Accept-Language": "es-AR,es;q=0.9" });
           this.page.setDefaultTimeout(30000);
-          this.page.setDefaultNavigationTimeout(60000);
+          this.page.setDefaultNavigationTimeout(120000);
           page = this.page;
 
           await page.goto(currentUrl, { waitUntil: "domcontentloaded" });
