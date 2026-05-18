@@ -86,6 +86,12 @@ model ProviderScraperConfig {
   categoryParamSelector String?
   /// Nombre del parámetro URL para iterar categorías (ej: "rub" → ?rub=N)
   categoryParamName     String?
+  /// URL del catálogo post-login. Algunos sitios (ej: Impotekno) tienen el
+  /// login en `/` pero el listado de productos en otra ruta (`/catalogo_imptk.php`)
+  /// y el redirect del form no siempre es confiable. Si está seteado, el
+  /// scraper navega explícitamente acá después del login y antes de buscar
+  /// el `categoryParamSelector`.
+  catalogUrl            String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }

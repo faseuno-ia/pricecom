@@ -189,13 +189,56 @@ export class ScraperService {
       // Lee un <select> de la página, itera por cada option.value y acumula productos
       // deduplicando por SKU (lógica de dedup compartida con el loop principal).
       if (config?.categoryParamSelector && config?.categoryParamName) {
-        const categories = await page.evaluate((selector) => {
-          const sel = document.querySelector(selector) as HTMLSelectElement | null;
-          if (!sel) return [] as { value: string; label: string }[];
-          return Array.from(sel.options)
-            .map((o) => ({ value: o.value, label: (o.textContent || "").trim() }))
-            .filter((o) => /^\d+$/.test(o.value) && !o.label.includes("(0)"));
-        }, config.categoryParamSelector);
+        // Algunos proveedores (ej: Impotekno) hacen login en `/` y exponen el
+        // listado en otra ruta. Si está configurado catalogUrl, navegamos antes
+        // de buscar el <select>.
+        if (config.catalogUrl) {
+          await onLog("INFO", `Navegando al catálogo: ${config.catalogUrl}`);
+          try {
+            await page.goto(config.catalogUrl, { waitUntil: "domcontentloaded" });
+            if (config.waitForSelector) {
+              await page
+                .waitForSelector(config.waitForSelector, { timeout: 10000 })
+                .catch(() => {});
+            }
+          } catch (err) {
+            await onLog(
+              "WARN",
+              `Error navegando a catalogUrl: ${(err as Error).message}`
+            );
+          }
+        }
+
+        const readCategories = async () =>
+          page.evaluate((selector) => {
+            const sel = document.querySelector(selector) as HTMLSelectElement | null;
+            if (!sel) return [] as { value: string; label: string }[];
+            return Array.from(sel.options)
+              .map((o) => ({ value: o.value, label: (o.textContent || "").trim() }))
+              .filter((o) => /^\d+$/.test(o.value) && !o.label.includes("(0)"));
+          }, config.categoryParamSelector!);
+
+        let categories = await readCategories();
+
+        // Fallback: si no encontró el <select> en la página actual y no íbamos
+        // a catalogUrl, probamos una navegación explícita a baseUrl antes de
+        // abandonar el modo categorías.
+        if (categories.length === 0 && !config.catalogUrl) {
+          await onLog(
+            "WARN",
+            `"${config.categoryParamSelector}" no apareció en la página actual (${page.url()}); reintentando en ${provider.baseUrl}`
+          );
+          try {
+            await page.goto(provider.baseUrl, { waitUntil: "domcontentloaded" });
+            await page.waitForTimeout(1500);
+            categories = await readCategories();
+          } catch (err) {
+            await onLog(
+              "WARN",
+              `Error reintentando en baseUrl: ${(err as Error).message}`
+            );
+          }
+        }
 
         if (categories.length === 0) {
           await onLog(
