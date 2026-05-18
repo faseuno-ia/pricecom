@@ -16,6 +16,7 @@ import {
   Tag,
   ChevronLeft,
   ChevronRight,
+  ShoppingBag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,7 @@ const navItems = [
   { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" as const },
   { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false as const },
   { href: "/catalog", label: "Catálogo", icon: BookOpen, highlight: false, badge: false as const },
+  { href: "/my-store", label: "Mi Tienda", icon: ShoppingBag, highlight: false, badge: false as const },
   { href: "/pricing-rules", label: "Pricing", icon: Tag, highlight: false, badge: false as const },
   { href: "/new-extraction", label: "Nueva extracción", icon: PlusCircle, highlight: true, badge: false as const },
 ];

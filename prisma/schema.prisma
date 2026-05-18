@@ -21,6 +21,7 @@ model User {
   extractionJobs  ExtractionJob[]
   catalogProducts CatalogProduct[]
   pricingRules    PricingRule[]
+  stores          Store[]
 }
 
 enum ProviderType {
@@ -236,29 +237,76 @@ enum LogLevel {
   ERROR
 }
 
-// ─── Ecommerce Integration (futuro) ───────────────────────────────────────────
+// ─── Ecommerce Integration ────────────────────────────────────────────────────
+
+enum StorePlatform {
+  WOOCOMMERCE
+  SHOPIFY
+  TIENDANUBE
+}
 
 model Store {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
   name        String
-  platform    String // "tiendanube" | "shopify" | "woocommerce"
+  platform    StorePlatform
   url         String
-  isActive    Boolean  @default(true)
-  credentials String? // cifrado AES-256 igual que Provider
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isActive    Boolean       @default(true)
+  /// Cifrado AES-256 — legacy bag para credenciales no estructuradas.
+  credentials String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   integrations StoreIntegration[]
   publications ProductPublication[]
+  categories   StoreCategory[]
+
+  @@index([userId])
+  @@index([userId, platform])
 }
 
 model StoreIntegration {
-  id        String   @id @default(cuid())
-  storeId   String
-  store     Store    @relation(fields: [storeId], references: [id])
-  config    String? // JSON con config específica de la plataforma
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                      String    @id @default(cuid())
+  storeId                 String
+  store                   Store     @relation(fields: [storeId], references: [id])
+  /// JSON con config específica de la plataforma (rate limits, prefijos, etc).
+  config                  String?
+  /// Credenciales WooCommerce REST API v3 — cifradas AES-256.
+  consumerKeyEncrypted    String?
+  consumerSecretEncrypted String?
+  /// "CONNECTED" | "ERROR" | "DISCONNECTED" | null (sin probar todavía).
+  status                  String?
+  lastConnectionCheck     DateTime?
+  lastError               String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([storeId])
+}
+
+/// Árbol de categorías sincronizado desde la tienda externa. La jerarquía se
+/// guarda dos veces: parentExternalId (id de WooCommerce/etc) y parentId (FK
+/// interna) — el sync hace dos pasadas: primero crea/actualiza, después
+/// resuelve los parentId con los externalCategoryId ya guardados.
+model StoreCategory {
+  id                 String          @id @default(cuid())
+  storeId            String
+  store              Store           @relation(fields: [storeId], references: [id])
+  externalCategoryId String
+  name               String
+  slug               String?
+  parentExternalId   String?
+  parentId           String?
+  parent             StoreCategory?  @relation("StoreCategoryTree", fields: [parentId], references: [id])
+  children           StoreCategory[] @relation("StoreCategoryTree")
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@unique([storeId, externalCategoryId])
+  @@index([storeId])
+  @@index([parentId])
+  @@index([parentExternalId])
 }
 
 // ─── Catálogo persistente + publicaciones ────────────────────────────────────
@@ -409,6 +457,12 @@ model ProductPublication {
   /// Para tiendas que distinguen producto vs variante (ej: Shopify, Tienda Nube),
   /// guardamos también el id de la variante específica publicada.
   externalVariantId String?
+  /// SKU tal como está cargado en la tienda externa. Puede diferir de
+  /// CatalogProduct.publicationSku si el cliente lo editó del lado tienda.
+  externalSku       String?
+  /// Estado en la tienda externa: "publish" | "draft" | "trash" en WooCommerce,
+  /// análogos en Shopify/Tienda Nube. Diferenciado de `status` interno.
+  externalStatus    String?
   externalUrl       String?
   publishedAt       DateTime?
   pausedAt          DateTime?
@@ -419,6 +473,17 @@ model ProductPublication {
   /// Último error de sync; null si la última operación fue exitosa.
   syncError         String?
   errorMessage      String?
+  /// Snapshot del precio en la tienda al momento del último sync. Permite
+  /// detectar drift entre lo que el motor calcula y lo que está publicado.
+  priceInStore      Float?
+  /// Snapshot del stock en la tienda al momento del último sync.
+  stockInStore      Int?
+  /// Snapshot del nombre de categoría asignado en la tienda externa.
+  categoryInStore   String?
+  /// Marca que tenemos cambios locales (precio/stock/título/etc.) que aún
+  /// no se empujaron a la tienda. El worker de sync lee este flag para
+  /// priorizar qué publicar.
+  pendingSync       Boolean           @default(false)
   finalPrice        Float?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -427,6 +492,8 @@ model ProductPublication {
   @@index([catalogProductId])
   @@index([storeId])
   @@index([status])
+  @@index([storeId, pendingSync])
+  @@index([storeId, externalStatus])
 }
 
 /// Galería de imágenes por CatalogProduct. La imagen del proveedor puede
