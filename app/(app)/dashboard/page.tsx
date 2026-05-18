@@ -1,23 +1,20 @@
 import { prisma } from "@/lib/db/client";
-import { formatDate, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
   Store,
-  Package,
-  Calendar,
-  Clock,
+  Boxes,
+  TrendingUp,
+  CheckCircle2,
   ArrowRight,
   Activity,
-  ImageOff,
-  FolderX,
-  XCircle,
-  CheckCircle2,
-  Lock,
+  AlertCircle,
+  AlertTriangle,
+  Info,
+  ShoppingBag,
   PlusCircle,
   MinusCircle,
-  TrendingUp,
   TrendingDown,
-  Boxes,
-  Send,
+  Package,
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
@@ -25,29 +22,36 @@ import { es } from "date-fns/locale";
 import { getWorkerStatus } from "@/lib/system/health";
 import { requireSession } from "@/lib/auth";
 
+// ─── Stats ────────────────────────────────────────────────────────────────────
+
 async function getDashboardStats(userId: string) {
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
 
+  const fortyEightHoursAgo = new Date(Date.now() - 48 * 3600 * 1000);
+
+  // Primera ola: todo lo que no depende de otros resultados.
   const [
     activeProviders,
     totalProviders,
-    totalProducts,
-    extractionsThisMonth,
+    activeCatalogProducts,
+    activeWithoutCategory,
+    activeWithoutImage,
+    failedJobs48h,
+    activeJobs,
     lastJob,
     recentJobs,
     providers,
-    productsSinImagen,
-    productsSinCategoria,
-    extraccionesFallidas,
-    productsReadyToPublish,
+    latestPerProvider,
+    store,
+    extractionsThisMonth,
   ] = await Promise.all([
     prisma.provider.count({ where: { userId, isActive: true } }),
     prisma.provider.count({ where: { userId } }),
-    // Catálogo activo del usuario: excluimos los que el usuario marcó como
-    // ignorados, y los SUPPLIER_REMOVED **solo cuando** dependen del proveedor
-    // (stockSource=SUPPLIER). Los OWN/HYBRID sobreviven a SUPPLIER_REMOVED.
+
+    // Catálogo activo: excluye ignorados y SUPPLIER_REMOVED que dependían del
+    // proveedor (los OWN/HYBRID sobreviven).
     prisma.catalogProduct.count({
       where: {
         userId,
@@ -62,70 +66,232 @@ async function getDashboardStats(userId: string) {
         ],
       },
     }),
-    prisma.extractionJob.count({
-      where: { userId, createdAt: { gte: startOfMonth }, status: "COMPLETED" },
+
+    // Preparados sin categoría asignada (M2M vacío + assignedCategoryId null).
+    prisma.catalogProduct.count({
+      where: {
+        userId,
+        internalStatus: "PREPARED",
+        assignedCategoryId: null,
+        categories: { none: {} },
+      },
     }),
+
+    // Preparados sin imagen (campo imageUrl null/vacío Y CatalogProductImage vacío).
+    prisma.catalogProduct.count({
+      where: {
+        userId,
+        internalStatus: "PREPARED",
+        OR: [{ imageUrl: null }, { imageUrl: "" }],
+        images: { none: {} },
+      },
+    }),
+
+    prisma.extractionJob.count({
+      where: {
+        userId,
+        status: "FAILED",
+        createdAt: { gte: fortyEightHoursAgo },
+      },
+    }),
+
+    prisma.extractionJob.count({
+      where: { userId, status: { in: ["RUNNING", "PENDING"] } },
+    }),
+
     prisma.extractionJob.findFirst({
       where: { userId, status: "COMPLETED" },
       orderBy: { finishedAt: "desc" },
       include: { provider: { select: { name: true } } },
     }),
+
     prisma.extractionJob.findMany({
       where: { userId },
       take: 5,
       orderBy: { createdAt: "desc" },
-      include: { provider: { select: { name: true } } },
-    }),
-    prisma.provider.findMany({
-      where: { userId, isActive: true },
-      orderBy: { name: "asc" },
       include: {
-        extractionJobs: {
-          where: { status: "COMPLETED" },
-          orderBy: { createdAt: "desc" },
-          take: 1,
-          include: {
-            comparison: {
-              select: {
-                newProducts: true,
-                removedProducts: true,
-                priceUp: true,
-                priceDown: true,
-                stockChanged: true,
-                previousJobId: true,
-                createdAt: true,
-              },
-            },
+        provider: { select: { name: true } },
+        comparison: {
+          select: {
+            newProducts: true,
+            removedProducts: true,
+            priceUp: true,
+            priceDown: true,
+            stockChanged: true,
           },
         },
       },
     }),
-    prisma.extractedProduct.count({
-      where: { job: { userId }, OR: [{ imageUrl: null }, { imageUrl: "" }] },
+
+    prisma.provider.findMany({
+      where: { userId, isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, baseUrl: true },
     }),
-    prisma.extractedProduct.count({
-      where: { job: { userId }, OR: [{ category: null }, { category: "" }] },
+
+    // Última comparación COMPLETED por proveedor — misma lógica que /changes
+    // modo "recent".
+    prisma.extractionJob.findMany({
+      where: {
+        userId,
+        status: "COMPLETED",
+        comparison: { isNot: null },
+      },
+      orderBy: [{ providerId: "asc" }, { finishedAt: "desc" }],
+      distinct: ["providerId"],
+      select: {
+        id: true,
+        providerId: true,
+        finishedAt: true,
+        comparison: {
+          select: {
+            id: true,
+            newProducts: true,
+            removedProducts: true,
+            priceUp: true,
+            priceDown: true,
+            stockChanged: true,
+            previousJobId: true,
+          },
+        },
+      },
     }),
-    prisma.extractionJob.count({ where: { userId, status: "FAILED" } }),
-    // Placeholder para feature futura de publicación masiva: cuenta productos
-    // ya marcados como "prepared" (workflow aún no implementado, dará 0).
-    prisma.extractedProduct.count({
-      where: { job: { userId }, publicationStatus: "prepared" },
+
+    prisma.store.findFirst({
+      where: { userId },
+      include: {
+        integrations: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { status: true, lastConnectionCheck: true, lastError: true },
+        },
+      },
+    }),
+
+    prisma.extractionJob.count({
+      where: {
+        userId,
+        createdAt: { gte: startOfMonth },
+        status: "COMPLETED",
+      },
     }),
   ]);
+
+  // Segunda ola: depende de latestPerProvider y store.
+  const latestComparisonIds = latestPerProvider
+    .map((j) => j.comparison?.id)
+    .filter((x): x is string => !!x);
+
+  const storeId = store?.id;
+
+  const [criticalGroups, pendingGroups, storeKpis] = await Promise.all([
+    latestComparisonIds.length > 0
+      ? prisma.productChange.groupBy({
+          by: ["comparisonId"],
+          where: {
+            comparisonId: { in: latestComparisonIds },
+            changeType: { in: ["PRICE_UP", "PRICE_DOWN"] },
+            reviewStatus: "PENDING",
+            OR: [
+              { priceChangePercent: { gte: 20 } },
+              { priceChangePercent: { lte: -20 } },
+            ],
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as { comparisonId: string; _count: { _all: number } }[]),
+
+    latestComparisonIds.length > 0
+      ? prisma.productChange.groupBy({
+          by: ["comparisonId"],
+          where: {
+            comparisonId: { in: latestComparisonIds },
+            reviewStatus: "PENDING",
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as { comparisonId: string; _count: { _all: number } }[]),
+
+    storeId
+      ? (async () => {
+          const [active, draft, paused, errorPub, pendingSync, syncErrors, unmatched] =
+            await Promise.all([
+              prisma.productPublication.count({
+                where: { storeId, status: "ACTIVE" },
+              }),
+              prisma.productPublication.count({
+                where: { storeId, status: "DRAFT" },
+              }),
+              prisma.productPublication.count({
+                where: { storeId, status: "PAUSED" },
+              }),
+              prisma.productPublication.count({
+                where: { storeId, status: "ERROR" },
+              }),
+              prisma.productPublication.count({
+                where: { storeId, pendingSync: true },
+              }),
+              prisma.productPublication.count({
+                where: { storeId, syncStatus: "ERROR" },
+              }),
+              prisma.unmatchedStoreProduct.count({
+                where: { storeId, ignored: false },
+              }),
+            ]);
+          return { active, draft, paused, errorPub, pendingSync, syncErrors, unmatched };
+        })()
+      : Promise.resolve(null),
+  ]);
+
+  const criticalByComparison = new Map<string, number>();
+  for (const g of criticalGroups) {
+    criticalByComparison.set(g.comparisonId, g._count._all);
+  }
+  const pendingByComparison = new Map<string, number>();
+  for (const g of pendingGroups) {
+    pendingByComparison.set(g.comparisonId, g._count._all);
+  }
+
+  // Mapeo providerId → datos resumidos para las cards de "Inteligencia de precios".
+  const providerCards = latestPerProvider.map((j) => {
+    const c = j.comparison;
+    const compId = c?.id ?? null;
+    const critical = compId ? criticalByComparison.get(compId) ?? 0 : 0;
+    const pendingReview = compId ? pendingByComparison.get(compId) ?? 0 : 0;
+    const provider = providers.find((p) => p.id === j.providerId);
+    return {
+      providerId: j.providerId,
+      providerName: provider?.name ?? "—",
+      providerBaseUrl: provider?.baseUrl ?? "",
+      jobId: j.id,
+      finishedAt: j.finishedAt,
+      comparison: c,
+      critical,
+      pendingReview,
+      hasComparison: !!(c && c.previousJobId),
+    };
+  });
+
+  const totalCriticalPending = providerCards.reduce(
+    (acc, p) => acc + p.critical,
+    0
+  );
 
   return {
     activeProviders,
     totalProviders,
-    totalProducts,
-    extractionsThisMonth,
+    activeCatalogProducts,
+    activeWithoutCategory,
+    activeWithoutImage,
+    failedJobs48h,
+    activeJobs,
     lastJob,
     recentJobs,
-    providers,
-    productsSinImagen,
-    productsSinCategoria,
-    extraccionesFallidas,
-    productsReadyToPublish,
+    providerCards,
+    store,
+    storeKpis,
+    extractionsThisMonth,
+    totalCriticalPending,
   };
 }
 
@@ -137,6 +303,54 @@ function hostnameOf(url: string): string {
   }
 }
 
+type Severity = "critical" | "warning" | "info";
+
+interface AttentionItem {
+  id: string;
+  label: string;
+  count: number;
+  severity: Severity;
+  href: string;
+  ctaLabel: string;
+}
+
+const severityDot: Record<Severity, string> = {
+  critical: "bg-red-400",
+  warning: "bg-amber-400",
+  info: "bg-blue-400",
+};
+
+const severityBorder: Record<Severity, string> = {
+  critical: "border-red-500/30",
+  warning: "border-amber-500/30",
+  info: "border-border",
+};
+
+function buildJobSummary(job: {
+  status: string;
+  comparison: {
+    newProducts: number;
+    removedProducts: number;
+    priceUp: number;
+    priceDown: number;
+    stockChanged: number;
+  } | null;
+}): string {
+  if (job.status === "FAILED") return "Falló";
+  if (job.status === "RUNNING") return "En curso";
+  if (job.status === "PENDING") return "En cola";
+  if (job.status === "CANCELLED") return "Cancelado";
+  const c = job.comparison;
+  if (!c) return "Extracción completada";
+  const parts: string[] = [];
+  if (c.newProducts > 0) parts.push(`+${c.newProducts} nuevos`);
+  if (c.removedProducts > 0) parts.push(`${c.removedProducts} removidos`);
+  if (c.priceUp > 0) parts.push(`${c.priceUp} ↑`);
+  if (c.priceDown > 0) parts.push(`${c.priceDown} ↓`);
+  if (c.stockChanged > 0) parts.push(`${c.stockChanged} stock`);
+  return parts.length > 0 ? parts.join(" · ") : "Sin cambios detectados";
+}
+
 export default async function DashboardPage() {
   const session = await requireSession();
   const [stats, worker] = await Promise.all([
@@ -144,154 +358,330 @@ export default async function DashboardPage() {
     getWorkerStatus(session.user.id),
   ]);
 
-  const kpiCards = [
+  // ─── Atención requerida ───────────────────────────────────────────────────
+  const allAttentionItems: AttentionItem[] = [
+    {
+      id: "critical_changes",
+      label: "Cambios críticos sin revisar",
+      count: stats.totalCriticalPending,
+      severity: "critical",
+      href: "/changes?reviewStatus=PENDING",
+      ctaLabel: "Ver cambios",
+    },
+    {
+      id: "failed_jobs",
+      label: "Extracciones fallidas (48h)",
+      count: stats.failedJobs48h,
+      severity: "critical",
+      href: "/extractions?status=FAILED",
+      ctaLabel: "Ver extracciones",
+    },
+    {
+      id: "pub_errors",
+      label: "Publicaciones con error de sync",
+      count: stats.storeKpis?.syncErrors ?? 0,
+      severity: "critical",
+      href: "/my-store",
+      ctaLabel: "Revisar errores",
+    },
+    {
+      id: "without_category",
+      label: "Productos preparados sin categoría",
+      count: stats.activeWithoutCategory,
+      severity: "warning",
+      href: "/catalog?internalStatus=PREPARED&noCategory=true",
+      ctaLabel: "Ir al catálogo",
+    },
+    {
+      id: "without_image",
+      label: "Productos preparados sin imagen",
+      count: stats.activeWithoutImage,
+      severity: "warning",
+      href: "/catalog?internalStatus=PREPARED&noImage=true",
+      ctaLabel: "Ir al catálogo",
+    },
+    {
+      id: "unmatched",
+      label: "Productos de tienda no vinculados",
+      count: stats.storeKpis?.unmatched ?? 0,
+      severity: "info",
+      href: "/my-store",
+      ctaLabel: "Ver tienda",
+    },
+    {
+      id: "pending_sync",
+      label: "Publicaciones pendientes de sync",
+      count: stats.storeKpis?.pendingSync ?? 0,
+      severity: "info",
+      href: "/my-store",
+      ctaLabel: "Ir a Mi Tienda",
+    },
+  ];
+  const attentionItems = allAttentionItems.filter((i) => i.count > 0);
+
+  // ─── KPIs ejecutivos ──────────────────────────────────────────────────────
+  const kpis: { label: string; value: string | number; href: string; icon: typeof Store }[] = [
     {
       label: "Proveedores activos",
       value: stats.activeProviders,
-      sub: `${stats.totalProviders} en total`,
+      href: "/providers",
       icon: Store,
-      tone: "primary" as const,
     },
     {
-      label: "Productos en catálogo",
-      value: stats.totalProducts.toLocaleString("es-AR"),
-      sub: "Histórico acumulado",
+      label: "Productos activos",
+      value: stats.activeCatalogProducts.toLocaleString("es-AR"),
+      href: "/catalog",
       icon: Boxes,
-      tone: "accent" as const,
     },
     {
-      label: "Extracciones este mes",
-      value: stats.extractionsThisMonth,
-      sub: "Completadas",
-      icon: Calendar,
-      tone: "primary" as const,
+      label: "Cambios críticos sin revisar",
+      value: stats.totalCriticalPending,
+      href: "/changes?reviewStatus=PENDING",
+      icon: TrendingUp,
     },
     {
-      label: "Última extracción",
-      value: stats.lastJob ? stats.lastJob.provider.name : "—",
-      sub: stats.lastJob ? formatDate(stats.lastJob.finishedAt) : "Sin datos",
-      icon: Clock,
-      tone: "primary" as const,
+      label: "Publicaciones activas",
+      value: stats.storeKpis?.active ?? 0,
+      href: "/my-store",
+      icon: ShoppingBag,
     },
   ];
 
-  const providerCards = stats.providers
-    .map((p) => ({ provider: p, job: p.extractionJobs[0] }))
-    .filter((x) => x.job != null);
-
-  const catalogStatus = [
-    {
-      key: "sin-imagen",
-      icon: ImageOff,
-      tone: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-      count: stats.productsSinImagen,
-      label: "Productos sin imagen",
-      cta: "Revisar",
-      href: "/extractions",
-      disabled: false,
-    },
-    {
-      key: "sin-categoria",
-      icon: FolderX,
-      tone: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-      count: stats.productsSinCategoria,
-      label: "Productos sin categoría",
-      cta: "Revisar",
-      href: "/extractions",
-      disabled: false,
-    },
-    {
-      key: "fallidas",
-      icon: XCircle,
-      tone: "text-red-400 bg-red-500/10 border-red-500/20",
-      count: stats.extraccionesFallidas,
-      label: "Extracciones fallidas",
-      cta: "Ver",
-      href: "/extractions?status=FAILED",
-      disabled: false,
-    },
-    {
-      key: "publicar",
-      icon: Send,
-      tone: "text-blue-400 bg-blue-500/10 border-blue-500/20",
-      count: stats.productsReadyToPublish,
-      label: "Listos para publicar",
-      cta: "Próximamente",
-      href: "#",
-      disabled: true,
-    },
-  ];
-
-  const allCatalogClean =
-    stats.productsSinImagen === 0 &&
-    stats.productsSinCategoria === 0 &&
-    stats.extraccionesFallidas === 0;
+  // ─── Sistema ──────────────────────────────────────────────────────────────
+  const systemStatus = stats.activeJobs > 0
+    ? {
+        label: "Jobs en proceso",
+        dot: "bg-blue-400 animate-pulse",
+        detail: `${stats.activeJobs} extracción${stats.activeJobs > 1 ? "es" : ""} en curso`,
+      }
+    : stats.failedJobs48h > 0
+      ? {
+          label: "Atención requerida",
+          dot: "bg-red-400",
+          detail: `${stats.failedJobs48h} extracción${stats.failedJobs48h > 1 ? "es" : ""} fallida${stats.failedJobs48h > 1 ? "s" : ""} en las últimas 48h`,
+        }
+      : {
+          label: "Sistema operativo",
+          dot: "bg-green-400",
+          detail: stats.lastJob?.finishedAt
+            ? `Última ejecución ${formatDistanceToNow(new Date(stats.lastJob.finishedAt), { locale: es, addSuffix: true })}`
+            : "Sin extracciones recientes",
+        };
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-8">
       {/* ─── Header ────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Centro operativo
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Centro operativo</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Monitoreo de precios y cambios en tiempo real
+            Monitoreo comercial de tu catálogo, proveedores y ecommerce.
           </p>
         </div>
-        <Link
-          href="/new-extraction"
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors shadow-lg shadow-primary/20"
-        >
-          Nueva extracción
-          <ArrowRight className="w-4 h-4" />
-        </Link>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            href="/new-extraction"
+            className="text-xs bg-primary text-primary-foreground px-3 py-1.5 rounded-md hover:bg-primary/90 inline-flex items-center gap-1"
+          >
+            <PlusCircle className="w-3.5 h-3.5" /> Nueva extracción
+          </Link>
+          <Link
+            href="/changes?reviewStatus=PENDING"
+            className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+          >
+            Revisar cambios
+          </Link>
+          <Link
+            href="/catalog?internalStatus=PREPARED"
+            className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+          >
+            Catálogo
+          </Link>
+          <Link
+            href="/my-store"
+            className="text-xs border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+          >
+            Mi Tienda
+          </Link>
+        </div>
       </div>
 
-      {/* ─── KPIs ──────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpiCards.map((card) => (
-          <div
-            key={card.label}
-            className="bg-card border border-border rounded-xl p-6"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 space-y-2">
-                <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">
-                  {card.label}
-                </p>
-                <p className="text-3xl font-semibold leading-none truncate">
-                  {card.value}
-                </p>
-                <p className="text-xs text-muted-foreground">{card.sub}</p>
-              </div>
+      {/* ─── Atención requerida ───────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-400" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Atención requerida
+          </h2>
+        </div>
+        {attentionItems.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-green-400 bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-3">
+            <CheckCircle2 className="w-4 h-4" />
+            Todo en orden — no hay items que requieran atención
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {attentionItems.map((item) => (
               <div
+                key={item.id}
                 className={cn(
-                  "w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0",
-                  card.tone === "primary"
-                    ? "bg-primary/10 text-primary"
-                    : "bg-accent/10 text-accent"
+                  "bg-card border rounded-xl p-4 flex items-start justify-between gap-3",
+                  severityBorder[item.severity]
                 )}
               >
-                <card.icon className="w-4.5 h-4.5" />
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "w-2 h-2 rounded-full flex-shrink-0",
+                        severityDot[item.severity]
+                      )}
+                    />
+                    <span className="text-2xl font-bold leading-none">
+                      {item.count.toLocaleString("es-AR")}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">{item.label}</p>
+                </div>
+                <Link
+                  href={item.href}
+                  className="text-xs text-primary hover:underline whitespace-nowrap flex-shrink-0 mt-1 inline-flex items-center gap-0.5"
+                >
+                  {item.ctaLabel} <ArrowRight className="w-3 h-3" />
+                </Link>
               </div>
-            </div>
+            ))}
           </div>
-        ))}
+        )}
+      </section>
+
+      {/* ─── KPIs ─────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        {kpis.map((card) => {
+          const Icon = card.icon;
+          return (
+            <Link
+              key={card.label}
+              href={card.href}
+              className="bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-colors group"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                    {card.label}
+                  </p>
+                  <p className="text-2xl font-semibold leading-none truncate">
+                    {card.value}
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0 group-hover:bg-primary/20 transition-colors">
+                  <Icon className="w-4 h-4" />
+                </div>
+              </div>
+            </Link>
+          );
+        })}
       </div>
 
-      {/* ─── Inteligencia de precios ───────────────────────────────────── */}
-      <section>
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold tracking-tight">
+      {/* ─── Estado ecommerce ─────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Estado ecommerce
+          </h2>
+          {stats.store && (
+            <Link href="/my-store" className="text-xs text-primary hover:underline">
+              Ir a Mi Tienda →
+            </Link>
+          )}
+        </div>
+        {!stats.store ? (
+          <div className="bg-card border border-border rounded-xl p-6 flex items-center justify-between gap-4 flex-wrap">
+            <div className="space-y-1">
+              <p className="font-medium">Sin tienda conectada</p>
+              <p className="text-sm text-muted-foreground">
+                Conectá tu WooCommerce para sincronizar publicaciones y precios.
+              </p>
+            </div>
+            <Link
+              href="/my-store"
+              className="text-sm bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:bg-primary/90 inline-flex items-center gap-1.5"
+            >
+              Conectar tienda <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        ) : (
+          <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span
+                className={cn(
+                  "w-2 h-2 rounded-full",
+                  stats.store.integrations[0]?.status === "CONNECTED"
+                    ? "bg-green-400"
+                    : stats.store.integrations[0]?.status === "ERROR"
+                      ? "bg-red-400"
+                      : "bg-amber-400"
+                )}
+              />
+              <span className="font-medium">{stats.store.name}</span>
+              <span className="text-xs text-muted-foreground">
+                {hostnameOf(stats.store.url)}
+              </span>
+              {stats.store.integrations[0]?.lastConnectionCheck && (
+                <span className="text-[11px] text-muted-foreground/70 ml-auto">
+                  Verificado{" "}
+                  {formatDistanceToNow(
+                    new Date(stats.store.integrations[0].lastConnectionCheck),
+                    { locale: es, addSuffix: true }
+                  )}
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: "Publicadas", value: stats.storeKpis?.active ?? 0, cls: "" },
+                {
+                  label: "Pend. sync",
+                  value: stats.storeKpis?.pendingSync ?? 0,
+                  cls: (stats.storeKpis?.pendingSync ?? 0) > 0 ? "text-amber-400" : "",
+                },
+                {
+                  label: "Errores",
+                  value: stats.storeKpis?.syncErrors ?? 0,
+                  cls: (stats.storeKpis?.syncErrors ?? 0) > 0 ? "text-red-400" : "",
+                },
+                {
+                  label: "No vinculados",
+                  value: stats.storeKpis?.unmatched ?? 0,
+                  cls: (stats.storeKpis?.unmatched ?? 0) > 0 ? "text-blue-400" : "",
+                },
+              ].map((k) => (
+                <div key={k.label} className="space-y-0.5">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {k.label}
+                  </p>
+                  <p className={cn("text-xl font-semibold", k.cls)}>
+                    {k.value.toLocaleString("es-AR")}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ─── Inteligencia de precios ──────────────────────────────────── */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
             Inteligencia de precios
           </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Cambios detectados en la última extracción de cada proveedor
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Última comparación por proveedor — los conteos reflejan cambios pendientes de revisión.
           </p>
         </div>
 
-        {providerCards.length === 0 ? (
+        {stats.providerCards.length === 0 ? (
           <div className="bg-card border border-border rounded-xl py-12 text-center text-sm text-muted-foreground">
             Sin extracciones completadas todavía.{" "}
             <Link href="/new-extraction" className="text-primary hover:underline">
@@ -300,83 +690,90 @@ export default async function DashboardPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {providerCards.map(({ provider, job }) => {
-              const c = job!.comparison;
-              const hasComparison = c != null && c.previousJobId != null;
-              const total = hasComparison
-                ? c!.newProducts +
-                  c!.removedProducts +
-                  c!.priceUp +
-                  c!.priceDown +
-                  c!.stockChanged
-                : 0;
-
-              const metrics: { icon: typeof PlusCircle; label: string; value: number; color: string }[] = [
+            {stats.providerCards.map((p) => {
+              const borderCls =
+                p.critical >= 10
+                  ? "border-red-500/40"
+                  : p.critical >= 5
+                    ? "border-amber-500/40"
+                    : "border-border";
+              const c = p.comparison;
+              const metrics: {
+                icon: typeof PlusCircle;
+                label: string;
+                value: number;
+                color: string;
+              }[] = [
                 { icon: PlusCircle, label: "Nuevos", value: c?.newProducts ?? 0, color: "text-green-400" },
-                { icon: MinusCircle, label: "Removidos", value: c?.removedProducts ?? 0, color: "text-red-400" },
                 { icon: TrendingUp, label: "Precio ↑", value: c?.priceUp ?? 0, color: "text-orange-400" },
                 { icon: TrendingDown, label: "Precio ↓", value: c?.priceDown ?? 0, color: "text-emerald-400" },
                 { icon: Package, label: "Stock", value: c?.stockChanged ?? 0, color: "text-blue-400" },
+                { icon: MinusCircle, label: "Removidos", value: c?.removedProducts ?? 0, color: "text-red-400" },
               ];
-
               return (
                 <div
-                  key={provider.id}
-                  className="bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/30 transition-colors"
+                  key={p.providerId}
+                  className={cn(
+                    "bg-card border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/30 transition-colors",
+                    borderCls
+                  )}
                 >
-                  {/* Header de la card */}
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                        <Store className="w-4.5 h-4.5 text-primary" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-semibold text-sm truncate">
-                          {provider.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {hostnameOf(provider.baseUrl)}
-                        </p>
-                      </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm truncate">{p.providerName}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        {p.finishedAt
+                          ? `Última extracción ${formatDistanceToNow(new Date(p.finishedAt), { locale: es, addSuffix: true })}`
+                          : "Sin extracción"}
+                      </p>
                     </div>
-                    {hasComparison && c!.createdAt && (
-                      <span className="text-[10px] text-muted-foreground/70 bg-muted/30 border border-border px-2 py-0.5 rounded-full whitespace-nowrap">
-                        {formatDistanceToNow(c!.createdAt, {
-                          locale: es,
-                          addSuffix: true,
-                        })}
-                      </span>
-                    )}
                   </div>
 
-                  {/* Cuerpo: métricas o estado */}
-                  {hasComparison ? (
+                  {p.hasComparison ? (
                     <>
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                        {metrics.map((m) => (
-                          <div key={m.label} className="flex items-center gap-2">
-                            <m.icon className={`w-3.5 h-3.5 ${m.color}`} />
-                            <span className="text-xs">
-                              <span className={`font-semibold ${m.color}`}>
-                                {m.value}
-                              </span>{" "}
-                              <span className="text-muted-foreground">
-                                {m.label}
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                        {metrics.map((m) => {
+                          const Icon = m.icon;
+                          return (
+                            <div key={m.label} className="flex items-center gap-2">
+                              <Icon className={`w-3.5 h-3.5 ${m.color}`} />
+                              <span className="text-xs">
+                                <span className={`font-semibold ${m.color}`}>
+                                  {m.value}
+                                </span>{" "}
+                                <span className="text-muted-foreground">
+                                  {m.label}
+                                </span>
                               </span>
-                            </span>
-                          </div>
-                        ))}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div className="border-t border-border pt-3">
-                        <p className="text-xs text-muted-foreground">
-                          Total
-                        </p>
-                        <p className="text-2xl font-semibold leading-none mt-1">
-                          {total}{" "}
-                          <span className="text-sm font-normal text-muted-foreground">
-                            cambio{total === 1 ? "" : "s"}
-                          </span>
-                        </p>
+
+                      <div className="border-t border-border pt-3 space-y-1 text-xs">
+                        {p.critical > 0 && (
+                          <p className="text-red-400 inline-flex items-center gap-1.5">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span className="font-semibold">{p.critical}</span>{" "}
+                            cambio{p.critical === 1 ? "" : "s"} crítico
+                            {p.critical === 1 ? "" : "s"}
+                          </p>
+                        )}
+                        {p.pendingReview > 0 && (
+                          <p className="text-muted-foreground inline-flex items-center gap-1.5">
+                            <Info className="w-3 h-3" />
+                            <span className="font-semibold text-foreground">
+                              {p.pendingReview}
+                            </span>{" "}
+                            pendiente{p.pendingReview === 1 ? "" : "s"} de revisión
+                          </p>
+                        )}
+                        {p.critical === 0 && p.pendingReview === 0 && (
+                          <p className="text-green-400 inline-flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Todo revisado
+                          </p>
+                        )}
                       </div>
                     </>
                   ) : (
@@ -390,34 +787,25 @@ export default async function DashboardPage() {
                     </div>
                   )}
 
-                  {/* Acciones */}
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <Link
-                      href={`/providers/${provider.id}`}
+                      href={`/changes?providerId=${p.providerId}&reviewStatus=PENDING`}
                       className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
-                      Historial
+                      Ver cambios
                     </Link>
                     <Link
-                      href={`/changes?providerId=${provider.id}`}
+                      href={`/catalog?providerId=${p.providerId}`}
                       className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
-                      Cambios
+                      Ver productos
                     </Link>
                     <Link
-                      href={`/extractions/${job!.id}`}
-                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                      href={`/providers/${p.providerId}`}
+                      className="text-[11px] text-primary hover:underline ml-auto"
                     >
-                      Productos
+                      Historial →
                     </Link>
-                    <button
-                      type="button"
-                      disabled
-                      title="Próximamente"
-                      className="text-[11px] border border-border px-2.5 py-1 rounded-md text-muted-foreground/50 inline-flex items-center gap-1 cursor-not-allowed ml-auto"
-                    >
-                      <Lock className="w-2.5 h-2.5" /> Publicar
-                    </button>
                   </div>
                 </div>
               );
@@ -426,84 +814,14 @@ export default async function DashboardPage() {
         )}
       </section>
 
-      {/* ─── Estado del catálogo ──────────────────────────────────────── */}
-      <section>
-        <div className="mb-4 flex items-end justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold tracking-tight">
-              Estado del catálogo
-            </h2>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Optimizaciones pendientes y preparación para publicación
-            </p>
-          </div>
-          {allCatalogClean && (
-            <div className="flex items-center gap-1.5 text-xs text-accent">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              Catálogo al día
-            </div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {catalogStatus.map((item) => (
-            <div
-              key={item.key}
-              className={cn(
-                "bg-card border border-border rounded-xl p-5 flex flex-col gap-3",
-                item.disabled && "opacity-60"
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div
-                  className={cn(
-                    "w-9 h-9 rounded-lg border flex items-center justify-center flex-shrink-0",
-                    item.tone
-                  )}
-                >
-                  <item.icon className="w-4.5 h-4.5" />
-                </div>
-                {item.disabled && (
-                  <Lock className="w-3 h-3 text-muted-foreground/40" />
-                )}
-              </div>
-              <div>
-                <p className="text-3xl font-semibold leading-none">
-                  {item.count.toLocaleString("es-AR")}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  {item.label}
-                </p>
-              </div>
-              {item.disabled ? (
-                <span className="text-xs text-muted-foreground/60 self-start">
-                  {item.cta}
-                </span>
-              ) : (
-                <Link
-                  href={item.href}
-                  className="text-xs text-primary hover:underline self-start mt-auto"
-                >
-                  {item.cta} →
-                </Link>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ─── Pie: actividad reciente + worker (compactos, secundarios) ── */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-2">
-        {/* Actividad reciente (2/3) */}
+      {/* ─── Actividad reciente + Sistema ─────────────────────────────── */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-border">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Actividad reciente
             </h3>
-            <Link
-              href="/extractions"
-              className="text-[11px] text-primary hover:underline"
-            >
+            <Link href="/extractions" className="text-[11px] text-primary hover:underline">
               Ver todas
             </Link>
           </div>
@@ -514,39 +832,37 @@ export default async function DashboardPage() {
           ) : (
             <ul className="divide-y divide-border">
               {stats.recentJobs.map((job) => {
-                const tone =
+                const dot =
                   job.status === "COMPLETED"
-                    ? "text-accent"
+                    ? "bg-green-400"
                     : job.status === "FAILED"
-                    ? "text-red-400"
-                    : job.status === "RUNNING"
-                    ? "text-blue-400"
-                    : "text-muted-foreground";
-                const icon =
-                  job.status === "COMPLETED" ? "✔" :
-                  job.status === "FAILED" ? "✖" :
-                  job.status === "RUNNING" ? "•" : "·";
-                const statusLabel =
-                  job.status === "COMPLETED" ? "completado" :
-                  job.status === "FAILED" ? "falló" :
-                  job.status === "RUNNING" ? "en curso" :
-                  job.status === "PENDING" ? "pendiente" : "cancelado";
+                      ? "bg-red-400"
+                      : job.status === "RUNNING"
+                        ? "bg-blue-400 animate-pulse"
+                        : "bg-amber-400";
                 return (
                   <li key={job.id}>
                     <Link
                       href={`/extractions/${job.id}`}
-                      className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-muted/20 transition-colors text-sm"
+                      className="flex items-start justify-between gap-3 px-5 py-3 hover:bg-muted/20 transition-colors"
                     >
-                      <span className="flex items-center gap-2.5 min-w-0">
-                        <span className={`font-mono text-base leading-none ${tone}`}>
-                          {icon}
-                        </span>
-                        <span className="truncate">{job.provider.name}</span>
-                        <span className="text-muted-foreground text-xs">
-                          — {statusLabel}
-                        </span>
-                      </span>
-                      <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span
+                          className={cn(
+                            "w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5",
+                            dot
+                          )}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {job.provider.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {buildJobSummary(job)}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground/70 whitespace-nowrap mt-0.5">
                         {formatDistanceToNow(job.createdAt, {
                           locale: es,
                           addSuffix: true,
@@ -560,9 +876,8 @@ export default async function DashboardPage() {
           )}
         </div>
 
-        {/* Worker status (compacto, 1/3) */}
-        <div className="bg-card border border-border rounded-xl p-4 flex items-center gap-3">
-          <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-muted/40 flex-shrink-0">
+        <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+          <div className="flex items-center gap-2">
             <Activity
               className={cn(
                 "w-4 h-4",
@@ -571,26 +886,33 @@ export default async function DashboardPage() {
                 worker.status === "idle" && "text-muted-foreground"
               )}
             />
-            {worker.status === "active" && (
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent ring-2 ring-card animate-pulse" />
-            )}
-          </div>
-          <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Sistema
+            </h3>
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className={cn("w-2 h-2 rounded-full", systemStatus.dot)} />
+              <p className="text-sm font-semibold">{systemStatus.label}</p>
+            </div>
+            <p className="text-xs text-muted-foreground">{systemStatus.detail}</p>
+          </div>
+          <div className="pt-2 border-t border-border text-[11px] text-muted-foreground space-y-1">
+            <p>
+              Worker:{" "}
+              <span className="text-foreground">
+                {worker.status === "active"
+                  ? "activo"
+                  : worker.status === "idle"
+                    ? "en espera"
+                    : "sin respuesta"}
+              </span>
             </p>
-            <p className="text-sm font-semibold leading-tight">
-              {worker.status === "active" && "Worker activo"}
-              {worker.status === "idle" && "Worker en espera"}
-              {worker.status === "stalled" && "Sin respuesta"}
-            </p>
-            <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
-              {worker.status === "active" &&
-                `${worker.runningJobs} en proceso`}
-              {worker.status === "idle" && "Sin jobs activos"}
-              {worker.status === "stalled" &&
-                worker.lastSeenAt &&
-                `Último: ${formatDistanceToNow(worker.lastSeenAt, { locale: es, addSuffix: true })}`}
+            <p>
+              Extracciones este mes:{" "}
+              <span className="text-foreground font-mono">
+                {stats.extractionsThisMonth}
+              </span>
             </p>
           </div>
         </div>
