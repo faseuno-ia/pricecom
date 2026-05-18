@@ -30,8 +30,18 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Algunos sitios (Toys Palace) bloquean hotlinking — devuelven una imagen
+    // de "image was hotlinked" cuando el Referer no matchea su dominio. Para
+    // que el proxy obtenga la imagen real, forjamos un Referer del mismo
+    // origen que la imagen.
+    const referer = `${parsed.protocol}//${parsed.hostname}/`;
     const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        Referer: referer,
+        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      },
     });
 
     if (!response.ok) {

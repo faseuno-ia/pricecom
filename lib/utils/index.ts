@@ -65,21 +65,35 @@ export function truncate(str: string, length: number): string {
   return str.slice(0, length) + "…";
 }
 
+// Dominios que bloquean hotlinking — el browser no logra cargar la imagen
+// porque el server remoto rechaza requests con Referer ajeno. Las pasamos
+// por /api/image-proxy donde sí podemos setear el Referer correcto.
+const HOTLINK_BLOCKED_DOMAINS = [
+  "toyspalace.com.ar",
+  "impotekno.net",
+];
+
 /**
- * Normaliza una URL de imagen para evitar mixed content cuando la app corre en HTTPS:
- * - https://  → tal cual
- * - http://   → la enrutamos por /api/image-proxy (sirve la imagen desde el server,
- *               evitando que el browser bloquee el contenido mixto)
- * - //...     → asumimos https
- * - cualquier otro caso → tal cual
+ * Normaliza una URL de imagen para que la UI la pueda mostrar siempre:
+ * - https:// → tal cual, salvo que el host esté en HOTLINK_BLOCKED_DOMAINS.
+ * - http://  → la enrutamos por /api/image-proxy (también evita mixed
+ *              content cuando la app corre en HTTPS).
+ * - //...    → asumimos https.
+ * - cualquier otro caso → tal cual.
  */
 export function normalizeImageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  if (url.startsWith("https://")) return url;
-  if (url.startsWith("http://")) {
+
+  if (url.startsWith("//")) {
+    url = "https:" + url;
+  }
+
+  const isHttp = url.startsWith("http://");
+  const isBlocked = HOTLINK_BLOCKED_DOMAINS.some((d) => url.includes(d));
+
+  if (isHttp || isBlocked) {
     return `/api/image-proxy?url=${encodeURIComponent(url)}`;
   }
-  if (url.startsWith("//")) return "https:" + url;
   return url;
 }
 

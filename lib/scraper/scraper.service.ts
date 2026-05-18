@@ -56,8 +56,10 @@ function cleanStockText(raw: string | null | undefined): string | null {
   const cleaned = String(raw).trim();
   if (!cleaned) return null;
 
-  // CTAs y labels (acepta "Ver carrito" con o sin espacio).
-  if (/agregar|carrito|comprar|cantidad|ver\s*carrito/i.test(cleaned)) {
+  // CTAs y labels que pueden venir concatenados sin espacios
+  // (ej. "AgregarVer carrito" en Toys Palace cuando el fallback heurístico
+  // captura el texto pegado de varios botones).
+  if (/agregar|agreg|añadir|anadir|carrito|comprar|cantidad|ver\s*carrito/i.test(cleaned)) {
     return null;
   }
 
@@ -69,6 +71,13 @@ function cleanStockText(raw: string | null | undefined): string | null {
   // consecutivas (ej. "CABLE USB", "MELECH 232"). Salvo que matchee el patrón
   // canónico de stock ("Sin stock", "Disponible", "5 unidades", etc.).
   if (/[A-Z]{2,}\s+[A-Z]{2,}/.test(cleaned) && !VALID_STOCK_PATTERN.test(cleaned)) {
+    return null;
+  }
+
+  // Defensa final: si el texto no contiene ni un número ni una palabra clave
+  // de stock válida, descartamos. Esto atrapa basura tipo "Hola mundo" que
+  // pasó los filtros previos.
+  if (!VALID_STOCK_PATTERN.test(cleaned) && !/\d/.test(cleaned)) {
     return null;
   }
 
@@ -646,13 +655,26 @@ export class ScraperService {
 
     // Stock — cleanStockText descarta texto de CTAs como "Agregar al carrito",
     // labels del form de compra ("Cantidad") y blobs sospechosamente largos.
-    let stock = cleanStockText(get(config?.stockSelector));
-    if (!stock) {
+    //
+    // Valor especial "NONE" para stockSelector: el sitio no expone stock en
+    // el listing (ej. Toys Palace), así que evitamos el fallback heurístico
+    // que termina capturando el botón "Agregar al carrito".
+    let stock: string | null = null;
+    if (config?.stockSelector === "NONE") {
+      stock = null;
+    } else if (config?.stockSelector) {
+      stock = cleanStockText(get(config.stockSelector));
+    } else {
+      // Sin selector configurado: probamos el fallback heurístico recorriendo
+      // los textos cortos de la tarjeta que matcheen STOCK_LABELS.
       card.find("*").each((_, el) => {
         const text = $(el).text().trim();
         if (STOCK_LABELS.test(text) && text.length < 60) {
           const cleaned = cleanStockText(text);
-          if (cleaned) { stock = cleaned; return false; }
+          if (cleaned) {
+            stock = cleaned;
+            return false;
+          }
         }
       });
     }
