@@ -13,23 +13,62 @@ import {
   LogOut,
   TrendingUp,
   BookOpen,
-  Tag,
+  BadgePercent,
+  Truck,
   ChevronLeft,
   ChevronRight,
-  ShoppingBag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, highlight: false, badge: false as const },
-  { href: "/providers", label: "Proveedores", icon: Store, highlight: false, badge: false as const },
-  { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" as const },
-  { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false as const },
-  { href: "/catalog", label: "Catálogo", icon: BookOpen, highlight: false, badge: false as const },
-  { href: "/my-store", label: "Mi Tienda", icon: ShoppingBag, highlight: false, badge: false as const },
-  { href: "/pricing-rules", label: "Pricing", icon: Tag, highlight: false, badge: false as const },
-  { href: "/new-extraction", label: "Nueva extracción", icon: PlusCircle, highlight: true, badge: false as const },
+type BadgeKind = false | "queue" | "store";
+
+interface NavItem {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  highlight: boolean;
+  badge: BadgeKind;
+}
+
+interface NavGroup {
+  label: string | null;
+  items: NavItem[];
+}
+
+// Grupos del sidebar — orden importa visualmente.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, highlight: false, badge: false },
+    ],
+  },
+  {
+    label: "Ecommerce",
+    items: [
+      { href: "/my-store", label: "Mi Tienda", icon: Store, highlight: false, badge: "store" },
+      { href: "/catalog", label: "Catálogo", icon: BookOpen, highlight: false, badge: false },
+      { href: "/pricing-rules", label: "Reglas de precios", icon: BadgePercent, highlight: false, badge: false },
+    ],
+  },
+  {
+    label: "Abastecimiento",
+    items: [
+      { href: "/providers", label: "Proveedores", icon: Truck, highlight: false, badge: false },
+      { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" },
+      { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false },
+    ],
+  },
 ];
+
+// CTA destacado — separado de los grupos para que conserve el énfasis.
+const CTA_ITEM: NavItem = {
+  href: "/new-extraction",
+  label: "Nueva extracción",
+  icon: PlusCircle,
+  highlight: true,
+  badge: false,
+};
 
 const STORAGE_KEY = "sidebar-collapsed";
 
@@ -42,8 +81,6 @@ export function SidebarClient({ queueDepth }: { queueDepth: number }) {
   const { data: session } = useSession();
   const userDisplay = session?.user?.name || session?.user?.email || "Sesión activa";
 
-  // SSR/initial render: expanded por default. Tras montar, hidratamos desde
-  // localStorage; si no hay preferencia y estamos en /changes, default colapsado.
   const [collapsed, setCollapsed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
@@ -64,6 +101,48 @@ export function SidebarClient({ queueDepth }: { queueDepth: number }) {
       collapsed ? "collapsed" : "expanded"
     );
   }, [collapsed, hydrated]);
+
+  function renderItem(item: NavItem) {
+    const active = pathname === item.href || pathname.startsWith(item.href + "/");
+    // Cantidad a mostrar en el badge. queue=depth de cola; store=todavía no
+    // cableado (estructura preparada para pendingSync+errores+unmatched).
+    const badgeCount =
+      item.badge === "queue" ? queueDepth : item.badge === "store" ? 0 : 0;
+    const showBadge = item.badge !== false && badgeCount > 0;
+    const Icon = item.icon;
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        title={collapsed ? item.label : undefined}
+        className={cn(
+          "relative flex items-center text-sm font-medium transition-all rounded-lg",
+          collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5",
+          active
+            ? "bg-primary/10 text-primary"
+            : item.highlight
+              ? "bg-accent/10 text-accent hover:bg-accent/20"
+              : "text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+        )}
+      >
+        {active && (
+          <span className="absolute left-0 top-1.5 bottom-1.5 w-1 bg-primary rounded-r-full" />
+        )}
+        <div className="relative">
+          <Icon className="w-4 h-4 flex-shrink-0" />
+          {collapsed && showBadge && (
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary ring-2 ring-[hsl(var(--sidebar))]" />
+          )}
+        </div>
+        {!collapsed && <span className="flex-1">{item.label}</span>}
+        {!collapsed && showBadge && (
+          <span className="text-[10px] font-semibold px-1.5 min-w-[20px] h-5 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground">
+            {badgeCount}
+          </span>
+        )}
+      </Link>
+    );
+  }
 
   return (
     <aside className="app-sidebar fixed left-0 top-0 h-full bg-[hsl(var(--sidebar))] text-foreground border-r border-border flex flex-col z-10 overflow-hidden">
@@ -96,45 +175,25 @@ export function SidebarClient({ queueDepth }: { queueDepth: number }) {
         )}
       </Link>
 
-      {/* Nav */}
-      <nav className={cn("flex-1 space-y-0.5", collapsed ? "p-2" : "p-3")}>
-        {navItems.map(({ href, label, icon: Icon, highlight, badge }) => {
-          const active = pathname === href || pathname.startsWith(href + "/");
-          const showBadge = badge === "queue" && queueDepth > 0;
-          return (
-            <Link
-              key={href}
-              href={href}
-              title={collapsed ? label : undefined}
-              className={cn(
-                "relative flex items-center text-sm font-medium transition-all rounded-lg",
-                collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5",
-                active
-                  ? "bg-primary/10 text-primary"
-                  : highlight
-                  ? "bg-accent/10 text-accent hover:bg-accent/20"
-                  : "text-muted-foreground hover:bg-muted/30 hover:text-foreground"
-              )}
-            >
-              {active && (
-                <span className="absolute left-0 top-1.5 bottom-1.5 w-1 bg-primary rounded-r-full" />
-              )}
-              <div className="relative">
-                <Icon className="w-4 h-4 flex-shrink-0" />
-                {/* Badge en colapsado: punto, no número */}
-                {collapsed && showBadge && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary ring-2 ring-[hsl(var(--sidebar))]" />
-                )}
-              </div>
-              {!collapsed && <span className="flex-1">{label}</span>}
-              {!collapsed && showBadge && (
-                <span className="text-[10px] font-semibold px-1.5 min-w-[20px] h-5 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground">
-                  {queueDepth}
-                </span>
-              )}
-            </Link>
-          );
-        })}
+      {/* Nav — grupos */}
+      <nav className={cn("flex-1 overflow-y-auto", collapsed ? "p-2" : "p-3")}>
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={gi} className="space-y-0.5">
+            {/* Label en expandido / separador entre grupos en colapsado */}
+            {gi > 0 && collapsed && (
+              <div className="mx-1 my-2 h-px bg-border/40" />
+            )}
+            {!collapsed && group.label && (
+              <p className="px-3 pt-4 pb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50 font-medium select-none">
+                {group.label}
+              </p>
+            )}
+            {group.items.map(renderItem)}
+          </div>
+        ))}
+
+        {/* CTA destacado al final, separado por un gap visual */}
+        <div className={cn(collapsed ? "mt-4" : "mt-6")}>{renderItem(CTA_ITEM)}</div>
       </nav>
 
       {/* Toggle + logout */}

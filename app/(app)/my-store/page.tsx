@@ -31,7 +31,7 @@ export default async function MyStorePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Mi Tienda</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Conectá tu ecommerce existente para sincronizar tu catálogo.
+            Sincronizá tu tienda, publicaciones, precios y stock desde un solo lugar.
           </p>
         </div>
         <Onboarding />
@@ -120,7 +120,7 @@ export default async function MyStorePage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Mi Tienda</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Estado de la sincronización con tu ecommerce.
+          Sincronizá tu tienda, publicaciones, precios y stock desde un solo lugar.
         </p>
       </div>
 
