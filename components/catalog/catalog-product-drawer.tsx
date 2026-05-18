@@ -1,12 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import {
   X,
   ExternalLink,
   ImageOff,
-  Lock,
   Loader2,
   Plus,
   Power,
@@ -73,6 +72,39 @@ const stockSourceMeta: Record<
   },
 };
 
+interface CategoryRaw {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+interface CategoryNode extends CategoryRaw {
+  depth: number;
+}
+
+// Aplana el árbol de categorías en orden jerárquico (preorden DFS).
+// Cada nodo lleva su `depth` para indentar el dropdown.
+function buildFlatTree(categories: CategoryRaw[]): CategoryNode[] {
+  const byParent = new Map<string | null, CategoryRaw[]>();
+  for (const c of categories) {
+    const key = c.parentId ?? null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key)!.push(c);
+  }
+  const result: CategoryNode[] = [];
+  function walk(parentId: string | null, depth: number) {
+    const children = (byParent.get(parentId) ?? []).slice().sort((a, b) =>
+      a.name.localeCompare(b.name)
+    );
+    for (const c of children) {
+      result.push({ ...c, depth });
+      walk(c.id, depth + 1);
+    }
+  }
+  walk(null, 0);
+  return result;
+}
+
 const ruleAppliedMeta: Record<
   "manual" | "category" | "provider" | "global" | "none",
   { label: string; cls: string }
@@ -118,7 +150,28 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   const [commercialDescription, setCommercialDescription] = useState("");
   const [finalPrice, setFinalPrice] = useState<string>("");
   const [manualMargin, setManualMargin] = useState<string>("");
+  const [assignedCategoryId, setAssignedCategoryId] = useState<string | null>(
+    null
+  );
   const [notes, setNotes] = useState("");
+
+  // Catálogo global de categorías (compartido entre proveedores). Se carga una
+  // sola vez por sesión de drawer abierta.
+  const [categories, setCategories] = useState<CategoryRaw[]>([]);
+  const flatTree = useMemo(() => buildFlatTree(categories), [categories]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/categories")
+      .then((r) => r.json())
+      .then((data: CategoryRaw[]) => {
+        if (!cancelled) setCategories(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -149,6 +202,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         setCommercialDescription(data.commercialDescription ?? "");
         setFinalPrice(data.finalPrice != null ? String(data.finalPrice) : "");
         setManualMargin(data.manualMargin != null ? String(data.manualMargin) : "");
+        setAssignedCategoryId(data.assignedCategoryId ?? null);
         setNotes(data.notes ?? "");
       } catch (err) {
         if (!cancelled) toast.error((err as Error).message);
@@ -174,6 +228,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
           commercialDescription: commercialDescription.trim() || null,
           finalPrice: finalPrice ? parseFloat(finalPrice) : null,
           manualMargin: manualMargin ? parseFloat(manualMargin) : null,
+          assignedCategoryId: assignedCategoryId,
           notes: notes.trim() || null,
         }),
       });
@@ -526,15 +581,22 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                 <label className="block text-[11px] text-muted-foreground mb-1">
                   Categoría
                 </label>
-                <button
-                  type="button"
-                  disabled
-                  title="Próximamente — gestión de categorías"
-                  className="w-full flex items-center justify-between text-sm bg-background border border-border rounded-md px-2.5 py-1.5 text-muted-foreground/60 cursor-not-allowed"
+                <select
+                  value={assignedCategoryId ?? ""}
+                  onChange={(e) =>
+                    setAssignedCategoryId(e.target.value || null)
+                  }
+                  className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
                 >
-                  {product.assignedCategory?.name ?? "Sin categoría asignada"}
-                  <Lock className="w-3 h-3" />
-                </button>
+                  <option value="">Sin categoría</option>
+                  {flatTree.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.depth > 0
+                        ? "  ".repeat(c.depth) + "└─ " + c.name
+                        : c.name}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
