@@ -2,133 +2,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import {
-  Prisma,
-  CatalogProductStatus,
-  PublicationStatus,
-  InternalPublicationStatus,
-  CatalogSourceType,
-} from "@prisma/client";
-import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
+import { buildCatalogListWhere } from "@/lib/catalog/list-filters";
 
-const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
-const VALID_INTERNAL: InternalPublicationStatus[] = [
-  "NOT_PUBLISHED",
-  "PREPARED",
-  "PAUSED",
-  "IGNORED",
-];
-const VALID_PUB: (PublicationStatus | "NONE")[] = [
-  "DRAFT",
-  "ACTIVE",
-  "PAUSED",
-  "REMOVED",
-  "ERROR",
-  "NONE",
-];
-const VALID_SOURCE: CatalogSourceType[] = ["SCRAPED", "MANUAL", "IMPORTED"];
-
-const MAX_PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 500;
 
 export async function GET(req: NextRequest) {
   const session = await requireSession();
   const url = new URL(req.url);
 
-  const search = url.searchParams.get("search")?.trim();
-  const providerId = url.searchParams.get("providerId");
-  const supplierStatusParam = url.searchParams.get("supplierStatus");
-  const internalStatusParam = url.searchParams.get("internalStatus");
-  const publicationStatusParam = url.searchParams.get("publicationStatus");
-  const sourceTypeParam = url.searchParams.get("sourceType");
-  const noImage = url.searchParams.get("noImage") === "true";
-  const noCategory = url.searchParams.get("noCategory") === "true";
-  const showRemovedIgnored =
-    url.searchParams.get("showRemovedIgnored") === "true";
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const pageSize = Math.min(
     MAX_PAGE_SIZE,
     Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "50", 10) || 50)
   );
 
-  const where: Prisma.CatalogProductWhereInput = {
-    userId: session.user.id,
-  };
-
-  // Por defecto ocultamos:
-  //   - productos ignorados (acción del usuario)
-  //   - productos removidos por proveedor SOLO si dependen del proveedor
-  //     (stockSource=SUPPLIER). OWN/HYBRID sobreviven y siguen visibles.
-  // Si el usuario activa showRemovedIgnored, vemos todo. Si pide explícitamente
-  // un supplierStatus o internalStatus desde el dropdown, respetamos esa elección.
-  if (!showRemovedIgnored) {
-    const notClauses: Prisma.CatalogProductWhereInput[] = [];
-    if (!internalStatusParam) notClauses.push({ internalStatus: "IGNORED" });
-    if (!supplierStatusParam) {
-      notClauses.push({
-        AND: [
-          { supplierStatus: "SUPPLIER_REMOVED" },
-          { stockSource: "SUPPLIER" },
-        ],
-      });
-    }
-    if (notClauses.length > 0) where.NOT = notClauses;
-  }
-
-  if (providerId) where.providerId = providerId;
-
-  if (supplierStatusParam && VALID_SUPPLIER.includes(supplierStatusParam as CatalogProductStatus)) {
-    where.supplierStatus = supplierStatusParam as CatalogProductStatus;
-  }
-
-  if (
-    internalStatusParam &&
-    VALID_INTERNAL.includes(internalStatusParam as InternalPublicationStatus)
-  ) {
-    where.internalStatus = internalStatusParam as InternalPublicationStatus;
-  }
-
-  if (
-    sourceTypeParam &&
-    VALID_SOURCE.includes(sourceTypeParam as CatalogSourceType)
-  ) {
-    where.sourceType = sourceTypeParam as CatalogSourceType;
-  }
-
-  if (
-    publicationStatusParam &&
-    VALID_PUB.includes(publicationStatusParam as PublicationStatus | "NONE")
-  ) {
-    if (publicationStatusParam === "NONE") {
-      where.publications = { none: {} };
-    } else {
-      where.publications = {
-        some: { status: publicationStatusParam as PublicationStatus },
-      };
-    }
-  }
-
-  if (noImage) {
-    where.AND = [
-      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
-      { OR: [{ imageUrl: null }, { imageUrl: "" }] },
-      { images: { none: {} } },
-    ];
-  }
-
-  if (noCategory) {
-    where.assignedCategoryId = null;
-  }
-
-  if (search) {
-    where.OR = [
-      { supplierName: { contains: search, mode: "insensitive" } },
-      { commercialTitle: { contains: search, mode: "insensitive" } },
-      { commercialName: { contains: search, mode: "insensitive" } },
-      { sku: { contains: search, mode: "insensitive" } },
-    ];
-  }
+  const where = buildCatalogListWhere(session.user.id, url.searchParams);
 
   const [total, products, rules] = await Promise.all([
     prisma.catalogProduct.count({ where }),

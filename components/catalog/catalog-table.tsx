@@ -203,7 +203,11 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
   const [noCategory, setNoCategory] = useState(false);
   const [showRemovedIgnored, setShowRemovedIgnored] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(50);
+  // "Seleccionar todos los del filtro" — cuando es true, selectedIds contiene
+  // IDs de productos que pueden no estar en la página actual.
+  const [allFilterSelected, setAllFilterSelected] = useState(false);
+  const [loadingAllIds, setLoadingAllIds] = useState(false);
   const [data, setData] = useState<{ products: CatalogRow[]; total: number }>({
     products: [],
     total: 0,
@@ -220,6 +224,13 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
   // Reset page al cambiar filtros
   useEffect(() => {
     setPage(1);
+  }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, showRemovedIgnored]);
+
+  // Si cambian los filtros, la "selección de todo el filtro" deja de ser válida
+  // — invalidamos el flag y limpiamos los IDs cacheados.
+  useEffect(() => {
+    setAllFilterSelected(false);
+    setSelectedIds(new Set());
   }, [search, providerId, supplierStatus, internalStatus, pubFilter, sourceFilter, noImage, noCategory, showRemovedIgnored]);
 
   // Construye los filtros activos para mandarlos al export (mismo formato que la API)
@@ -313,6 +324,12 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
     });
   }
   function toggleAllVisible() {
+    // Si veníamos de "seleccionar todos los del filtro", destildar el header
+    // limpia la selección entera — no solo la página visible.
+    if (allFilterSelected && allVisibleSelected) {
+      deselectAll();
+      return;
+    }
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (allVisibleSelected) for (const id of visibleIds) next.delete(id);
@@ -322,6 +339,44 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
   }
   function deselectAll() {
     setSelectedIds(new Set());
+    setAllFilterSelected(false);
+  }
+
+  // Trae los IDs de TODOS los productos que matchean el filtro actual (no solo
+  // los de la página visible) y los selecciona. Tope server-side: 10k.
+  async function handleSelectAllFilter() {
+    setLoadingAllIds(true);
+    try {
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("search", search.trim());
+      if (providerId !== "all") params.set("providerId", providerId);
+      if (supplierStatus !== "all") params.set("supplierStatus", supplierStatus);
+      if (internalStatus !== "all") params.set("internalStatus", internalStatus);
+      if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
+      if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
+      if (noImage) params.set("noImage", "true");
+      if (noCategory) params.set("noCategory", "true");
+      if (showRemovedIgnored) params.set("showRemovedIgnored", "true");
+
+      const res = await fetch(`/api/catalog/ids?${params.toString()}`);
+      if (!res.ok) throw new Error("Error al cargar IDs del filtro");
+      const json = (await res.json()) as {
+        ids: string[];
+        total: number;
+        truncated: boolean;
+      };
+      setSelectedIds(new Set(json.ids));
+      setAllFilterSelected(true);
+      if (json.truncated) {
+        toast.warning(
+          `Selección truncada a ${json.total} productos (tope del servidor). Refiná los filtros si necesitás más.`
+        );
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setLoadingAllIds(false);
+    }
   }
 
   function triggerBlobDownload(blob: Blob, filename: string) {
@@ -754,6 +809,21 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
           <option value="IMPORTED">Importado</option>
         </select>
 
+        <select
+          value={pageSize}
+          onChange={(e) => {
+            setPageSize(Number(e.target.value));
+            setPage(1);
+          }}
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+          title="Cantidad de productos por página"
+        >
+          <option value={50}>50 por página</option>
+          <option value={100}>100 por página</option>
+          <option value={250}>250 por página</option>
+          <option value={500}>500 por página</option>
+        </select>
+
         <div className="flex items-center gap-1.5 ml-auto">
           <button
             type="button"
@@ -779,6 +849,51 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
           </button>
         </div>
       </div>
+
+      {/* Banner: ofrecer seleccionar todo el filtro cuando la página está
+          completa pero hay más resultados que la página visible. */}
+      {!allFilterSelected &&
+        selectedIds.size > 0 &&
+        selectedIds.size === data.products.length &&
+        data.total > data.products.length && (
+          <div className="bg-primary/10 border border-primary/30 rounded-md px-4 py-2 text-xs flex items-center justify-between gap-3 flex-wrap">
+            <span>
+              {selectedIds.size} producto
+              {selectedIds.size === 1 ? "" : "s"} seleccionado
+              {selectedIds.size === 1 ? "" : "s"} en esta página.
+            </span>
+            <button
+              type="button"
+              onClick={handleSelectAllFilter}
+              disabled={loadingAllIds}
+              className="text-primary font-medium hover:underline disabled:opacity-60 flex items-center gap-1.5"
+            >
+              {loadingAllIds && (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              )}
+              Seleccionar los {data.total.toLocaleString("es-AR")} productos
+              del filtro actual
+            </button>
+          </div>
+        )}
+
+      {allFilterSelected && (
+        <div className="bg-primary/10 border border-primary/30 rounded-md px-4 py-2 text-xs flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            Los {selectedIds.size.toLocaleString("es-AR")} producto
+            {selectedIds.size === 1 ? "" : "s"} del filtro están seleccionados.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              deselectAll();
+            }}
+            className="text-muted-foreground hover:underline"
+          >
+            Cancelar selección
+          </button>
+        </div>
+      )}
 
       {/* Tabla */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
