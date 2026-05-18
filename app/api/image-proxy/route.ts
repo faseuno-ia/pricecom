@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
     // que el proxy obtenga la imagen real, forjamos un Referer del mismo
     // origen que la imagen.
     const referer = `${parsed.protocol}//${parsed.hostname}/`;
+    console.log(`[image-proxy] fetching ${url}`);
     const response = await fetch(url, {
       headers: {
         "User-Agent":
@@ -42,14 +43,24 @@ export async function GET(req: NextRequest) {
         Referer: referer,
         Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
       },
+      // Tope conservador para no colgar la response cuando el origen es lento.
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
-      return new NextResponse("Image fetch failed", { status: 502 });
+      console.error(
+        `[image-proxy] upstream ${response.status} ${response.statusText} for ${url}`
+      );
+      return new NextResponse(`Upstream error: ${response.status}`, {
+        status: 502,
+      });
     }
 
     const contentType = response.headers.get("content-type") ?? "image/jpeg";
     const buffer = await response.arrayBuffer();
+    console.log(
+      `[image-proxy] ok ${response.status} ${contentType} ${buffer.byteLength}b ${url}`
+    );
 
     return new NextResponse(buffer, {
       headers: {
@@ -57,7 +68,9 @@ export async function GET(req: NextRequest) {
         "Cache-Control": "public, max-age=86400", // cache 24h
       },
     });
-  } catch {
-    return new NextResponse("Error fetching image", { status: 500 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[image-proxy] exception for ${url}: ${msg}`);
+    return new NextResponse(`Proxy error: ${msg}`, { status: 502 });
   }
 }

@@ -134,7 +134,10 @@ export class ScraperService {
       "User-Agent": USER_AGENT,
     });
     this.page.setDefaultTimeout(30000);
-    this.page.setDefaultNavigationTimeout(60000);
+    // Navegación: 120s — sitios lentos (ej. Toys Palace bajo carga) tardan
+    // más del default de Playwright; el waitUntil "domcontentloaded" no es el
+    // problema, sino el TTFB del server.
+    this.page.setDefaultNavigationTimeout(120000);
   }
 
   async close() {
