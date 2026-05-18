@@ -122,6 +122,55 @@ export class WooCommerceClient {
     return all;
   }
 
+  // ─── Métodos de escritura (push de cambios a WooCommerce) ──────────────
+  // Estructura lista para el sync engine; los handlers del worker llaman a
+  // estos métodos cuando se procesan publicaciones con pendingSync=true.
+
+  async updateProduct(
+    productId: number,
+    data: {
+      regular_price?: string;
+      stock_quantity?: number;
+      manage_stock?: boolean;
+      status?: string;
+      name?: string;
+      description?: string;
+    }
+  ): Promise<WooProduct> {
+    const res = await fetch(`${this.baseUrl}/products/${productId}`, {
+      method: "PUT",
+      headers: {
+        Authorization: this.authHeader(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`WooCommerce update error: HTTP ${res.status} ${text.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+
+  async updateProductStatus(
+    productId: number,
+    status: "publish" | "draft" | "private" | "pending"
+  ): Promise<WooProduct> {
+    return this.updateProduct(productId, { status });
+  }
+
+  async updateProductPrice(productId: number, price: number): Promise<WooProduct> {
+    return this.updateProduct(productId, { regular_price: price.toFixed(2) });
+  }
+
+  async updateProductStock(productId: number, quantity: number): Promise<WooProduct> {
+    return this.updateProduct(productId, {
+      stock_quantity: quantity,
+      manage_stock: true,
+    });
+  }
+
   async getCategories(): Promise<WooCategory[]> {
     const all: WooCategory[] = [];
     let page = 1;

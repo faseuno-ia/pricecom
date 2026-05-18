@@ -245,6 +245,18 @@ enum StorePlatform {
   TIENDANUBE
 }
 
+/// Estado del ciclo de sincronización de una publicación contra la tienda
+/// externa. Lo manipulan el sync engine, el drift detector y las acciones
+/// manuales del usuario.
+enum PublicationSyncStatus {
+  READY
+  PENDING_SYNC
+  SYNCED
+  OUTDATED
+  ERROR
+  PAUSED
+}
+
 model Store {
   id          String        @id @default(cuid())
   userId      String
@@ -258,9 +270,10 @@ model Store {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  integrations StoreIntegration[]
-  publications ProductPublication[]
-  categories   StoreCategory[]
+  integrations       StoreIntegration[]
+  publications       ProductPublication[]
+  categories         StoreCategory[]
+  unmatchedProducts  UnmatchedStoreProduct[]
 
   @@index([userId])
   @@index([userId, platform])
@@ -300,6 +313,9 @@ model StoreCategory {
   parentId           String?
   parent             StoreCategory?  @relation("StoreCategoryTree", fields: [parentId], references: [id])
   children           StoreCategory[] @relation("StoreCategoryTree")
+  /// Mapeo a la Category interna. null = sin vincular.
+  categoryId         String?
+  category           Category?       @relation(fields: [categoryId], references: [id])
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 
@@ -307,6 +323,34 @@ model StoreCategory {
   @@index([storeId])
   @@index([parentId])
   @@index([parentExternalId])
+  @@index([categoryId])
+}
+
+/// Productos detectados en la tienda externa que no matchean con ningún
+/// CatalogProduct del usuario. Los persistimos para que el cliente pueda
+/// vincularlos a mano, crearles un CatalogProduct nuevo, o ignorarlos.
+model UnmatchedStoreProduct {
+  id                String   @id @default(cuid())
+  storeId           String
+  store             Store    @relation(fields: [storeId], references: [id])
+  externalProductId String
+  externalSku       String?
+  name              String
+  price             Float?
+  stockQuantity     Int?
+  imageUrl          String?
+  /// JSON array de nombres de categoría que viene de la tienda.
+  categories        String?
+  permalink         String?
+  /// El usuario marcó "Ignorar"; no aparece más en la tabla por defecto.
+  /// Si el producto reaparece en un sync se resetea a false.
+  ignored           Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([storeId, externalProductId])
+  @@index([storeId])
+  @@index([storeId, ignored])
 }
 
 // ─── Catálogo persistente + publicaciones ────────────────────────────────────
@@ -484,6 +528,8 @@ model ProductPublication {
   /// no se empujaron a la tienda. El worker de sync lee este flag para
   /// priorizar qué publicar.
   pendingSync       Boolean           @default(false)
+  /// Estado del ciclo de sincronización (granularidad mayor que pendingSync).
+  syncStatus        PublicationSyncStatus @default(READY)
   finalPrice        Float?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -494,6 +540,7 @@ model ProductPublication {
   @@index([status])
   @@index([storeId, pendingSync])
   @@index([storeId, externalStatus])
+  @@index([storeId, syncStatus])
 }
 
 /// Galería de imágenes por CatalogProduct. La imagen del proveedor puede
@@ -558,6 +605,7 @@ model Category {
   parent    Category?                @relation("CategoryTree", fields: [parentId], references: [id])
   children  Category[]               @relation("CategoryTree")
   mappings  ProductCategoryMapping[]
+  storeCategories StoreCategory[]
   createdAt DateTime                 @default(now())
   updatedAt DateTime                 @updatedAt
 

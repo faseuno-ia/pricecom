@@ -14,14 +14,6 @@ import {
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-interface UnmatchedItem {
-  externalProductId: string;
-  externalSku: string | null;
-  name: string;
-  externalUrl: string | null;
-  priceInStore: number | null;
-}
-
 export async function POST() {
   const session = await requireSession();
 
@@ -73,49 +65,65 @@ export async function POST() {
   let matched = 0;
   let created = 0;
   let updated = 0;
-  const unmatched: UnmatchedItem[] = [];
+  let unmatchedCount = 0;
 
   for (const woo of wooProducts) {
     const skuRaw = woo.sku?.trim() ?? "";
-    if (!skuRaw) {
-      // Sin SKU no podemos vincular automáticamente.
-      unmatched.push({
-        externalProductId: String(woo.id),
-        externalSku: null,
-        name: woo.name,
-        externalUrl: woo.permalink,
-        priceInStore: parsePrice(woo.regular_price ?? woo.price),
-      });
-      continue;
-    }
 
-    // Match: 1) publicationSku exacto, 2) sku exacto. Solo dentro del usuario.
-    const catalogProduct =
-      (await prisma.catalogProduct.findFirst({
-        where: { userId: session.user.id, publicationSku: skuRaw },
-        select: { id: true },
-      })) ??
-      (await prisma.catalogProduct.findFirst({
-        where: { userId: session.user.id, sku: skuRaw },
-        select: { id: true },
-      }));
+    // Match solo si el WooCommerce trae SKU; sin SKU no hay auto-vinculación.
+    const catalogProduct = skuRaw
+      ? ((await prisma.catalogProduct.findFirst({
+          where: { userId: session.user.id, publicationSku: skuRaw },
+          select: { id: true },
+        })) ??
+        (await prisma.catalogProduct.findFirst({
+          where: { userId: session.user.id, sku: skuRaw },
+          select: { id: true },
+        })))
+      : null;
 
     if (!catalogProduct) {
-      unmatched.push({
-        externalProductId: String(woo.id),
-        externalSku: skuRaw,
-        name: woo.name,
-        externalUrl: woo.permalink,
-        priceInStore: parsePrice(woo.regular_price ?? woo.price),
+      // Persistir en UnmatchedStoreProduct. Si reaparece (estaba ignored=true),
+      // reseteamos ignored a false para que vuelva a la vista de no vinculados.
+      const wooCats = JSON.stringify(
+        (woo.categories ?? []).map((c) => c.name)
+      );
+      await prisma.unmatchedStoreProduct.upsert({
+        where: {
+          storeId_externalProductId: {
+            storeId: store.id,
+            externalProductId: String(woo.id),
+          },
+        },
+        create: {
+          storeId: store.id,
+          externalProductId: String(woo.id),
+          externalSku: skuRaw || null,
+          name: woo.name,
+          price: parsePrice(woo.regular_price ?? woo.price),
+          stockQuantity: woo.stock_quantity ?? null,
+          imageUrl: woo.images?.[0]?.src ?? null,
+          categories: wooCats,
+          permalink: woo.permalink,
+        },
+        update: {
+          externalSku: skuRaw || null,
+          name: woo.name,
+          price: parsePrice(woo.regular_price ?? woo.price),
+          stockQuantity: woo.stock_quantity ?? null,
+          imageUrl: woo.images?.[0]?.src ?? null,
+          categories: wooCats,
+          permalink: woo.permalink,
+          ignored: false,
+        },
       });
+      unmatchedCount++;
       continue;
     }
 
     matched++;
 
     const externalStatus = woo.status;
-    // Mapping conservador a nuestro PublicationStatus interno:
-    //   publish → ACTIVE; draft → DRAFT; trash → REMOVED; resto → PAUSED.
     const internalStatus =
       externalStatus === "publish"
         ? "ACTIVE"
@@ -154,6 +162,7 @@ export async function POST() {
       lastSyncedAt: new Date(),
       lastSyncAt: new Date(),
       pendingSync: false,
+      syncStatus: "SYNCED" as const,
       syncError: null,
     };
 
@@ -179,8 +188,7 @@ export async function POST() {
     matched,
     created,
     updated,
-    unmatchedCount: unmatched.length,
-    unmatched: unmatched.slice(0, 200), // tope de payload
+    unmatchedCount,
     total: wooProducts.length,
   });
 }
