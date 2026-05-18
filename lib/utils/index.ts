@@ -69,8 +69,10 @@ export function truncate(str: string, length: number): string {
 // porque el server remoto rechaza requests con Referer ajeno. Las pasamos
 // por /api/image-proxy donde sí podemos setear el Referer correcto.
 const HOTLINK_BLOCKED_DOMAINS = [
-  "toyspalace.com.ar",
-  "impotekno.net",
+  "impotekno.net", // HTTP sin SSL válido — necesita proxy
+  // toyspalace.com.ar — removido: Toys Palace bloquea requests desde la IP de
+  // Railway. Cargar la imagen directa desde el browser del usuario logra
+  // resultados mejores (al menos para una parte del catálogo).
 ];
 
 /**
