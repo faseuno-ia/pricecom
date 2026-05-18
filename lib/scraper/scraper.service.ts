@@ -43,17 +43,35 @@ const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2}
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
 const STOCK_LABELS = /(?:stock|disponible|sin\s+stock|unidades|cantidad|existencia)/i;
 
-// Filtra valores de stock que en realidad son texto de un CTA o de un label
-// del form de compra (ej: el stockSelector configurado de Toys Palace apunta
-// a un botón "Agregar al carrito" o al label "Cantidad" del input). Si
-// encontramos esas palabras, o el texto es sospechosamente largo (>50 chars
-// suele ser HTML sucio), descartamos el valor.
+// Patrones que consideramos un valor de stock válido (no descartar nunca).
+const VALID_STOCK_PATTERN =
+  /^(sin\s+stock|disponible|agotado|en\s+stock|\d+\s*(u|ud|uds|unid|unidades?)?)$/i;
+
+// Filtra valores de stock que en realidad son texto de un CTA, label del form
+// de compra, o el nombre del producto. Cubre los casos vistos en Toys Palace
+// (botón "Agregar al carrito"), Impotekno (label "Cantidad") y blobs donde el
+// stockSelector cae sobre el header de la card y termina capturando el nombre.
 function cleanStockText(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const cleaned = String(raw).trim();
   if (!cleaned) return null;
-  if (/agregar|carrito|comprar|ver\s+carrito|cantidad/i.test(cleaned)) return null;
+
+  // CTAs y labels (acepta "Ver carrito" con o sin espacio).
+  if (/agregar|carrito|comprar|cantidad|ver\s*carrito/i.test(cleaned)) {
+    return null;
+  }
+
+  // Sospechosamente largo: >50 chars suele ser HTML sucio o nombre completo
+  // del producto pegado.
   if (cleaned.length > 50) return null;
+
+  // Heurística "parece nombre de producto": dos o más palabras en mayúsculas
+  // consecutivas (ej. "CABLE USB", "MELECH 232"). Salvo que matchee el patrón
+  // canónico de stock ("Sin stock", "Disponible", "5 unidades", etc.).
+  if (/[A-Z]{2,}\s+[A-Z]{2,}/.test(cleaned) && !VALID_STOCK_PATTERN.test(cleaned)) {
+    return null;
+  }
+
   return cleaned;
 }
 
