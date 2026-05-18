@@ -108,7 +108,12 @@ export function buildCatalogListWhere(
   }
 
   if (noCategory) {
+    // "Sin categoría" ahora considera la M2M: aplica solo si NO hay ningún
+    // CatalogProductCategory **y** assignedCategoryId está null (que debería
+    // estar sincronizado por syncPrimaryCategory, pero lo chequeamos doble
+    // por las dudas).
     where.assignedCategoryId = null;
+    where.categories = { none: {} };
   }
 
   if (search) {

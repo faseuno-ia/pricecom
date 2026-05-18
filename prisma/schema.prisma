@@ -481,6 +481,9 @@ model CatalogProduct {
 
   publications ProductPublication[]
   images       CatalogProductImage[]
+  /// N:M con Category. La primaria (isPrimary=true) se mantiene en sincro con
+  /// `assignedCategoryId` para no romper pricing rules y filtros existentes.
+  categories   CatalogProductCategory[]
 
   @@unique([userId, providerId, sku])
   @@index([userId])
@@ -615,7 +618,30 @@ model Category {
   createdAt DateTime                 @default(now())
   updatedAt DateTime                 @updatedAt
 
-  catalogProducts CatalogProduct[]
+  /// Relación inversa con la M2M (CatalogProductCategory). Convivencia con
+  /// `catalogProducts` legacy (vía CatalogProduct.assignedCategoryId, que es
+  /// la categoría primaria mantenida en sincro con la fila isPrimary=true de
+  /// CatalogProductCategory por compatibilidad con pricing rules y filtros).
+  catalogProducts        CatalogProduct[]
+  catalogProductCategories CatalogProductCategory[]
+}
+
+/// Pivote N:M entre CatalogProduct y Category. La fila con isPrimary=true se
+/// mantiene en sincro con CatalogProduct.assignedCategoryId. Cascade: si se
+/// elimina el CatalogProduct, se eliminan sus filas; no así si se elimina la
+/// Category (la eliminación de categorías la maneja el usuario explícitamente).
+model CatalogProductCategory {
+  catalogProductId String
+  categoryId       String
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
+  category         Category       @relation(fields: [categoryId], references: [id])
+  isPrimary        Boolean        @default(false)
+  createdAt        DateTime       @default(now())
+
+  @@id([catalogProductId, categoryId])
+  @@index([catalogProductId])
+  @@index([categoryId])
+  @@index([catalogProductId, isPrimary])
 }
 
 model ProductCategoryMapping {

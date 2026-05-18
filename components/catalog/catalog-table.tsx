@@ -27,10 +27,13 @@ import {
   Copy,
   Trash2,
   Pin,
+  FolderPlus,
+  FolderMinus,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 import { ApplyMarginModal } from "./apply-margin-modal";
+import { CategoryBulkModal } from "./category-bulk-modal";
 import { usePinnedActions } from "@/lib/hooks/use-pinned-actions";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
@@ -194,6 +197,9 @@ export function CatalogTable({
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [marginModalOpen, setMarginModalOpen] = useState(false);
+  const [categoryModalMode, setCategoryModalMode] = useState<
+    "assign" | "remove" | null
+  >(null);
   const [downloading, setDownloading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [contextMenuFor, setContextMenuFor] = useState<string | null>(null);
@@ -783,12 +789,30 @@ export function CatalogTable({
       icon: Copy,
       onClick: () => handleCopyToOwnStock(idsArr),
     },
+    assign_category: {
+      id: "assign_category",
+      label: "Asignar categoría",
+      icon: FolderPlus,
+      onClick: () => setCategoryModalMode("assign"),
+    },
+    remove_category: {
+      id: "remove_category",
+      label: "Quitar categoría",
+      icon: FolderMinus,
+      onClick: () => setCategoryModalMode("remove"),
+    },
   };
 
   const ACTION_GROUPS = [
     {
       label: "Comercial",
-      ids: ["apply_margin", "clear_margin", "clear_price"],
+      ids: [
+        "apply_margin",
+        "clear_margin",
+        "clear_price",
+        "assign_category",
+        "remove_category",
+      ],
     },
     { label: "Publicación", ids: ["prepare", "publish", "pause"] },
     { label: "Catálogo", ids: ["ignore", "restore", "copy_own_stock"] },
@@ -1644,6 +1668,18 @@ export function CatalogTable({
           refresh();
         }}
       />
+
+      {categoryModalMode && (
+        <CategoryBulkModal
+          mode={categoryModalMode}
+          selectedIds={Array.from(selectedIds)}
+          onClose={() => setCategoryModalMode(null)}
+          onDone={() => {
+            setCategoryModalMode(null);
+            refresh();
+          }}
+        />
+      )}
 
       {marginModalOpen && (
         <ApplyMarginModal

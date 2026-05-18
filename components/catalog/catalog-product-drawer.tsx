@@ -9,6 +9,7 @@ import {
   Loader2,
   Plus,
   Power,
+  Star,
 } from "lucide-react";
 import { formatPrice, normalizeImageUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -150,10 +151,122 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   const [commercialDescription, setCommercialDescription] = useState("");
   const [finalPrice, setFinalPrice] = useState<string>("");
   const [manualMargin, setManualMargin] = useState<string>("");
-  const [assignedCategoryId, setAssignedCategoryId] = useState<string | null>(
-    null
-  );
   const [notes, setNotes] = useState("");
+
+  // Categorías asignadas al producto (M2M). Fuente de verdad para el render
+  // del bloque; el primary se identifica por isPrimary y se sincroniza server-side
+  // con CatalogProduct.assignedCategoryId.
+  interface AssignedCat {
+    id: string;
+    name: string;
+    parentId: string | null;
+    isPrimary: boolean;
+  }
+  const [productCategories, setProductCategories] = useState<AssignedCat[]>([]);
+  const [pickerMode, setPickerMode] = useState<"closed" | "pick" | "create">(
+    "closed"
+  );
+  const [pickValue, setPickValue] = useState<string>("");
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatParent, setNewCatParent] = useState<string>("");
+  const [savingCategory, setSavingCategory] = useState(false);
+
+  async function reloadProductCategories(id: string) {
+    try {
+      const res = await fetch(`/api/catalog/${id}/categories`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as { categories: AssignedCat[] };
+      setProductCategories(json.categories);
+    } catch {
+      /* silencioso — el drawer ya muestra el resto del producto */
+    }
+  }
+
+  async function addProductCategory(categoryId: string, makePrimary: boolean) {
+    if (!product) return;
+    setSavingCategory(true);
+    try {
+      const res = await fetch(`/api/catalog/${product.id}/categories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryId, isPrimary: makePrimary }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? `HTTP ${res.status}`);
+      }
+      await reloadProductCategories(product.id);
+      setPickerMode("closed");
+      setPickValue("");
+      toast.success(makePrimary ? "Categoría primaria asignada" : "Categoría agregada");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  async function removeProductCategory(categoryId: string) {
+    if (!product) return;
+    try {
+      const res = await fetch(`/api/catalog/${product.id}/categories`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryId }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? `HTTP ${res.status}`);
+      }
+      await reloadProductCategories(product.id);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  async function createAndAssignCategory() {
+    if (!product || !newCatName.trim()) return;
+    setSavingCategory(true);
+    try {
+      const res = await fetch("/api/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newCatName.trim(),
+          parentId: newCatParent || null,
+        }),
+      });
+      const json = (await res.json()) as {
+        id?: string;
+        name?: string;
+        error?: string;
+      };
+      // 409 → duplicada: igual la asignamos al producto.
+      let categoryId = json.id;
+      if (!res.ok && res.status !== 409) {
+        throw new Error(json.error ?? `HTTP ${res.status}`);
+      }
+      if (!categoryId) throw new Error("La API no devolvió el id");
+
+      // Refrescar la lista global de categorías para que aparezca en el
+      // dropdown y en el flatTree.
+      const catsRes = await fetch("/api/categories");
+      if (catsRes.ok) setCategories(await catsRes.json());
+
+      await addProductCategory(categoryId, productCategories.length === 0);
+      setNewCatName("");
+      setNewCatParent("");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  async function setAsPrimary(categoryId: string) {
+    // Reusamos POST con isPrimary=true (upsert).
+    await addProductCategory(categoryId, true);
+  }
 
   // Catálogo global de categorías (compartido entre proveedores). Se carga una
   // sola vez por sesión de drawer abierta.
@@ -202,8 +315,11 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         setCommercialDescription(data.commercialDescription ?? "");
         setFinalPrice(data.finalPrice != null ? String(data.finalPrice) : "");
         setManualMargin(data.manualMargin != null ? String(data.manualMargin) : "");
-        setAssignedCategoryId(data.assignedCategoryId ?? null);
         setNotes(data.notes ?? "");
+        // Cargar categorías asignadas en paralelo (best-effort).
+        // productId no puede ser null acá: el guard al inicio del efecto lo
+        // garantiza, pero TS no lo sabe por el cierre.
+        reloadProductCategories(productId as string);
       } catch (err) {
         if (!cancelled) toast.error((err as Error).message);
       } finally {
@@ -228,7 +344,6 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
           commercialDescription: commercialDescription.trim() || null,
           finalPrice: finalPrice ? parseFloat(finalPrice) : null,
           manualMargin: manualMargin ? parseFloat(manualMargin) : null,
-          assignedCategoryId: assignedCategoryId,
           notes: notes.trim() || null,
         }),
       });
@@ -577,26 +692,192 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[11px] text-muted-foreground mb-1">
-                  Categoría
-                </label>
-                <select
-                  value={assignedCategoryId ?? ""}
-                  onChange={(e) =>
-                    setAssignedCategoryId(e.target.value || null)
-                  }
-                  className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
-                >
-                  <option value="">Sin categoría</option>
-                  {flatTree.map((c) => (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+                    Categorías
+                  </label>
+                  {pickerMode === "closed" && (
+                    <button
+                      type="button"
+                      onClick={() => setPickerMode("pick")}
+                      className="text-[11px] text-primary hover:underline inline-flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Agregar
+                    </button>
+                  )}
+                </div>
+
+                {productCategories.length === 0 ? (
+                  <p className="text-xs text-muted-foreground/60">
+                    Sin categorías asignadas
+                  </p>
+                ) : (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {productCategories.map((c) => (
+                      <span
+                        key={c.id}
+                        className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border ${
+                          c.isPrimary
+                            ? "bg-primary/15 text-primary border-primary/40"
+                            : "bg-muted/40 text-foreground border-border"
+                        }`}
+                      >
+                        {c.isPrimary ? (
+                          <Star className="w-2.5 h-2.5" aria-label="Primaria" />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setAsPrimary(c.id)}
+                            title="Marcar como primaria"
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <Star className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                        <span>{c.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeProductCategory(c.id)}
+                          title="Quitar"
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {pickerMode === "pick" && (
+                  <div className="space-y-2 bg-muted/20 border border-border rounded-md p-2">
+                    <select
+                      autoFocus
+                      value={pickValue}
+                      onChange={(e) => setPickValue(e.target.value)}
+                      className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+                    >
+                      <option value="">— Elegir categoría —</option>
+                      {flatTree
+                        .filter(
+                          (c) => !productCategories.some((p) => p.id === c.id)
+                        )
+                        .map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.depth > 0
                         ? "  ".repeat(c.depth) + "└─ " + c.name
                         : c.name}
                     </option>
                   ))}
-                </select>
+                    </select>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPickerMode("create")}
+                        className="text-[11px] text-primary hover:underline"
+                      >
+                        + Nueva categoría
+                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPickerMode("closed");
+                            setPickValue("");
+                          }}
+                          className="text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!pickValue || savingCategory}
+                          onClick={() =>
+                            addProductCategory(
+                              pickValue,
+                              productCategories.length === 0
+                            )
+                          }
+                          className="text-[11px] bg-primary text-primary-foreground px-2.5 py-1 rounded-md hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1"
+                        >
+                          {savingCategory && (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          )}
+                          Agregar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {pickerMode === "create" && (
+                  <div className="space-y-2 bg-muted/20 border border-border rounded-md p-2">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newCatName}
+                      onChange={(e) => setNewCatName(e.target.value)}
+                      placeholder="Nombre de la nueva categoría"
+                      className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+                    />
+                    <select
+                      value={newCatParent}
+                      onChange={(e) => setNewCatParent(e.target.value)}
+                      className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+                    >
+                      <option value="">-- Sin categoria padre --</option>
+                      {flatTree.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.depth > 0
+                            ? "--".repeat(c.depth) + " " + c.name
+                            : c.name}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPickerMode("pick")}
+                        className="text-[11px] text-muted-foreground hover:text-foreground"
+                      >
+                        Volver
+                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPickerMode("closed");
+                            setNewCatName("");
+                            setNewCatParent("");
+                          }}
+                          className="text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!newCatName.trim() || savingCategory}
+                          onClick={createAndAssignCategory}
+                          className="text-[11px] bg-primary text-primary-foreground px-2.5 py-1 rounded-md hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1"
+                        >
+                          {savingCategory && (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          )}
+                          Crear y asignar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {product.supplierCategory && (
+                  <p className="text-[11px] text-muted-foreground pt-1">
+                    Categoria proveedor:{" "}
+                    <span className="text-foreground/80">
+                      {product.supplierCategory}
+                    </span>
+                  </p>
+                )}
               </div>
 
               <div>

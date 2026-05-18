@@ -173,32 +173,60 @@ export async function POST(req: NextRequest) {
       // userId_providerId_sku como clave compuesta única.
       const existing = await prisma.catalogProduct.findFirst({
         where: { userId: session.user.id, providerId, sku },
-        select: { id: true },
+        select: {
+          id: true,
+          assignedCategoryId: true,
+          _count: { select: { categories: true } },
+        },
       });
 
       if (existing) {
+        // REGLA: solo asignar la categoría del Excel si el producto NO tiene
+        // ninguna categoría asignada por el usuario (ni vía M2M ni vía
+        // assignedCategoryId). Si ya tiene una, respetamos la elección
+        // comercial y no la pisamos.
+        const hasUserCategories =
+          existing._count.categories > 0 || existing.assignedCategoryId != null;
+        const shouldAssignCategory =
+          assignedCategoryId != null && !hasUserCategories;
+
         await prisma.catalogProduct.update({
           where: { id: existing.id },
           data: {
-            // Solo refrescamos campos del lado comercial e indicadores de origen;
-            // el supplierName lo dejamos quieto si ya estaba (el archivo puede ser
-            // menos confiable que el scrape). Reaparición: si estaba como
-            // SUPPLIER_REMOVED, vuelve a ACTIVE; nunca tocamos internalStatus.
             sourceType: "IMPORTED",
             importBatchId,
             supplierStatus: "ACTIVE",
-            // NOMBRE WEB del Excel pisa el commercialTitle previo (lo cargó el
-            // cliente a propósito).
             commercialTitle: commercialName || undefined,
             wholesalePrice: wholesalePrice ?? undefined,
             stock: stock || undefined,
-            assignedCategoryId: assignedCategoryId ?? undefined,
+            ...(shouldAssignCategory
+              ? { assignedCategoryId }
+              : {}),
             manualMargin: manualMargin ?? undefined,
             finalPrice: finalPrice ?? undefined,
             publicationSku,
             lastSeenAt: new Date(),
           },
         });
+
+        // Espejo en la M2M para mantener consistencia.
+        if (shouldAssignCategory && assignedCategoryId) {
+          await prisma.catalogProductCategory.upsert({
+            where: {
+              catalogProductId_categoryId: {
+                catalogProductId: existing.id,
+                categoryId: assignedCategoryId,
+              },
+            },
+            create: {
+              catalogProductId: existing.id,
+              categoryId: assignedCategoryId,
+              isPrimary: true,
+            },
+            update: { isPrimary: true },
+          });
+        }
+
         report.updated++;
       } else {
         const created = await prisma.catalogProduct.create({
@@ -223,6 +251,17 @@ export async function POST(req: NextRequest) {
           },
         });
         report.created++;
+
+        // Espejo en la M2M para productos recién creados.
+        if (assignedCategoryId) {
+          await prisma.catalogProductCategory.create({
+            data: {
+              catalogProductId: created.id,
+              categoryId: assignedCategoryId,
+              isPrimary: true,
+            },
+          });
+        }
 
         if (imageUrl) {
           await prisma.catalogProductImage.create({
