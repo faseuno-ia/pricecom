@@ -419,14 +419,30 @@ export class ScraperService {
       const passSelector = config?.loginPasswordSelector || 'input[type="password"], #password';
       const submitSelector = config?.loginSubmitSelector || 'button[type="submit"], input[type="submit"], .login-btn';
 
-      // Username es opcional: si el proveedor no lo configura, saltear el fill.
-      if (provider.username) {
+      // Detectar si la página tiene un campo de usuario. Algunos proveedores
+      // (ej. Impotekno) usan solo contraseña — si forzamos un fill sobre un
+      // selector que no matchea, Playwright bloquea con TimeoutError.
+      const hasUsernameField =
+        (await page.locator(userSelector).count()) > 0;
+
+      if (hasUsernameField && provider.username) {
         await page.fill(userSelector, provider.username);
+      } else if (provider.username && !hasUsernameField) {
+        // El proveedor tiene username configurado pero el form no lo pide;
+        // logueamos para que el operador note el desajuste, pero no abortamos.
+        await onLog(
+          "WARN",
+          "Username configurado pero el form de login no expone campo de usuario — se ignora"
+        );
       }
+
       await page.fill(passSelector, password);
       await page.click(submitSelector);
       await page.waitForLoadState("domcontentloaded");
-      await onLog("INFO", "Login completado");
+      await onLog(
+        "INFO",
+        hasUsernameField ? "Login completado" : "Login completado (solo password)"
+      );
     } catch (err) {
       await onLog("ERROR", `Error en login: ${(err as Error).message}`);
       throw err;
