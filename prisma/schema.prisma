@@ -455,6 +455,7 @@ enum PricingRuleScope {
 
 enum RoundingMode {
   NONE
+  CEIL
   NEAREST_100
   NEAREST_500
   ENDING_990

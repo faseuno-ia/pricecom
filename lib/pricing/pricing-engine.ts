@@ -155,6 +155,9 @@ export function applyMarkup(
 
 function applyRounding(value: number, mode: RoundingMode): number {
   switch (mode) {
+    case "CEIL":
+      // Entero superior: 1075.45 → 1076
+      return Math.ceil(value);
     case "NEAREST_100":
       return Math.round(value / 100) * 100;
     case "NEAREST_500":

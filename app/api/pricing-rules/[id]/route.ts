@@ -5,7 +5,7 @@ import { PricingRuleScope, RoundingMode } from "@prisma/client";
 import { z } from "zod";
 
 const SCOPES: PricingRuleScope[] = ["GLOBAL", "PROVIDER", "CATEGORY"];
-const ROUNDINGS: RoundingMode[] = ["NONE", "NEAREST_100", "NEAREST_500", "ENDING_990"];
+const ROUNDINGS: RoundingMode[] = ["NONE", "CEIL", "NEAREST_100", "NEAREST_500", "ENDING_990"];
 
 const patchSchema = z.object({
   name: z.string().min(1).max(80).optional(),

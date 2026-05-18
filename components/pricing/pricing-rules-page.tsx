@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 
 type Scope = "GLOBAL" | "PROVIDER" | "CATEGORY";
-type Rounding = "NONE" | "NEAREST_100" | "NEAREST_500" | "ENDING_990";
+type Rounding = "NONE" | "CEIL" | "NEAREST_100" | "NEAREST_500" | "ENDING_990";
 
 interface Rule {
   id: string;
@@ -42,6 +42,7 @@ const scopeBadge: Record<Scope, { label: string; icon: typeof Globe; cls: string
 
 const roundingLabel: Record<Rounding, string> = {
   NONE: "Sin redondeo",
+  CEIL: "Entero superior",
   NEAREST_100: "Múltiplo de 100",
   NEAREST_500: "Múltiplo de 500",
   ENDING_990: "Termina en 990",
@@ -404,9 +405,12 @@ function PricingRuleModal({
               className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
             >
               <option value="NONE">Sin redondeo</option>
-              <option value="NEAREST_100">Múltiplo de 100</option>
-              <option value="NEAREST_500">Múltiplo de 500</option>
-              <option value="ENDING_990">Terminar en 990</option>
+              <option value="CEIL">
+                Redondear al entero superior (↑ $1.075,45 → $1.076)
+              </option>
+              <option value="NEAREST_100">Redondear al 100 más cercano</option>
+              <option value="NEAREST_500">Redondear al 500 más cercano</option>
+              <option value="ENDING_990">Terminar en .990</option>
             </select>
           </div>
 
