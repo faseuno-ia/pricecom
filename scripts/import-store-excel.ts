@@ -1,9 +1,9 @@
-// Importador del Excel de la tienda existente del cliente.
+// Importador del Excel de la tienda existente del cliente (CLI).
 //
-// Match por publicationSku (campo derivado del prefix del proveedor + sku original).
-// El Excel ya contiene el publicationSku directamente en la columna SKU
-// (ej: "B380-94028", "TP-85581"); por eso no hay que pelar prefijos: la columna
-// SKU del Excel se compara tal cual contra CatalogProduct.publicationSku.
+// Match por SKU PROVEEDOR del Excel contra CatalogProduct.sku original; SKU WEB
+// se guarda como publicationSku; NOMBRE WEB se guarda como commercialTitle.
+// Para Excels viejos que no separan PROVEEDOR/WEB, hace fallback a la columna
+// SKU única y deriva publicationSku con el prefix del proveedor.
 //
 // Nunca toca el sku original del proveedor.
 //
@@ -16,13 +16,18 @@ import { PrismaClient } from "@prisma/client";
 import path from "path";
 import fs from "fs";
 import { buildPublicationSku } from "../lib/catalog/publication-sku";
+import {
+  pickField,
+  parseImportMargin,
+  parseImportNumber,
+  INVALID_SKU_RE,
+} from "../lib/catalog/import-aliases";
 
 const prisma = new PrismaClient();
 
 // Mapeo: nombre de proveedor en la columna PROVEEDOR del Excel → nombre del
 // proveedor scrapeado en la DB. Solo lo usamos para scopear el match por
-// providerId (evita falsos positivos entre proveedores con publicationSku
-// parecidos). Si el Excel viene con un proveedor no mapeado, no scopeamos.
+// providerId (evita falsos positivos entre proveedores con SKU parecidos).
 const EXCEL_TO_DB_PROVIDER: Record<string, string> = {
   BAZAR380: "BAZAR 380",
   "BAZAR 380": "BAZAR 380",
@@ -33,17 +38,6 @@ const EXCEL_TO_DB_PROVIDER: Record<string, string> = {
   LACHIPELU: "LACHIPELU - VANESA",
   "LACHIPELU - VANESA": "LACHIPELU - VANESA",
 };
-
-function parseMargin(raw: unknown): number | null {
-  if (raw == null || raw === "" || raw === "#N/A") return null;
-  if (typeof raw === "number") {
-    return raw <= 1 && raw > 0 ? raw * 100 : raw;
-  }
-  const cleaned = String(raw).replace("%", "").replace(",", ".").trim();
-  const n = Number(cleaned);
-  if (!Number.isFinite(n)) return null;
-  return n <= 1 && n > 0 ? n * 100 : n;
-}
 
 async function backfillPublicationSku(): Promise<void> {
   console.log("Backfill de publicationSku (idempotente)...");
@@ -80,8 +74,8 @@ async function main() {
     process.argv[2] ??
     path.join(
       process.cwd(),
-      "scripts",
-      "listado_completo_productos_web_con_margen.xlsx"
+      "imports",
+      "listado completo impotekno.xlsx"
     );
 
   if (!fs.existsSync(filePath)) {
@@ -97,9 +91,7 @@ async function main() {
   });
   console.log(`Filas encontradas: ${rows.length}\n`);
 
-  // Si hay más de un usuario, elegimos el que tenga catalogProducts. Si pasaron
-  // USER_EMAIL en env, lo respetamos. Esto evita correr el import contra un
-  // usuario legacy vacío.
+  // Resolver usuario (favorece al que tiene catalogProducts).
   let user: { id: string; email: string } | null = null;
   const forcedEmail = process.env.USER_EMAIL;
   if (forcedEmail) {
@@ -132,17 +124,22 @@ async function main() {
   }
   console.log(`Usuario seleccionado: ${user.email}\n`);
 
-  // Asegura que todos los CatalogProduct tengan publicationSku antes de matchear.
   await backfillPublicationSku();
 
-  // Resolver providerId por nombre (DB).
+  // Resolver providerId por nombre + prefix.
   const providerIdByName = new Map<string, string>();
+  const prefixByProviderId = new Map<string, string | null>();
   const dbProviders = await prisma.provider.findMany({
     where: { userId: user.id },
-    select: { id: true, name: true },
+    select: {
+      id: true,
+      name: true,
+      scraperConfig: { select: { imageFilenamePrefix: true } },
+    },
   });
   for (const p of dbProviders) {
     providerIdByName.set(p.name.trim().toUpperCase(), p.id);
+    prefixByProviderId.set(p.id, p.scraperConfig?.imageFilenamePrefix ?? null);
   }
 
   const report = {
@@ -151,7 +148,9 @@ async function main() {
     matched: 0,
     notFound: 0,
     updated: 0,
+    titlesApplied: 0,
     marginsApplied: 0,
+    pricesApplied: 0,
     categoriesAssigned: 0,
     categoriesCreated: 0,
     imagesAdded: 0,
@@ -177,15 +176,21 @@ async function main() {
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
+    const rowNum = i + 2;
     try {
-      const rawSku = String(row["SKU"] ?? "").trim();
-      const description = String(row["DESCRIPCION"] ?? "").trim();
       const providerName = String(row["PROVEEDOR"] ?? "").trim();
-      const marginRaw = row["MARGEN WEB %"];
-      const categoryRaw = String(row["CATEGORIA"] ?? "").trim();
-      const linkFoto = String(row["LINK FOTO"] ?? "").trim();
+      const skuProveedor = pickField(row, "sku");
+      const skuWeb = pickField(row, "publicationSku");
+      const name = pickField(row, "name");
+      const commercialName = pickField(row, "commercialName");
+      const marginRaw = pickField(row, "margin");
+      const finalPriceRaw = pickField(row, "finalPrice");
+      const categoryRaw = pickField(row, "category");
+      const imageUrl = pickField(row, "imageUrl");
 
-      if (!rawSku || rawSku === "#N/A") {
+      // Identidad técnica para el match: SKU PROVEEDOR si vino; si no, SKU WEB.
+      const matchSku = skuProveedor || skuWeb;
+      if (!matchSku || INVALID_SKU_RE.test(matchSku)) {
         report.skippedEmpty++;
         continue;
       }
@@ -193,30 +198,38 @@ async function main() {
       const provLabel = providerName || "(sin proveedor)";
       bump(provLabel, "total");
 
-      // El SKU del Excel ES el publicationSku (ya viene con prefijo).
-      const publicationSku = rawSku;
-
-      // Si el proveedor del Excel mapea a uno conocido en DB, restringimos
-      // el match a ese providerId para evitar cruces.
+      // Scope por providerId si conocemos el mapeo del Excel → DB.
       const dbProviderName = EXCEL_TO_DB_PROVIDER[providerName.toUpperCase()];
       const providerIdScope = dbProviderName
         ? providerIdByName.get(dbProviderName.toUpperCase())
         : undefined;
 
-      const margin = parseMargin(marginRaw);
-
-      const catalogProduct = await prisma.catalogProduct.findFirst({
+      // Match: 1) por sku original (preferido), 2) por publicationSku como fallback.
+      let catalogProduct = await prisma.catalogProduct.findFirst({
         where: {
           userId: user.id,
-          publicationSku,
+          sku: matchSku,
           ...(providerIdScope ? { providerId: providerIdScope } : {}),
         },
         include: { images: { where: { isPrimary: true }, take: 1 } },
       });
 
+      if (!catalogProduct && skuWeb) {
+        catalogProduct = await prisma.catalogProduct.findFirst({
+          where: {
+            userId: user.id,
+            publicationSku: skuWeb,
+            ...(providerIdScope ? { providerId: providerIdScope } : {}),
+          },
+          include: { images: { where: { isPrimary: true }, take: 1 } },
+        });
+      }
+
       if (!catalogProduct) {
         report.notFound++;
-        report.notFoundSkus.push(`[${provLabel}] ${rawSku} — ${description}`);
+        report.notFoundSkus.push(
+          `[${provLabel}] ${matchSku}${commercialName ? " — " + commercialName : name ? " — " + name : ""}`
+        );
         bump(provLabel, "notFound");
         continue;
       }
@@ -224,12 +237,30 @@ async function main() {
       report.matched++;
       bump(provLabel, "matched");
 
-      // Datos comerciales a actualizar (NO tocamos sku ni supplier*).
-      const updateData: Record<string, unknown> = {};
+      const margin = parseImportMargin(marginRaw);
+      const finalPrice = parseImportNumber(finalPriceRaw);
 
+      // Computar publicationSku: el del Excel si vino; si no, derivar con prefix.
+      const providerPrefix =
+        prefixByProviderId.get(catalogProduct.providerId) ?? null;
+      const publicationSku =
+        skuWeb || buildPublicationSku(providerPrefix, catalogProduct.sku);
+
+      const updateData: Record<string, unknown> = {};
+      if (commercialName) {
+        updateData.commercialTitle = commercialName;
+        report.titlesApplied++;
+      }
       if (margin != null) {
         updateData.manualMargin = margin;
         report.marginsApplied++;
+      }
+      if (finalPrice != null) {
+        updateData.finalPrice = finalPrice;
+        report.pricesApplied++;
+      }
+      if (publicationSku && publicationSku !== catalogProduct.publicationSku) {
+        updateData.publicationSku = publicationSku;
       }
 
       if (categoryRaw) {
@@ -268,23 +299,27 @@ async function main() {
         report.updated++;
       }
 
-      // Imagen primaria desde la URL del Excel si el producto no tiene una.
-      if (linkFoto && !catalogProduct.images[0]) {
+      // Imagen primaria si el producto no tiene una y el Excel trae URL válida.
+      if (
+        imageUrl &&
+        imageUrl.startsWith("http") &&
+        !catalogProduct.images[0]
+      ) {
         await prisma.catalogProductImage.create({
           data: {
             catalogProductId: catalogProduct.id,
-            url: linkFoto,
+            url: imageUrl,
             position: 0,
             isPrimary: true,
             source: "USER",
-            altText: description || null,
+            altText: commercialName || name || null,
           },
         });
         report.imagesAdded++;
       }
     } catch (err) {
       report.errors.push(
-        `${row["SKU"]}: ${err instanceof Error ? err.message : String(err)}`
+        `Fila ${rowNum}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
@@ -303,7 +338,9 @@ async function main() {
   console.log(`Matcheados:             ${report.matched}`);
   console.log(`No encontrados:         ${report.notFound}`);
   console.log(`Actualizados:           ${report.updated}`);
+  console.log(`Títulos aplicados:      ${report.titlesApplied}`);
   console.log(`Márgenes aplicados:     ${report.marginsApplied}`);
+  console.log(`Precios aplicados:      ${report.pricesApplied}`);
   console.log(`Categorías asignadas:   ${report.categoriesAssigned}`);
   console.log(`Categorías creadas:     ${report.categoriesCreated}`);
   console.log(`Imágenes agregadas:     ${report.imagesAdded}`);

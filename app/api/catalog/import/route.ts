@@ -8,6 +8,12 @@ import * as XLSX from "xlsx";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
+import {
+  pickField,
+  parseImportNumber,
+  parseImportMargin,
+  INVALID_SKU_RE,
+} from "@/lib/catalog/import-aliases";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -24,92 +30,6 @@ interface ImportReport {
   removed: number;
   errors: { row: number; sku?: string; message: string }[];
   importBatchId: string;
-}
-
-// Aliases tolerantes para los nombres de columna del Excel.
-// Cada campo lógico mapea a una lista de posibles nombres de header.
-const COL_ALIASES: Record<string, string[]> = {
-  sku: ["SKU", "sku", "Codigo", "CODIGO", "SKU PROVEEDOR", "COD", "Cod"],
-  publicationSku: [
-    "SKU WEB",
-    "SKU COMERCIAL",
-    "PUBLICATION SKU",
-    "publicationSku",
-  ],
-  name: [
-    "Nombre",
-    "NOMBRE",
-    "nombre",
-    "DESCRIPCION",
-    "Descripcion",
-    "DESCRIPCIÓN",
-    "Descripción",
-    "name",
-  ],
-  cost: [
-    "Costo",
-    "COSTO",
-    "Precio mayorista",
-    "PRECIO MAYORISTA",
-    "PRECIO WEB (MAYORISTA)",
-    "COSTO PROVEEDOR",
-    "Costo mayorista",
-    "costo",
-  ],
-  margin: [
-    "Margen",
-    "MARGEN",
-    "Margen %",
-    "MARGEN %",
-    "MARGEN WEB %",
-    "MARGEN WEB",
-    "margen",
-    "margin",
-  ],
-  finalPrice: [
-    "Precio final",
-    "PRECIO FINAL",
-    "Precio venta",
-    "PRECIO VENTA",
-    "PRECIO WEB",
-    "finalPrice",
-  ],
-  stock: ["Stock", "STOCK", "stock", "Cantidad", "CANTIDAD"],
-  category: ["Categoria", "CATEGORIA", "Categoría", "CATEGORÍA", "category"],
-  imageUrl: [
-    "Imagen",
-    "IMAGEN",
-    "imagen",
-    "Imagen URL",
-    "IMAGEN URL",
-    "LINK FOTO",
-    "imageUrl",
-    "foto",
-    "FOTO",
-  ],
-};
-
-function pickField(row: Record<string, unknown>, field: keyof typeof COL_ALIASES): string {
-  for (const k of COL_ALIASES[field]) {
-    const v = row[k];
-    if (v != null && String(v).trim() !== "") return String(v).trim();
-  }
-  return "";
-}
-
-function parseNumber(s: string): number | null {
-  if (!s) return null;
-  const cleaned = s.replace(/[$\s]/g, "").replace(",", ".");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-}
-
-function parseMargin(s: string): number | null {
-  if (!s) return null;
-  const cleaned = s.replace("%", "").replace(",", ".").trim();
-  const n = Number(cleaned);
-  if (!Number.isFinite(n)) return null;
-  return n <= 1 && n > 0 ? n * 100 : n;
 }
 
 export async function POST(req: NextRequest) {
@@ -186,15 +106,14 @@ export async function POST(req: NextRequest) {
     const r = rows[i];
     const rowNum = i + 2; // +1 por header, +1 base-1
     try {
-      // SKU: si hay tanto SKU PROVEEDOR como SKU WEB, usamos PROVEEDOR como sku
-      // y WEB como publicationSku (preserva la nomenclatura comercial cargada
-      // por el cliente). Si solo viene SKU, lo usamos para ambos (deriva).
+      // SKU PROVEEDOR es la identidad técnica (match contra CatalogProduct.sku).
+      // SKU WEB es la identidad comercial (publicationSku). Si solo viene uno
+      // de los dos, usamos ese para ambos.
       const skuProveedor = pickField(r, "sku");
       const skuWeb = pickField(r, "publicationSku");
       const sku = skuProveedor || skuWeb;
 
-      // Validar SKU: vacío o literal "0" / "#N/A" / "0.0" → error explícito.
-      if (!sku || /^(0+(\.0+)?|#N\/A)$/i.test(sku)) {
+      if (!sku || INVALID_SKU_RE.test(sku)) {
         report.errors.push({
           row: rowNum,
           message: `SKU inválido o ausente${sku ? ` ("${sku}")` : ""}`,
@@ -210,6 +129,7 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      const commercialName = pickField(r, "commercialName");
       const costRaw = pickField(r, "cost");
       const marginRaw = pickField(r, "margin");
       const finalPriceRaw = pickField(r, "finalPrice");
@@ -217,15 +137,12 @@ export async function POST(req: NextRequest) {
       const categoryRaw = pickField(r, "category");
       const imageUrl = pickField(r, "imageUrl");
 
-      const wholesalePrice = parseNumber(costRaw);
-      const manualMargin = parseMargin(marginRaw);
-      const finalPrice = parseNumber(finalPriceRaw);
+      const wholesalePrice = parseImportNumber(costRaw);
+      const manualMargin = parseImportMargin(marginRaw);
+      const finalPrice = parseImportNumber(finalPriceRaw);
       // Si el Excel trae SKU WEB explícito lo respetamos; si no, derivamos del
       // prefijo del proveedor.
       const publicationSku = skuWeb || buildPublicationSku(prefix, sku);
-      // description: en estos archivos la "descripción" suele estar en NOMBRE/
-      // DESCRIPCION (que ya usamos como name). Por ahora no separamos.
-      const description = "";
 
       let assignedCategoryId: string | null = null;
       if (categoryRaw) {
@@ -270,7 +187,9 @@ export async function POST(req: NextRequest) {
             sourceType: "IMPORTED",
             importBatchId,
             supplierStatus: "ACTIVE",
-            supplierDescription: description || undefined,
+            // NOMBRE WEB del Excel pisa el commercialTitle previo (lo cargó el
+            // cliente a propósito).
+            commercialTitle: commercialName || undefined,
             wholesalePrice: wholesalePrice ?? undefined,
             stock: stock || undefined,
             assignedCategoryId: assignedCategoryId ?? undefined,
@@ -289,7 +208,7 @@ export async function POST(req: NextRequest) {
             sku,
             publicationSku,
             supplierName: name,
-            supplierDescription: description || null,
+            commercialTitle: commercialName || null,
             wholesalePrice,
             stock: stock || null,
             imageUrl: imageUrl || null,
@@ -337,7 +256,7 @@ export async function POST(req: NextRequest) {
   // estado; IGNORED queda fuera.
   const importedSkus = rows
     .map((r) => pickField(r, "sku") || pickField(r, "publicationSku"))
-    .filter((s) => s && !/^(0+(\.0+)?|#N\/A)$/i.test(s));
+    .filter((s) => s && !INVALID_SKU_RE.test(s));
 
   if (importedSkus.length > 0) {
     const baseWhere = {
