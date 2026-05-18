@@ -16,6 +16,7 @@
     "comparison:backfill": "npx tsx scripts/comparison-backfill.ts",
     "catalog:backfill": "npx tsx scripts/catalog-backfill.ts",
     "import:store-excel": "npx tsx scripts/import-store-excel.ts",
+    "catalog:clean-stock": "npx tsx scripts/clean-stock-values.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
