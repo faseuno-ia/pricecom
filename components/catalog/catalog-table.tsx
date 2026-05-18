@@ -549,6 +549,41 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
     }
   }
 
+  // Quita finalPrice (vuelve a usar el precio calculado por la regla aplicable).
+  // Confirma sólo para masivas (>1); individual del menú contextual va directo.
+  async function handleClearPrice(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      ids.length > 1 &&
+      !window.confirm(
+        `¿Quitar precio final de ${ids.length} producto${ids.length > 1 ? "s" : ""}? Volverán a usar el precio calculado por la regla de pricing.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, action: "clear_price" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { updated } = (await res.json()) as { updated: number };
+      toast.success(
+        ids.length === 1
+          ? "Precio final quitado"
+          : `Precio final quitado de ${updated} producto${updated !== 1 ? "s" : ""}`
+      );
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   // Quita manualMargin (devuelve los productos a heredar la regla de pricing).
   // Confirma sólo para masivas (>1); individual del menú contextual va directo.
   async function handleClearMargin(ids: string[]) {
@@ -1096,6 +1131,18 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                                 <X className="w-3 h-3" /> Quitar margen manual
                               </button>
                             )}
+                            {p.finalPrice != null && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContextMenuFor(null);
+                                  handleClearPrice([p.id]);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                              >
+                                <X className="w-3 h-3" /> Quitar precio final
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled
@@ -1315,6 +1362,14 @@ export function CatalogTable({ providers, initialProviderId, initialSourceType }
                 className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
               >
                 <X className="w-3.5 h-3.5" /> Quitar margen
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearPrice(Array.from(selectedIds))}
+                className="text-xs flex items-center gap-1.5 border border-border px-3 py-1.5 rounded-md hover:bg-muted/40"
+                title="Quita el precio final manual; el motor recalcula con la regla aplicable"
+              >
+                <X className="w-3.5 h-3.5" /> Quitar precio final
               </button>
               <button
                 type="button"

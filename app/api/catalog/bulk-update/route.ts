@@ -8,7 +8,7 @@ import { z } from "zod";
 // exclusivamente el worker / importador en base a presencia del producto en
 // el catálogo del proveedor).
 const STATUS_ACTIONS = ["ignore", "restore", "prepare", "pause"] as const;
-const ACTIONS = [...STATUS_ACTIONS, "clear_margin"] as const;
+const ACTIONS = [...STATUS_ACTIONS, "clear_margin", "clear_price"] as const;
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).min(1).max(1000),
@@ -48,6 +48,16 @@ export async function POST(req: NextRequest) {
     const result = await prisma.catalogProduct.updateMany({
       where: { id: { in: productIds }, userId: session.user.id },
       data: { manualMargin: null },
+    });
+    return NextResponse.json({ updated: result.count });
+  }
+
+  // clear_price: limpia el override de finalPrice; el motor de pricing vuelve
+  // a calcular el precio a partir de la regla aplicable.
+  if (action === "clear_price") {
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      data: { finalPrice: null },
     });
     return NextResponse.json({ updated: result.count });
   }
