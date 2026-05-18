@@ -43,15 +43,18 @@ const PRICE_REGEX = /(?:ARS|USD|\$|€)?\s*[\d]{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2}
 const SKU_LABELS = /(?:sku|código|codigo|cod\.|artículo|articulo|ref\.|referencia|part\s*n[ou]?\.?)/i;
 const STOCK_LABELS = /(?:stock|disponible|sin\s+stock|unidades|cantidad|existencia)/i;
 
-// Filtra valores de stock que en realidad son texto de un CTA (ej: el
-// stockSelector configurado de Toys Palace apunta a un botón "Agregar al
-// carrito"). Si encontramos alguna palabra de acción, descartamos el valor.
-function cleanStock(raw: string | null | undefined): string | null {
+// Filtra valores de stock que en realidad son texto de un CTA o de un label
+// del form de compra (ej: el stockSelector configurado de Toys Palace apunta
+// a un botón "Agregar al carrito" o al label "Cantidad" del input). Si
+// encontramos esas palabras, o el texto es sospechosamente largo (>50 chars
+// suele ser HTML sucio), descartamos el valor.
+function cleanStockText(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const trimmed = String(raw).trim();
-  if (!trimmed) return null;
-  if (/agregar|carrito|comprar|ver/i.test(trimmed)) return null;
-  return trimmed;
+  const cleaned = String(raw).trim();
+  if (!cleaned) return null;
+  if (/agregar|carrito|comprar|ver\s+carrito|cantidad/i.test(cleaned)) return null;
+  if (cleaned.length > 50) return null;
+  return cleaned;
 }
 
 // Tienda Nube (y otros lazy-loaders) usan data:image/gif;base64,... como placeholder en src.
@@ -564,17 +567,21 @@ export class ScraperService {
       if (oldEl.length) oldPrice = parsePrice(oldEl.text());
     }
 
-    // Stock — cleanStock descarta texto de CTAs como "Agregar al carrito".
-    let stock = cleanStock(get(config?.stockSelector));
+    // Stock — cleanStockText descarta texto de CTAs como "Agregar al carrito",
+    // labels del form de compra ("Cantidad") y blobs sospechosamente largos.
+    let stock = cleanStockText(get(config?.stockSelector));
     if (!stock) {
       card.find("*").each((_, el) => {
         const text = $(el).text().trim();
         if (STOCK_LABELS.test(text) && text.length < 60) {
-          const cleaned = cleanStock(text);
+          const cleaned = cleanStockText(text);
           if (cleaned) { stock = cleaned; return false; }
         }
       });
     }
+    // Defensa final: aunque algo se nos haya pasado, asegurar que el valor que
+    // termina en ExtractedProduct.stock pasó por cleanStockText.
+    stock = cleanStockText(stock);
 
     // Category
     let category = get(config?.categorySelector) || card.find(".category, [class*='categ'], breadcrumb").first().text().trim() || "";
