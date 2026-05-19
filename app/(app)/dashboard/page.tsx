@@ -38,6 +38,7 @@ async function getDashboardStats(userId: string) {
     activeCatalogProducts,
     activeWithoutCategory,
     activeWithoutImage,
+    ownStockWithoutSupplier,
     failedJobs48h,
     activeJobs,
     lastJob,
@@ -84,6 +85,19 @@ async function getDashboardStats(userId: string) {
         internalStatus: "PREPARED",
         OR: [{ imageUrl: null }, { imageUrl: "" }],
         images: { none: {} },
+      },
+    }),
+
+    // Stock propio sin reposición del proveedor: productos OWN cuya fuente
+    // original ya no figura en el catálogo del proveedor. Solo cuentan los que
+    // están activos en la tienda (PREPARED o PUBLISHED): sin reposición no se
+    // pueden mantener disponibles, hay que decidir qué hacer con ellos.
+    prisma.catalogProduct.count({
+      where: {
+        userId,
+        stockSource: "OWN",
+        supplierStatus: "SUPPLIER_REMOVED",
+        internalStatus: { in: ["PREPARED", "PUBLISHED"] },
       },
     }),
 
@@ -283,6 +297,7 @@ async function getDashboardStats(userId: string) {
     activeCatalogProducts,
     activeWithoutCategory,
     activeWithoutImage,
+    ownStockWithoutSupplier,
     failedJobs48h,
     activeJobs,
     lastJob,
@@ -399,6 +414,14 @@ export default async function DashboardPage() {
       severity: "warning",
       href: "/catalog?internalStatus=PREPARED&noImage=true",
       ctaLabel: "Ir al catálogo",
+    },
+    {
+      id: "own_stock_no_supplier",
+      label: "Stock propio sin reposición del proveedor",
+      count: stats.ownStockWithoutSupplier,
+      severity: "warning",
+      href: "/catalog?stockSource=OWN&supplierStatus=SUPPLIER_REMOVED",
+      ctaLabel: "Ver productos",
     },
     {
       id: "unmatched",

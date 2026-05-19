@@ -10,6 +10,8 @@ import {
   Plus,
   Power,
   Star,
+  PackagePlus,
+  PackageMinus,
 } from "lucide-react";
 import { formatPrice, normalizeImageUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -359,6 +361,42 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
       toast.error((err as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function toggleStockSource() {
+    if (!product) return;
+    const action =
+      product.stockSource === "OWN" ? "remove_own_stock" : "copy_own_stock";
+    setTogglingPub(true);
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: [product.id], action }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Error al cambiar stock");
+      }
+      const { autoPaused } = (await res.json()) as { autoPaused?: number };
+      toast.success(
+        product.stockSource === "OWN"
+          ? autoPaused
+            ? "Quitado del stock propio · publicación auto-pausada"
+            : "Quitado del stock propio"
+          : "Agregado a stock propio"
+      );
+      const fresh = await fetch(`/api/catalog/${product.id}`);
+      if (fresh.ok) {
+        const updated: CatalogProductDetail = await fresh.json();
+        setProduct(updated);
+        onSaved?.(updated);
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setTogglingPub(false);
     }
   }
 
@@ -925,23 +963,46 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
 
         {/* Footer con acciones */}
         {product && !loading && (
-          <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <div className="px-5 py-3 border-t border-border flex items-center justify-between gap-2 flex-wrap">
             <button
               type="button"
-              onClick={onClose}
-              className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+              onClick={toggleStockSource}
+              disabled={togglingPub}
+              className={`text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-md border transition-colors disabled:opacity-60 ${
+                product.stockSource === "OWN"
+                  ? "border-amber-500/30 text-amber-300 hover:bg-amber-500/10"
+                  : "border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+              }`}
             >
-              Cancelar
+              {togglingPub ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : product.stockSource === "OWN" ? (
+                <PackageMinus className="w-3 h-3" />
+              ) : (
+                <PackagePlus className="w-3 h-3" />
+              )}
+              {product.stockSource === "OWN"
+                ? "Quitar del stock propio"
+                : "Agregar a stock propio"}
             </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="text-xs flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-1.5 rounded-md hover:bg-primary/90 transition-colors disabled:opacity-60"
-            >
-              {saving && <Loader2 className="w-3 h-3 animate-spin" />}
-              Guardar cambios
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+                className="text-xs flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-1.5 rounded-md hover:bg-primary/90 transition-colors disabled:opacity-60"
+              >
+                {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+                Guardar cambios
+              </button>
+            </div>
           </div>
         )}
       </aside>

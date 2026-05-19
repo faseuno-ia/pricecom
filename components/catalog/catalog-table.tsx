@@ -24,11 +24,12 @@ import {
   RotateCcw,
   X,
   Clock,
-  Copy,
   Trash2,
   Pin,
   FolderPlus,
   FolderMinus,
+  PackagePlus,
+  PackageMinus,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -95,6 +96,8 @@ interface Props {
   providers: { id: string; name: string }[];
   initialProviderId: string | null;
   initialSourceType?: SourceType | null;
+  initialStockSource?: StockSource | null;
+  initialSupplierStatus?: SupplierStatus | null;
 }
 
 // Paleta sutil para los chips de proveedor en la tabla.
@@ -177,11 +180,13 @@ export function CatalogTable({
   providers,
   initialProviderId,
   initialSourceType,
+  initialStockSource,
+  initialSupplierStatus,
 }: Props) {
   const [search, setSearch] = useState("");
   const [providerId, setProviderId] = useState<string>(initialProviderId ?? "all");
   const [supplierStatus, setSupplierStatus] = useState<SupplierStatus | "all">(
-    "all"
+    initialSupplierStatus ?? "all"
   );
   const [internalStatus, setInternalStatus] = useState<InternalStatus | "all">(
     "all"
@@ -189,6 +194,9 @@ export function CatalogTable({
   const [pubFilter, setPubFilter] = useState<PubStatusFilter>("ALL");
   const [sourceFilter, setSourceFilter] = useState<SourceType | "all">(
     initialSourceType ?? "all"
+  );
+  const [stockSourceFilter, setStockSourceFilter] = useState<StockSource | "all">(
+    initialStockSource ?? "all"
   );
   const [noImage, setNoImage] = useState(false);
   const [noCategory, setNoCategory] = useState(false);
@@ -227,6 +235,7 @@ export function CatalogTable({
     internalStatus,
     pubFilter,
     sourceFilter,
+    stockSourceFilter,
     noImage,
     noCategory,
     showRemovedIgnored,
@@ -244,6 +253,7 @@ export function CatalogTable({
     internalStatus,
     pubFilter,
     sourceFilter,
+    stockSourceFilter,
     noImage,
     noCategory,
     showRemovedIgnored,
@@ -257,6 +267,7 @@ export function CatalogTable({
       ...(supplierStatus !== "all" ? { supplierStatus } : {}),
       ...(internalStatus !== "all" ? { internalStatus } : {}),
       ...(sourceFilter !== "all" ? { sourceType: sourceFilter } : {}),
+      ...(stockSourceFilter !== "all" ? { stockSource: stockSourceFilter } : {}),
       ...(noImage ? { noImage: true } : {}),
       ...(noCategory ? { noCategory: true } : {}),
       ...(showRemovedIgnored ? { showRemovedIgnored: true } : {}),
@@ -267,6 +278,7 @@ export function CatalogTable({
       supplierStatus,
       internalStatus,
       sourceFilter,
+      stockSourceFilter,
       noImage,
       noCategory,
       showRemovedIgnored,
@@ -293,6 +305,8 @@ export function CatalogTable({
           params.set("internalStatus", internalStatus);
         if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
         if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
+        if (stockSourceFilter !== "all")
+          params.set("stockSource", stockSourceFilter);
         if (noImage) params.set("noImage", "true");
         if (noCategory) params.set("noCategory", "true");
         if (showRemovedIgnored) params.set("showRemovedIgnored", "true");
@@ -323,6 +337,7 @@ export function CatalogTable({
     internalStatus,
     pubFilter,
     sourceFilter,
+    stockSourceFilter,
     noImage,
     noCategory,
     showRemovedIgnored,
@@ -409,6 +424,8 @@ export function CatalogTable({
       if (internalStatus !== "all") params.set("internalStatus", internalStatus);
       if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
       if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
+      if (stockSourceFilter !== "all")
+        params.set("stockSource", stockSourceFilter);
       if (noImage) params.set("noImage", "true");
       if (noCategory) params.set("noCategory", "true");
       if (showRemovedIgnored) params.set("showRemovedIgnored", "true");
@@ -628,30 +645,68 @@ export function CatalogTable({
   async function handleCopyToOwnStock(ids: string[]) {
     if (ids.length === 0) return;
     if (
+      ids.length > 1 &&
       !window.confirm(
-        `¿Copiar ${ids.length} producto${ids.length > 1 ? "s" : ""} a tu stock propio? Quedan como copia independiente del proveedor.`
+        `¿Agregar ${ids.length} productos a stock propio? El producto pasa a stockSource=OWN y deja de depender de la baja del proveedor.`
       )
     ) {
       return;
     }
     try {
-      const res = await fetch("/api/catalog/copy-to-own-stock", {
+      const res = await fetch("/api/catalog/bulk-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productIds: ids }),
+        body: JSON.stringify({ productIds: ids, action: "copy_own_stock" }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const { copied, skipped } = (await res.json()) as {
-        copied: number;
-        skipped: number;
-      };
+      const { updated } = (await res.json()) as { updated: number };
       toast.success(
-        `${copied} producto${copied !== 1 ? "s" : ""} copiado${copied !== 1 ? "s" : ""} a stock propio${
-          skipped > 0 ? ` (${skipped} ya existían)` : ""
-        }`
+        ids.length === 1
+          ? "Agregado a stock propio"
+          : `${updated} producto${updated !== 1 ? "s" : ""} en stock propio`
+      );
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  async function handleRemoveFromOwnStock(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      ids.length > 1 &&
+      !window.confirm(
+        `¿Quitar ${ids.length} productos del stock propio? Los publicados que el proveedor ya no tenga se auto-pausarán.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, action: "remove_own_stock" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { updated, autoPaused } = (await res.json()) as {
+        updated: number;
+        autoPaused: number;
+      };
+      const pausedNote =
+        autoPaused > 0
+          ? ` · ${autoPaused} auto-pausado${autoPaused !== 1 ? "s" : ""}`
+          : "";
+      toast.success(
+        ids.length === 1
+          ? `Quitado de stock propio${pausedNote}`
+          : `${updated} fuera de stock propio${pausedNote}`
       );
       if (ids.length > 1) deselectAll();
       refresh();
@@ -794,9 +849,15 @@ export function CatalogTable({
     },
     copy_own_stock: {
       id: "copy_own_stock",
-      label: "Copiar a stock propio",
-      icon: Copy,
+      label: "Agregar a stock propio",
+      icon: PackagePlus,
       onClick: () => handleCopyToOwnStock(idsArr),
+    },
+    remove_own_stock: {
+      id: "remove_own_stock",
+      label: "Quitar del stock propio",
+      icon: PackageMinus,
+      onClick: () => handleRemoveFromOwnStock(idsArr),
     },
     assign_category: {
       id: "assign_category",
@@ -824,7 +885,10 @@ export function CatalogTable({
       ],
     },
     { label: "Publicación", ids: ["prepare", "publish", "pause"] },
-    { label: "Catálogo", ids: ["ignore", "restore", "copy_own_stock"] },
+    {
+      label: "Catálogo",
+      ids: ["ignore", "restore", "copy_own_stock", "remove_own_stock"],
+    },
   ];
 
   // Acciones pinneadas visibles en la barra (filtramos las hidden por contexto).
@@ -945,6 +1009,19 @@ export function CatalogTable({
           <option value="DRAFT">Borrador</option>
           <option value="ACTIVE">Activo</option>
           <option value="PAUSED">Pausado</option>
+        </select>
+
+        <select
+          value={stockSourceFilter}
+          onChange={(e) =>
+            setStockSourceFilter(e.target.value as StockSource | "all")
+          }
+          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+        >
+          <option value="all">Stock: Todos</option>
+          <option value="SUPPLIER">Proveedor</option>
+          <option value="OWN">Stock propio</option>
+          <option value="HYBRID">Híbrido</option>
         </select>
 
         <select
@@ -1450,24 +1527,38 @@ export function CatalogTable({
                                 <RotateCcw className="w-3 h-3" /> Restaurar
                               </button>
                             )}
-                            {p.supplierStatus === "SUPPLIER_REMOVED" && (
-                              <>
+                            {p.supplierStatus === "SUPPLIER_REMOVED" &&
+                              p.stockSource !== "OWN" && (
                                 <div className="px-3 py-1.5 text-[11px] text-muted-foreground/80 flex items-center gap-2">
                                   <Clock className="w-3 h-3" />
                                   Esperando reaparición del proveedor
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setContextMenuFor(null);
-                                    handleCopyToOwnStock([p.id]);
-                                  }}
-                                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
-                                >
-                                  <Copy className="w-3 h-3" /> Copiar a stock
-                                  propio
-                                </button>
-                              </>
+                              )}
+                            {p.stockSource !== "OWN" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContextMenuFor(null);
+                                  handleCopyToOwnStock([p.id]);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                              >
+                                <PackagePlus className="w-3 h-3" /> Agregar a
+                                stock propio
+                              </button>
+                            )}
+                            {p.stockSource === "OWN" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContextMenuFor(null);
+                                  handleRemoveFromOwnStock([p.id]);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2 text-muted-foreground"
+                              >
+                                <PackageMinus className="w-3 h-3" /> Quitar del
+                                stock propio
+                              </button>
                             )}
                             {p.provider.providerType === "OWN_STOCK" && (
                               <>

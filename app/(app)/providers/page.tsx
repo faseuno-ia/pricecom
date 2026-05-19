@@ -47,32 +47,50 @@ const typeBadge: Record<
 
 export default async function ProvidersPage() {
   const session = await requireSession();
-  const providers = await prisma.provider.findMany({
-    where: { userId: session.user.id },
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: {
-        select: {
-          extractionJobs: true,
-          // Conteo "usable": excluye ignorados y excluye removidos por proveedor
-          // **solo** cuando dependen del proveedor. OWN/HYBRID sobreviven.
-          catalogProducts: {
-            where: {
-              NOT: [
-                { internalStatus: "IGNORED" },
-                {
-                  AND: [
-                    { supplierStatus: "SUPPLIER_REMOVED" },
-                    { stockSource: "SUPPLIER" },
-                  ],
-                },
-              ],
+  const [providers, ownStockCount, ownStockProvider] = await Promise.all([
+    prisma.provider.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: "desc" },
+      include: {
+        _count: {
+          select: {
+            extractionJobs: true,
+            // Conteo "usable": excluye ignorados y excluye removidos por proveedor
+            // **solo** cuando dependen del proveedor. OWN/HYBRID sobreviven.
+            catalogProducts: {
+              where: {
+                NOT: [
+                  { internalStatus: "IGNORED" },
+                  {
+                    AND: [
+                      { supplierStatus: "SUPPLIER_REMOVED" },
+                      { stockSource: "SUPPLIER" },
+                    ],
+                  },
+                ],
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
+    // Total de productos en stock propio del usuario (cualquier provider).
+    prisma.catalogProduct.count({
+      where: { userId: session.user.id, stockSource: "OWN" },
+    }),
+    // Provider OWN_STOCK del usuario, si existe — destino default para los
+    // botones de "Agregar" e "Importar".
+    prisma.provider.findFirst({
+      where: { userId: session.user.id, providerType: "OWN_STOCK" },
+      select: { id: true },
+    }),
+  ]);
+  const ownStockHref = ownStockProvider
+    ? `/catalog/new?providerId=${ownStockProvider.id}`
+    : "/providers/new?type=OWN_STOCK";
+  const ownStockImportHref = ownStockProvider
+    ? `/catalog/import?providerId=${ownStockProvider.id}`
+    : "/providers/new?type=OWN_STOCK";
 
   return (
     <div className="space-y-6">
@@ -91,6 +109,49 @@ export default async function ProvidersPage() {
           <PlusCircle className="w-4 h-4" />
           Nuevo proveedor
         </Link>
+      </div>
+
+      {/* Card especial de stock propio — vive arriba de la grilla. La idea
+          es que el usuario lo trate como "su" stock, separado de los proveedores
+          externos. El conteo es transversal a todos los providers (cualquier
+          CatalogProduct con stockSource=OWN cuenta). */}
+      <div className="relative bg-card border border-emerald-500/30 rounded-xl p-5 hover:border-emerald-400/60 transition-colors">
+        <Link
+          href="/catalog?stockSource=OWN"
+          className="absolute inset-0 rounded-xl"
+          aria-label="Ver productos en stock propio"
+        />
+        <div className="relative flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="w-12 h-12 rounded-lg bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
+              <Boxes className="w-6 h-6 text-emerald-300" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-sm">Stock propio</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Productos que abastecés vos — independientes de la disponibilidad
+                del proveedor.
+              </p>
+              <p className="text-2xl font-semibold mt-2 font-mono leading-none">
+                {ownStockCount.toLocaleString("es-AR")}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link
+              href={ownStockHref}
+              className="flex items-center gap-1.5 text-xs bg-emerald-500/15 text-emerald-200 border border-emerald-500/30 hover:bg-emerald-500/25 rounded-md px-3 py-1.5 transition-colors font-medium"
+            >
+              <PlusCircle className="w-3.5 h-3.5" /> Agregar
+            </Link>
+            <Link
+              href={ownStockImportHref}
+              className="flex items-center gap-1.5 text-xs border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md px-3 py-1.5 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" /> Importar Excel
+            </Link>
+          </div>
+        </div>
       </div>
 
       {providers.length === 0 ? (

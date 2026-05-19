@@ -8,7 +8,13 @@ import { z } from "zod";
 // exclusivamente el worker / importador en base a presencia del producto en
 // el catálogo del proveedor).
 const STATUS_ACTIONS = ["ignore", "restore", "prepare", "pause"] as const;
-const ACTIONS = [...STATUS_ACTIONS, "clear_margin", "clear_price"] as const;
+const ACTIONS = [
+  ...STATUS_ACTIONS,
+  "clear_margin",
+  "clear_price",
+  "copy_own_stock",
+  "remove_own_stock",
+] as const;
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).min(1).max(1000),
@@ -60,6 +66,43 @@ export async function POST(req: NextRequest) {
       data: { finalPrice: null },
     });
     return NextResponse.json({ updated: result.count });
+  }
+
+  // copy_own_stock: marca los productos como stock propio (sin duplicar).
+  // A diferencia del modelo viejo, ya no se crea un CatalogProduct paralelo
+  // en el provider OWN_STOCK — la marca vive sobre la misma fila.
+  if (action === "copy_own_stock") {
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      data: { stockSource: "OWN" },
+    });
+    return NextResponse.json({ updated: result.count });
+  }
+
+  // remove_own_stock: revierte a stockSource=SUPPLIER. Si el producto está
+  // PUBLISHED|PREPARED y el proveedor ya lo dio de baja (SUPPLIER_REMOVED),
+  // lo auto-pausamos porque sin proveedor y sin stock propio no hay manera
+  // de abastecerlo.
+  if (action === "remove_own_stock") {
+    const [revert, autoPause] = await prisma.$transaction([
+      prisma.catalogProduct.updateMany({
+        where: { id: { in: productIds }, userId: session.user.id },
+        data: { stockSource: "SUPPLIER" },
+      }),
+      prisma.catalogProduct.updateMany({
+        where: {
+          id: { in: productIds },
+          userId: session.user.id,
+          supplierStatus: "SUPPLIER_REMOVED",
+          internalStatus: { in: ["PUBLISHED", "PREPARED"] },
+        },
+        data: { internalStatus: "PAUSED" },
+      }),
+    ]);
+    return NextResponse.json({
+      updated: revert.count,
+      autoPaused: autoPause.count,
+    });
   }
 
   const internalStatus = actionMap[action];

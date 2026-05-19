@@ -8,6 +8,7 @@ import type {
   PublicationStatus,
   InternalPublicationStatus,
   CatalogSourceType,
+  StockSource,
 } from "@prisma/client";
 
 const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
@@ -27,6 +28,7 @@ const VALID_PUB: (PublicationStatus | "NONE")[] = [
   "NONE",
 ];
 const VALID_SOURCE: CatalogSourceType[] = ["SCRAPED", "MANUAL", "IMPORTED"];
+const VALID_STOCK_SOURCE: StockSource[] = ["SUPPLIER", "OWN", "HYBRID"];
 
 export function buildCatalogListWhere(
   userId: string,
@@ -38,6 +40,7 @@ export function buildCatalogListWhere(
   const internalStatusParam = params.get("internalStatus");
   const publicationStatusParam = params.get("publicationStatus");
   const sourceTypeParam = params.get("sourceType");
+  const stockSourceParam = params.get("stockSource");
   const noImage = params.get("noImage") === "true";
   const noCategory = params.get("noCategory") === "true";
   const showRemovedIgnored = params.get("showRemovedIgnored") === "true";
@@ -85,6 +88,13 @@ export function buildCatalogListWhere(
     VALID_SOURCE.includes(sourceTypeParam as CatalogSourceType)
   ) {
     where.sourceType = sourceTypeParam as CatalogSourceType;
+  }
+
+  if (
+    stockSourceParam &&
+    VALID_STOCK_SOURCE.includes(stockSourceParam as StockSource)
+  ) {
+    where.stockSource = stockSourceParam as StockSource;
   }
 
   if (

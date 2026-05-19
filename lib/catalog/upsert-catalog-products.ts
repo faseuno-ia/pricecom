@@ -88,9 +88,10 @@ export async function upsertCatalogProducts(
       latestExtractedProductId: product.id,
     };
 
+    let upsertedId: string | null = null;
     if (identity.sku) {
       // Upsert por la clave compuesta única userId+providerId+sku.
-      await prismaClient.catalogProduct.upsert({
+      const up = await prismaClient.catalogProduct.upsert({
         where: {
           userId_providerId_sku: {
             userId,
@@ -105,7 +106,9 @@ export async function upsertCatalogProducts(
           ...supplierData,
         },
         update: supplierData,
+        select: { id: true },
       });
+      upsertedId = up.id;
     } else {
       // Sin SKU: buscar manualmente por productUrl o identityHash dentro del scope
       // userId×providerId. Si no hay ninguno de los dos, no podemos identificar.
@@ -128,8 +131,9 @@ export async function upsertCatalogProducts(
           where: { id: existing.id },
           data: supplierData,
         });
+        upsertedId = existing.id;
       } else {
-        await prismaClient.catalogProduct.create({
+        const created = await prismaClient.catalogProduct.create({
           data: {
             userId,
             providerId,
@@ -137,8 +141,26 @@ export async function upsertCatalogProducts(
             ...(identity.identityHash ? { identityHash: identity.identityHash } : {}),
             ...supplierData,
           },
+          select: { id: true },
         });
+        upsertedId = created.id;
       }
+    }
+
+    // Propagar el wholesalePrice actualizado a productos derivados con
+    // stockSource=OWN que apunten a este catálogo via sourceCatalogProductId.
+    // Solo wholesalePrice — los datos comerciales del hijo son del usuario y no
+    // se tocan. En el modelo nuevo no se crean más duplicados (copy_own_stock
+    // setea stockSource sobre la misma fila), pero conservamos este puente por
+    // si quedan registros legacy de instalaciones previas.
+    if (upsertedId && supplierData.wholesalePrice != null) {
+      await prismaClient.catalogProduct.updateMany({
+        where: {
+          sourceCatalogProductId: upsertedId,
+          stockSource: "OWN",
+        },
+        data: { wholesalePrice: supplierData.wholesalePrice },
+      });
     }
   }
 
