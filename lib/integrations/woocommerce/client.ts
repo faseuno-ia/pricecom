@@ -1,8 +1,12 @@
 // Cliente WooCommerce REST API v3.
 // Docs: https://woocommerce.github.io/woocommerce-rest-api-docs/
 //
-// Auth via Basic con consumer_key + consumer_secret. Para tiendas que
-// soportan HTTPS y permission_callback estándar, esto alcanza.
+// Auth via Basic con consumer_key + consumer_secret. Algunos hostings
+// (cPanel/Hostinger con mod_security agresivo) strippean el header
+// Authorization en /wp-json y devuelven 401 aunque las credenciales sean
+// válidas. Como fallback reintentamos con las credenciales en query params
+// (?consumer_key=...&consumer_secret=...), que es soportado por WooCommerce
+// para conexiones HTTPS.
 
 import { decrypt } from "@/lib/utils/crypto";
 
@@ -66,22 +70,60 @@ export class WooCommerceClient {
     );
   }
 
+  private authParams(): string {
+    return (
+      `consumer_key=${encodeURIComponent(this.consumerKey)}` +
+      `&consumer_secret=${encodeURIComponent(this.consumerSecret)}`
+    );
+  }
+
+  // Wrapper compartido: intenta primero con Basic Auth; si recibe 401,
+  // reintenta el mismo request con credenciales en query params.
+  private async fetchWoo(
+    url: string,
+    options: RequestInit = {}
+  ): Promise<Response> {
+    const signal = options.signal ?? AbortSignal.timeout(30000);
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: this.authHeader(),
+        "Content-Type": "application/json",
+      },
+      signal,
+    });
+
+    if (res.status !== 401) return res;
+
+    // Algunos hostings strippean Authorization — reintento con query params.
+    const separator = url.includes("?") ? "&" : "?";
+    const urlWithAuth = `${url}${separator}${this.authParams()}`;
+    return fetch(urlWithAuth, {
+      ...options,
+      headers: {
+        ...options.headers,
+        "Content-Type": "application/json",
+      },
+      signal: options.signal ?? AbortSignal.timeout(30000),
+    });
+  }
+
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
     try {
       // /system_status requiere permisos read; si funciona, las credenciales
       // son válidas. Si la tienda no expone ese endpoint, probamos /products
       // como fallback.
-      const res = await fetch(`${this.baseUrl}/system_status`, {
-        headers: { Authorization: this.authHeader() },
+      const res = await this.fetchWoo(`${this.baseUrl}/system_status`, {
         signal: AbortSignal.timeout(10000),
       });
       if (res.ok) return { ok: true };
-      // Fallback: si /system_status devuelve 401/403/404, probamos /products
+      // 401/403/404 → probamos /products como fallback de endpoint
       if (res.status === 404 || res.status === 401 || res.status === 403) {
-        const probe = await fetch(`${this.baseUrl}/products?per_page=1`, {
-          headers: { Authorization: this.authHeader() },
-          signal: AbortSignal.timeout(10000),
-        });
+        const probe = await this.fetchWoo(
+          `${this.baseUrl}/products?per_page=1`,
+          { signal: AbortSignal.timeout(10000) }
+        );
         if (probe.ok) return { ok: true };
         return { ok: false, error: `HTTP ${probe.status} probing products` };
       }
@@ -95,12 +137,8 @@ export class WooCommerceClient {
   }
 
   async getProducts(page = 1, perPage = 100): Promise<WooProduct[]> {
-    const res = await fetch(
-      `${this.baseUrl}/products?page=${page}&per_page=${perPage}&status=any`,
-      {
-        headers: { Authorization: this.authHeader() },
-        signal: AbortSignal.timeout(30000),
-      }
+    const res = await this.fetchWoo(
+      `${this.baseUrl}/products?page=${page}&per_page=${perPage}&status=any`
     );
     if (!res.ok) {
       throw new Error(`WooCommerce products error: HTTP ${res.status}`);
@@ -137,18 +175,15 @@ export class WooCommerceClient {
       description?: string;
     }
   ): Promise<WooProduct> {
-    const res = await fetch(`${this.baseUrl}/products/${productId}`, {
+    const res = await this.fetchWoo(`${this.baseUrl}/products/${productId}`, {
       method: "PUT",
-      headers: {
-        Authorization: this.authHeader(),
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify(data),
-      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`WooCommerce update error: HTTP ${res.status} ${text.slice(0, 200)}`);
+      throw new Error(
+        `WooCommerce update error: HTTP ${res.status} ${text.slice(0, 200)}`
+      );
     }
     return res.json();
   }
@@ -175,12 +210,8 @@ export class WooCommerceClient {
     const all: WooCategory[] = [];
     let page = 1;
     while (page <= 50) {
-      const res = await fetch(
-        `${this.baseUrl}/products/categories?page=${page}&per_page=100&hide_empty=false`,
-        {
-          headers: { Authorization: this.authHeader() },
-          signal: AbortSignal.timeout(30000),
-        }
+      const res = await this.fetchWoo(
+        `${this.baseUrl}/products/categories?page=${page}&per_page=100&hide_empty=false`
       );
       if (!res.ok) {
         throw new Error(`WooCommerce categories error: HTTP ${res.status}`);
