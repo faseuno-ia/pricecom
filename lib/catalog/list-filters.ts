@@ -55,7 +55,12 @@ export function buildCatalogListWhere(
   // un supplierStatus o internalStatus desde el dropdown, respetamos esa elección.
   if (!showRemovedIgnored) {
     const notClauses: Prisma.CatalogProductWhereInput[] = [];
-    if (!internalStatusParam) notClauses.push({ internalStatus: "IGNORED" });
+    // Si el usuario filtra por stock propio, asumimos que quiere ver TODO lo
+    // que marcó como OWN — incluyendo los ignorados — porque la marca de
+    // stock propio fue una decisión explícita posterior a ignorar.
+    if (!internalStatusParam && stockSourceParam !== "OWN") {
+      notClauses.push({ internalStatus: "IGNORED" });
+    }
     if (!supplierStatusParam) {
       notClauses.push({
         AND: [

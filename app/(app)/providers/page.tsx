@@ -75,8 +75,14 @@ export default async function ProvidersPage() {
       },
     }),
     // Total de productos en stock propio del usuario (cualquier provider).
+    // Excluye IGNORED para que el número coincida con el resto del UI, donde
+    // los ignorados se ocultan por defecto.
     prisma.catalogProduct.count({
-      where: { userId: session.user.id, stockSource: "OWN" },
+      where: {
+        userId: session.user.id,
+        stockSource: "OWN",
+        internalStatus: { not: "IGNORED" },
+      },
     }),
     // Provider OWN_STOCK del usuario, si existe — destino default para los
     // botones de "Agregar" e "Importar".
