@@ -90,6 +90,11 @@ export async function POST() {
   let created = 0;
   let updated = 0;
   let unmatchedCount = 0;
+  // Acumulamos los externalProductId que matchearon para barrer al final los
+  // UnmatchedStoreProduct que quedaron como fantasmas (de syncs previos en los
+  // que el match aún no resolvía). Sin esto, la pestaña "No vinculados" sigue
+  // mostrando productos que ya están publicados.
+  const matchedExternalIds: string[] = [];
 
   for (const woo of wooProducts) {
     const skuRaw = woo.sku?.trim() ?? "";
@@ -146,6 +151,7 @@ export async function POST() {
     }
 
     matched++;
+    matchedExternalIds.push(String(woo.id));
 
     const externalStatus = woo.status;
     // Status de la publication (no confundir con internalStatus del catálogo).
@@ -221,11 +227,30 @@ export async function POST() {
     }
   }
 
+  // Cleanup de fantasmas: cualquier UnmatchedStoreProduct cuyo externalProductId
+  // matcheó en este sync deja de ser "no vinculado". Lo marcamos ignored=true
+  // para que desaparezca de la vista por defecto sin perder el registro
+  // histórico (si el usuario desvincula manualmente en el futuro, lo vuelve a
+  // ver con "Incluir ignorados").
+  let unmatchedClearedCount = 0;
+  if (matchedExternalIds.length > 0) {
+    const cleared = await prisma.unmatchedStoreProduct.updateMany({
+      where: {
+        storeId: store.id,
+        ignored: false,
+        externalProductId: { in: matchedExternalIds },
+      },
+      data: { ignored: true },
+    });
+    unmatchedClearedCount = cleared.count;
+  }
+
   return NextResponse.json({
     matched,
     created,
     updated,
     unmatchedCount,
+    unmatchedCleared: unmatchedClearedCount,
     total: wooProducts.length,
   });
 }
