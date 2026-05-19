@@ -1,4 +1,4 @@
-# PricEcom
+# PricEcom.
 
 **Inteligencia de precios.** Extractor de catálogos de proveedores
 mayoristas que genera Excel estructurados con productos, precios y stock, y
