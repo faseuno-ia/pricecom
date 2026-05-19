@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 import { Boxes, Link2, FolderTree } from "lucide-react";
-import {
-  PublicationsTable,
-} from "./publications-table";
+import { PublicationsTable } from "./publications-table";
 import { UnmatchedTable } from "./unmatched-table";
 import { CategoriesTable } from "./categories-table";
 
@@ -16,16 +14,25 @@ interface CategoryOpt {
 }
 
 interface Props {
-  publications: React.ComponentProps<typeof PublicationsTable>["publications"];
+  publicationsTotal: number;
   unmatchedCount: number;
   categories: CategoryOpt[];
 }
 
-export function MyStoreTabs({ publications, unmatchedCount, categories }: Props) {
+export function MyStoreTabs({
+  publicationsTotal,
+  unmatchedCount,
+  categories,
+}: Props) {
   const [tab, setTab] = useState<Tab>("publications");
 
   const tabs: { key: Tab; label: string; count?: number; icon: typeof Boxes }[] = [
-    { key: "publications", label: "Publicaciones", count: publications.length, icon: Boxes },
+    {
+      key: "publications",
+      label: "Publicaciones",
+      count: publicationsTotal,
+      icon: Boxes,
+    },
     { key: "unmatched", label: "No vinculados", count: unmatchedCount, icon: Link2 },
     { key: "categories", label: "Categorías", count: categories.length, icon: FolderTree },
   ];
@@ -65,7 +72,7 @@ export function MyStoreTabs({ publications, unmatchedCount, categories }: Props)
         })}
       </div>
 
-      {tab === "publications" && <PublicationsTable publications={publications} />}
+      {tab === "publications" && <PublicationsTable />}
       {tab === "unmatched" && <UnmatchedTable />}
       {tab === "categories" && <CategoriesTable categories={categories} />}
     </div>

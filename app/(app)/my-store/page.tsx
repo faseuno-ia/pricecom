@@ -3,10 +3,6 @@ import { requireSession } from "@/lib/auth";
 import { Onboarding } from "@/components/my-store/onboarding";
 import { MyStoreDashboard } from "@/components/my-store/my-store-dashboard";
 import { MyStoreTabs } from "@/components/my-store/my-store-tabs";
-import {
-  resolvePricing,
-  type PricingRuleForCalc,
-} from "@/lib/pricing/pricing-engine";
 
 export const metadata = {
   title: "Mi Tienda — PricEcom",
@@ -39,79 +35,33 @@ export default async function MyStorePage() {
     );
   }
 
-  const [
-    active,
-    draft,
-    paused,
-    pubError,
-    pendingSync,
-    unmatchedCount,
-    publications,
-    rules,
-    categories,
-  ] = await Promise.all([
-    prisma.productPublication.count({
-      where: { storeId: store.id, status: "ACTIVE" },
-    }),
-    prisma.productPublication.count({
-      where: { storeId: store.id, status: "DRAFT" },
-    }),
-    prisma.productPublication.count({
-      where: { storeId: store.id, status: "PAUSED" },
-    }),
-    prisma.productPublication.count({
-      where: { storeId: store.id, status: "ERROR" },
-    }),
-    prisma.productPublication.count({
-      where: { storeId: store.id, pendingSync: true },
-    }),
-    prisma.unmatchedStoreProduct.count({
-      where: { storeId: store.id, ignored: false },
-    }),
-    prisma.productPublication.findMany({
-      where: { storeId: store.id },
-      orderBy: { lastSyncedAt: "desc" },
-      take: 200,
-      include: {
-        catalogProduct: {
-          select: {
-            id: true,
-            publicationSku: true,
-            commercialTitle: true,
-            supplierName: true,
-            imageUrl: true,
-            finalPrice: true,
-            stock: true,
-            stockSource: true,
-            wholesalePrice: true,
-            manualMargin: true,
-            assignedCategoryId: true,
-            providerId: true,
-          },
-        },
-      },
-    }),
-    prisma.pricingRule.findMany({
-      where: { userId: session.user.id, isActive: true },
-      select: {
-        id: true,
-        name: true,
-        scope: true,
-        scopeId: true,
-        marginPercent: true,
-        roundingMode: true,
-        isActive: true,
-        priority: true,
-      },
-    }),
-    // Category interna (global) — la usamos en el modal de mapping de categorías.
-    prisma.category.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    }),
-  ]);
-
-  const rulesForCalc: PricingRuleForCalc[] = rules;
+  // Solo KPIs + categorías globales. La tabla de publicaciones fetchea por
+  // su cuenta vía /api/my-store/publications (paginada + buscable).
+  const [active, draft, paused, pubError, pendingSync, unmatchedCount, categories] =
+    await Promise.all([
+      prisma.productPublication.count({
+        where: { storeId: store.id, status: "ACTIVE" },
+      }),
+      prisma.productPublication.count({
+        where: { storeId: store.id, status: "DRAFT" },
+      }),
+      prisma.productPublication.count({
+        where: { storeId: store.id, status: "PAUSED" },
+      }),
+      prisma.productPublication.count({
+        where: { storeId: store.id, status: "ERROR" },
+      }),
+      prisma.productPublication.count({
+        where: { storeId: store.id, pendingSync: true },
+      }),
+      prisma.unmatchedStoreProduct.count({
+        where: { storeId: store.id, ignored: false },
+      }),
+      prisma.category.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+    ]);
 
   const integration = store.integrations[0];
 
@@ -156,45 +106,7 @@ export default async function MyStorePage() {
       />
 
       <MyStoreTabs
-        publications={publications.map((p) => {
-          const pricing = resolvePricing(
-            {
-              wholesalePrice: p.catalogProduct.wholesalePrice,
-              manualMargin: p.catalogProduct.manualMargin,
-              finalPrice: p.catalogProduct.finalPrice,
-              assignedCategoryId: p.catalogProduct.assignedCategoryId,
-              providerId: p.catalogProduct.providerId,
-            },
-            rulesForCalc
-          );
-          return {
-            id: p.id,
-            status: p.status,
-            syncStatus: p.syncStatus,
-            externalProductId: p.externalProductId,
-            externalSku: p.externalSku,
-            externalStatus: p.externalStatus,
-            externalUrl: p.externalUrl,
-            priceInStore: p.priceInStore,
-            stockInStore: p.stockInStore,
-            categoryInStore: p.categoryInStore,
-            lastSyncedAt: p.lastSyncedAt ? p.lastSyncedAt.toISOString() : null,
-            pendingSync: p.pendingSync,
-            syncError: p.syncError,
-            catalogProduct: {
-              id: p.catalogProduct.id,
-              publicationSku: p.catalogProduct.publicationSku,
-              commercialTitle: p.catalogProduct.commercialTitle,
-              supplierName: p.catalogProduct.supplierName,
-              imageUrl: p.catalogProduct.imageUrl,
-              finalPrice: p.catalogProduct.finalPrice,
-              stock: p.catalogProduct.stock,
-              stockSource: p.catalogProduct.stockSource,
-              // pricing es interno del drawer; se calcula acá y se pasa al cliente.
-              pricing: { effectivePrice: pricing.effectivePrice },
-            },
-          };
-        })}
+        publicationsTotal={store._count.publications}
         unmatchedCount={unmatchedCount}
         categories={categories}
       />

@@ -1,7 +1,17 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { ImageOff, ExternalLink, RefreshCw, Edit } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  ImageOff,
+  ExternalLink,
+  RefreshCw,
+  Edit,
+  Search,
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { PublicationDrawer, type PubDetail } from "./publication-drawer";
@@ -42,10 +52,6 @@ interface PubRow {
   };
 }
 
-interface Props {
-  publications: PubRow[];
-}
-
 type Filter =
   | "ALL"
   | "ACTIVE"
@@ -56,53 +62,30 @@ type Filter =
   | "OUTDATED";
 
 const statusBadgeFor: Record<PubStatus, { label: string; cls: string }> = {
-  ACTIVE: {
-    label: "Publicado",
-    cls: "bg-accent/15 text-accent border-accent/30",
-  },
-  DRAFT: {
-    label: "Borrador",
-    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  },
-  PAUSED: {
-    label: "Pausado",
-    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  },
-  REMOVED: {
-    label: "Removido",
-    cls: "bg-muted/30 text-muted-foreground border-border",
-  },
-  ERROR: {
-    label: "Error",
-    cls: "bg-red-500/15 text-red-300 border-red-500/30",
-  },
+  ACTIVE: { label: "Publicado", cls: "bg-accent/15 text-accent border-accent/30" },
+  DRAFT: { label: "Borrador", cls: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
+  PAUSED: { label: "Pausado", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+  REMOVED: { label: "Removido", cls: "bg-muted/30 text-muted-foreground border-border" },
+  ERROR: { label: "Error", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
 };
 
 const syncBadgeFor: Record<SyncStatus, { label: string; cls: string }> = {
-  READY: {
-    label: "Listo",
-    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  },
-  PENDING_SYNC: {
-    label: "Pend. sync",
-    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  },
-  SYNCED: {
-    label: "Sincronizado",
-    cls: "bg-green-500/15 text-green-300 border-green-500/30",
-  },
-  OUTDATED: {
-    label: "Desactualizado",
-    cls: "bg-orange-500/15 text-orange-300 border-orange-500/30",
-  },
-  ERROR: {
-    label: "Error sync",
-    cls: "bg-red-500/15 text-red-300 border-red-500/30",
-  },
-  PAUSED: {
-    label: "Pausado",
-    cls: "bg-muted/30 text-muted-foreground border-border",
-  },
+  READY: { label: "Listo", cls: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
+  PENDING_SYNC: { label: "Pend. sync", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+  SYNCED: { label: "Sincronizado", cls: "bg-green-500/15 text-green-300 border-green-500/30" },
+  OUTDATED: { label: "Desactualizado", cls: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
+  ERROR: { label: "Error sync", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
+  PAUSED: { label: "Pausado", cls: "bg-muted/30 text-muted-foreground border-border" },
+};
+
+const FILTER_LABELS: Record<Filter, string> = {
+  ALL: "Todos",
+  ACTIVE: "Publicados",
+  DRAFT: "Borradores",
+  PAUSED: "Pausados",
+  ERROR: "Errores",
+  PENDING_SYNC: "Pend. sync",
+  OUTDATED: "Desactualizados",
 };
 
 function formatPrice(p: number | null): string {
@@ -114,91 +97,118 @@ function formatPrice(p: number | null): string {
   }).format(p);
 }
 
-export function PublicationsTable({ publications }: Props) {
+export function PublicationsTable() {
   const [filter, setFilter] = useState<Filter>("ALL");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [data, setData] = useState<{ publications: PubRow[]; total: number }>({
+    publications: [],
+    total: 0,
+  });
+  const [loading, setLoading] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerFor, setDrawerFor] = useState<PubRow | null>(null);
 
-  const filtered = useMemo(() => {
-    if (filter === "ALL") return publications;
-    if (filter === "PENDING_SYNC")
-      return publications.filter(
-        (p) => p.syncStatus === "PENDING_SYNC" || p.pendingSync
-      );
-    if (filter === "OUTDATED")
-      return publications.filter((p) => p.syncStatus === "OUTDATED");
-    return publications.filter((p) => p.status === filter);
-  }, [publications, filter]);
+  // Reset de página al cambiar filtro o search.
+  useEffect(() => {
+    setPage(1);
+  }, [filter, search]);
 
-  if (publications.length === 0) {
-    return (
-      <div className="bg-card border border-border rounded-xl p-10 text-center text-sm text-muted-foreground">
-        Todavía no hay publicaciones sincronizadas. Importá productos para
-        empezar.
-      </div>
-    );
-  }
+  // Fetch con debounce sobre search; los demás cambios disparan inmediato.
+  useEffect(() => {
+    let cancelled = false;
+    const debounce = search ? 300 : 0;
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("pageSize", String(pageSize));
+        if (filter !== "ALL") params.set("filter", filter);
+        if (search.trim()) params.set("search", search.trim());
+        const res = await fetch(
+          `/api/my-store/publications?${params.toString()}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = (await res.json()) as {
+          publications: PubRow[];
+          total: number;
+        };
+        if (!cancelled) setData(json);
+      } catch (err) {
+        if (!cancelled) toast.error((err as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, debounce);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [page, pageSize, filter, search]);
 
-  const filters: { key: Filter; label: string; count: number }[] = [
-    { key: "ALL", label: "Todos", count: publications.length },
-    {
-      key: "ACTIVE",
-      label: "Publicados",
-      count: publications.filter((p) => p.status === "ACTIVE").length,
-    },
-    {
-      key: "DRAFT",
-      label: "Borradores",
-      count: publications.filter((p) => p.status === "DRAFT").length,
-    },
-    {
-      key: "PAUSED",
-      label: "Pausados",
-      count: publications.filter((p) => p.status === "PAUSED").length,
-    },
-    {
-      key: "ERROR",
-      label: "Errores",
-      count: publications.filter((p) => p.status === "ERROR").length,
-    },
-    {
-      key: "PENDING_SYNC",
-      label: "Pend. sync",
-      count: publications.filter(
-        (p) => p.syncStatus === "PENDING_SYNC" || p.pendingSync
-      ).length,
-    },
-    {
-      key: "OUTDATED",
-      label: "Desactualizados",
-      count: publications.filter((p) => p.syncStatus === "OUTDATED").length,
-    },
+  const drawerDetail: PubDetail | null = drawerFor ? { ...drawerFor } : null;
+  const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
+
+  const FILTERS_ORDER: Filter[] = [
+    "ALL",
+    "ACTIVE",
+    "DRAFT",
+    "PAUSED",
+    "ERROR",
+    "PENDING_SYNC",
+    "OUTDATED",
   ];
-
-  const drawerDetail: PubDetail | null = drawerFor
-    ? { ...drawerFor }
-    : null;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-1.5 flex-wrap">
-        {filters.map((f) => (
-          <button
-            key={f.key}
-            type="button"
-            onClick={() => setFilter(f.key)}
-            className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
-              filter === f.key
-                ? "bg-primary/15 text-primary border-primary/40"
-                : "border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
-            }`}
+      {/* Toolbar: filtros + search + pageSize */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {FILTERS_ORDER.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
+                filter === f
+                  ? "bg-primary/15 text-primary border-primary/40"
+                  : "border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
+              }`}
+            >
+              {FILTER_LABELS[f]}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar por SKU o nombre…"
+              className="text-sm bg-background border border-border rounded-md pl-8 pr-3 py-1.5 w-64 focus:outline-none focus:ring-1 focus:ring-primary/60"
+            />
+          </div>
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(1);
+            }}
+            className="text-xs bg-background border border-border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
           >
-            {f.label}{" "}
-            <span className="opacity-70 font-mono ml-1">{f.count}</span>
-          </button>
-        ))}
+            <option value={50}>50 por página</option>
+            <option value={100}>100 por página</option>
+            <option value={200}>200 por página</option>
+          </select>
+        </div>
       </div>
 
+      {/* Tabla */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -234,24 +244,36 @@ export function PublicationsTable({ publications }: Props) {
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && (
+              {loading && data.publications.length === 0 && (
                 <tr>
                   <td
                     colSpan={9}
-                    className="px-4 py-8 text-center text-muted-foreground"
+                    className="px-4 py-10 text-center text-muted-foreground"
                   >
-                    Sin publicaciones para este filtro
+                    <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
+                    Cargando…
                   </td>
                 </tr>
               )}
-              {filtered.map((p) => {
+              {!loading && data.publications.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={9}
+                    className="px-4 py-10 text-center text-muted-foreground"
+                  >
+                    {search
+                      ? `Sin publicaciones para "${search}"`
+                      : "Sin publicaciones para este filtro"}
+                  </td>
+                </tr>
+              )}
+              {data.publications.map((p) => {
                 const sBadge = statusBadgeFor[p.status];
                 const syncB = syncBadgeFor[p.syncStatus];
                 const sku =
                   p.externalSku ?? p.catalogProduct.publicationSku ?? "—";
                 const displayName =
-                  p.catalogProduct.commercialTitle ??
-                  p.catalogProduct.supplierName;
+                  p.catalogProduct.commercialTitle ?? p.catalogProduct.supplierName;
                 const image = p.catalogProduct.imageUrl;
                 const imageFailed = failedImages.has(p.id);
                 return (
@@ -358,6 +380,38 @@ export function PublicationsTable({ publications }: Props) {
             </tbody>
           </table>
         </div>
+
+        {/* Paginación */}
+        {data.total > 0 && (
+          <div className="px-5 py-3 border-t border-border flex items-center justify-between text-xs text-muted-foreground flex-wrap gap-2">
+            <span>
+              {(page - 1) * pageSize + 1}–
+              {Math.min(page * pageSize, data.total)} de{" "}
+              {data.total.toLocaleString("es-AR")}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1 || loading}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-border hover:bg-muted/40 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" /> Anterior
+              </button>
+              <span>
+                {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages || loading}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-border hover:bg-muted/40 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Siguiente <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <PublicationDrawer
