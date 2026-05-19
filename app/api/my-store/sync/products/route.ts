@@ -107,8 +107,9 @@ export async function POST() {
       : null;
 
     if (!catalogProduct) {
-      // Persistir en UnmatchedStoreProduct. Si reaparece (estaba ignored=true),
-      // reseteamos ignored a false para que vuelva a la vista de no vinculados.
+      // Persistir en UnmatchedStoreProduct. NO reseteamos `ignored`: si el
+      // usuario lo marcó como ignorado, esa decisión sobrevive a las
+      // re-importaciones. Solo refrescamos los datos visibles.
       const wooCats = JSON.stringify(
         (woo.categories ?? []).map((c) => c.name)
       );
@@ -138,7 +139,6 @@ export async function POST() {
           imageUrl: woo.images?.[0]?.src ?? null,
           categories: wooCats,
           permalink: woo.permalink,
-          ignored: false,
         },
       });
       unmatchedCount++;
