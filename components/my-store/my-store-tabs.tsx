@@ -21,10 +21,14 @@ interface Props {
 
 export function MyStoreTabs({
   publicationsTotal,
-  unmatchedCount,
+  unmatchedCount: initialUnmatchedCount,
   categories,
 }: Props) {
   const [tab, setTab] = useState<Tab>("publications");
+  // El conteo inicial viene del server, pero `UnmatchedTable` re-fetchea cada
+  // vez que se monta y/o cuando el usuario sincroniza desde WooCommerce.
+  // Mantenemos el badge alineado a lo que la tabla realmente muestra.
+  const [unmatchedCount, setUnmatchedCount] = useState(initialUnmatchedCount);
 
   const tabs: { key: Tab; label: string; count?: number; icon: typeof Boxes }[] = [
     {
@@ -73,7 +77,9 @@ export function MyStoreTabs({
       </div>
 
       {tab === "publications" && <PublicationsTable />}
-      {tab === "unmatched" && <UnmatchedTable />}
+      {tab === "unmatched" && (
+        <UnmatchedTable onCountLoaded={setUnmatchedCount} />
+      )}
       {tab === "categories" && <CategoriesTable categories={categories} />}
     </div>
   );

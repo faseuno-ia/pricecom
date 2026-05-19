@@ -53,7 +53,13 @@ function formatPrice(p: number | null): string {
   }).format(p);
 }
 
-export function UnmatchedTable() {
+interface UnmatchedTableProps {
+  // Callback opcional para notificar al padre del conteo actual de la tabla.
+  // Útil para mantener sincronizado un badge externo (ej. en MyStoreTabs).
+  onCountLoaded?: (count: number) => void;
+}
+
+export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
   const router = useRouter();
   const [items, setItems] = useState<UnmatchedRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,6 +76,7 @@ export function UnmatchedTable() {
       if (!res.ok) throw new Error("Error al cargar");
       const json = (await res.json()) as { unmatched: UnmatchedRow[] };
       setItems(json.unmatched);
+      onCountLoaded?.(json.unmatched.length);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
