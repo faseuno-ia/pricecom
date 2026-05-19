@@ -306,12 +306,12 @@ export async function POST(req: NextRequest) {
       sku: { notIn: importedSkus },
     };
 
-    // Caso 1: PREPARED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED
+    // Caso 1: PREPARED|PUBLISHED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED.
     const removedPaused = await prisma.catalogProduct.updateMany({
       where: {
         ...baseWhere,
         stockSource: "SUPPLIER",
-        internalStatus: "PREPARED",
+        internalStatus: { in: ["PREPARED", "PUBLISHED"] },
       },
       data: {
         supplierStatus: "SUPPLIER_REMOVED",
@@ -327,7 +327,7 @@ export async function POST(req: NextRequest) {
         NOT: {
           AND: [
             { stockSource: "SUPPLIER" },
-            { internalStatus: "PREPARED" },
+            { internalStatus: { in: ["PREPARED", "PUBLISHED"] } },
           ],
         },
       },

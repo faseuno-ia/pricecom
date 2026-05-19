@@ -155,14 +155,15 @@ export async function upsertCatalogProducts(
     .filter((s): s is string => !!s && s.length > 0);
 
   if (seenSkus.length > 0) {
-    // Caso 1: PREPARED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED
+    // Caso 1: PREPARED|PUBLISHED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED.
+    // Si dependíamos del proveedor para esa publicación, frenamos automáticamente.
     await prismaClient.catalogProduct.updateMany({
       where: {
         userId,
         providerId,
         supplierStatus: "ACTIVE",
         stockSource: "SUPPLIER",
-        internalStatus: "PREPARED",
+        internalStatus: { in: ["PREPARED", "PUBLISHED"] },
         sku: { notIn: seenSkus },
       },
       data: {
@@ -171,7 +172,7 @@ export async function upsertCatalogProducts(
       },
     });
 
-    // Caso 2: resto (NOT_PUBLISHED, PAUSED, o cualquier estado con stockSource
+    // Caso 2: el resto (NOT_PUBLISHED, PAUSED, o cualquier estado con stockSource
     // OWN/HYBRID) → sólo marcar SUPPLIER_REMOVED. IGNORED queda excluido.
     await prismaClient.catalogProduct.updateMany({
       where: {
@@ -183,7 +184,7 @@ export async function upsertCatalogProducts(
         NOT: {
           AND: [
             { stockSource: "SUPPLIER" },
-            { internalStatus: "PREPARED" },
+            { internalStatus: { in: ["PREPARED", "PUBLISHED"] } },
           ],
         },
       },

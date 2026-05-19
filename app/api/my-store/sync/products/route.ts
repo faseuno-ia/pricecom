@@ -10,9 +10,33 @@ import {
   WooCommerceClient,
   type WooProduct,
 } from "@/lib/integrations/woocommerce/client";
+import type { InternalPublicationStatus } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// Mapea el estado de WooCommerce al internalStatus del CatalogProduct.
+// Respeta IGNORED y PAUSED del usuario — no los pisa automáticamente.
+// Devuelve null cuando no hay que tocar nada (ej. trash, o status manual
+// que queremos preservar).
+function mapInternalStatus(
+  externalStatus: string,
+  currentInternal: InternalPublicationStatus
+): InternalPublicationStatus | null {
+  if (currentInternal === "IGNORED") return null;
+  if (currentInternal === "PAUSED") return null;
+  switch (externalStatus) {
+    case "publish":
+      return currentInternal === "PUBLISHED" ? null : "PUBLISHED";
+    case "draft":
+    case "private":
+    case "pending":
+      return currentInternal === "PREPARED" ? null : "PREPARED";
+    case "trash":
+    default:
+      return null;
+  }
+}
 
 export async function POST() {
   const session = await requireSession();
@@ -74,11 +98,11 @@ export async function POST() {
     const catalogProduct = skuRaw
       ? ((await prisma.catalogProduct.findFirst({
           where: { userId: session.user.id, publicationSku: skuRaw },
-          select: { id: true },
+          select: { id: true, internalStatus: true },
         })) ??
         (await prisma.catalogProduct.findFirst({
           where: { userId: session.user.id, sku: skuRaw },
-          select: { id: true },
+          select: { id: true, internalStatus: true },
         })))
       : null;
 
@@ -124,7 +148,8 @@ export async function POST() {
     matched++;
 
     const externalStatus = woo.status;
-    const internalStatus =
+    // Status de la publication (no confundir con internalStatus del catálogo).
+    const pubStatus =
       externalStatus === "publish"
         ? "ACTIVE"
         : externalStatus === "draft"
@@ -146,7 +171,7 @@ export async function POST() {
     });
 
     const data = {
-      status: internalStatus as
+      status: pubStatus as
         | "ACTIVE"
         | "DRAFT"
         | "PAUSED"
@@ -181,6 +206,18 @@ export async function POST() {
         },
       });
       created++;
+    }
+
+    // Propagar al CatalogProduct.internalStatus respetando overrides del usuario.
+    const nextInternal = mapInternalStatus(
+      externalStatus,
+      catalogProduct.internalStatus
+    );
+    if (nextInternal) {
+      await prisma.catalogProduct.update({
+        where: { id: catalogProduct.id },
+        data: { internalStatus: nextInternal },
+      });
     }
   }
 

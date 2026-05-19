@@ -14,6 +14,7 @@ const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
 const VALID_INTERNAL: InternalPublicationStatus[] = [
   "NOT_PUBLISHED",
   "PREPARED",
+  "PUBLISHED",
   "PAUSED",
   "IGNORED",
 ];

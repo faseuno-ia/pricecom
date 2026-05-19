@@ -37,7 +37,12 @@ import { CategoryBulkModal } from "./category-bulk-modal";
 import { usePinnedActions } from "@/lib/hooks/use-pinned-actions";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
-type InternalStatus = "NOT_PUBLISHED" | "PREPARED" | "PAUSED" | "IGNORED";
+type InternalStatus =
+  | "NOT_PUBLISHED"
+  | "PREPARED"
+  | "PUBLISHED"
+  | "PAUSED"
+  | "IGNORED";
 type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
 type StatusBulkAction = "ignore" | "restore" | "prepare" | "pause";
 type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
@@ -152,6 +157,10 @@ const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> =
   },
   PREPARED: {
     label: "Preparado",
+    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  },
+  PUBLISHED: {
+    label: "Publicado",
     cls: "bg-green-500/15 text-green-300 border-green-500/30",
   },
   PAUSED: {
@@ -921,6 +930,7 @@ export function CatalogTable({
           <option value="all">Estado interno: Todos</option>
           <option value="NOT_PUBLISHED">Sin publicar</option>
           <option value="PREPARED">Preparado</option>
+          <option value="PUBLISHED">Publicado</option>
           <option value="PAUSED">Pausado</option>
           <option value="IGNORED">Ignorado</option>
         </select>
@@ -1162,10 +1172,11 @@ export function CatalogTable({
                     p.supplierStatus === "SUPPLIER_REMOVED" ||
                     p.internalStatus === "IGNORED";
                   // El "precio de venta" se destaca cuando el producto está
-                  // PREPARED (listo para publicar); en otros estados queda
-                  // muted para no robar atención.
+                  // PREPARED (listo para publicar) o ya PUBLISHED; en otros
+                  // estados queda muted para no robar atención.
                   const priceTextCls =
-                    p.internalStatus === "PREPARED"
+                    p.internalStatus === "PREPARED" ||
+                    p.internalStatus === "PUBLISHED"
                       ? "text-foreground"
                       : "text-muted-foreground";
                   return (

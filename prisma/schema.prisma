@@ -417,6 +417,9 @@ enum StockSource {
 enum InternalPublicationStatus {
   NOT_PUBLISHED
   PREPARED
+  /// Publicado en la tienda (sincronizado vía /api/my-store/sync/products).
+  /// El sync respeta IGNORED y PAUSED — no los pisa con PUBLISHED.
+  PUBLISHED
   PAUSED
   IGNORED
 }
