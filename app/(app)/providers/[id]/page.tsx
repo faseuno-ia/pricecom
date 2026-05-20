@@ -1,8 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import { notFound } from "next/navigation";
-import { formatDate } from "@/lib/utils";
 import { requireSession } from "@/lib/auth";
-import { StatusBadge } from "@/components/ui/status-badge";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
@@ -14,7 +12,6 @@ import {
   Edit,
   Download,
   Package,
-  Layers,
   TrendingUp,
   TrendingDown,
   PlusCircle,
@@ -25,6 +22,10 @@ import {
   Globe,
   FileSpreadsheet,
   Boxes,
+  ChevronDown,
+  ImageOff,
+  FolderMinus,
+  Tag,
 } from "lucide-react";
 import type { ProviderType } from "@prisma/client";
 import { normalizeImageUrl } from "@/lib/utils";
@@ -55,15 +56,28 @@ const typeBadge: Record<
   },
 };
 
-function formatDuration(start: Date | null, end: Date | null): string {
-  if (!start) return "—";
-  const e = end ?? new Date();
-  const sec = Math.round((e.getTime() - start.getTime()) / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const rem = sec % 60;
-  return rem === 0 ? `${min}m` : `${min}m ${rem}s`;
-}
+const internalBadge: Record<string, { label: string; cls: string }> = {
+  NOT_PUBLISHED: {
+    label: "Sin publicar",
+    cls: "bg-muted/40 text-muted-foreground border-border",
+  },
+  PREPARED: {
+    label: "Preparado",
+    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  },
+  PUBLISHED: {
+    label: "Publicado",
+    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  },
+  PAUSED: {
+    label: "Pausado",
+    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  },
+  IGNORED: {
+    label: "Ignorado",
+    cls: "bg-muted/30 text-muted-foreground border-border",
+  },
+};
 
 export default async function ProviderDashboardPage({
   params,
@@ -74,100 +88,107 @@ export default async function ProviderDashboardPage({
 
   const provider = await prisma.provider.findFirst({
     where: { id: params.id, userId: session.user.id },
-    include: {
-      scraperConfig: true,
-      extractionJobs: {
-        orderBy: { createdAt: "desc" },
-        take: 50,
-        include: {
-          comparison: {
-            select: {
-              newProducts: true,
-              removedProducts: true,
-              priceUp: true,
-              priceDown: true,
-              stockChanged: true,
-              previousJobId: true,
-            },
-          },
-        },
-      },
+    select: {
+      id: true,
+      name: true,
+      baseUrl: true,
+      providerType: true,
+      isActive: true,
+      requiresLogin: true,
+      lastExtractionAt: true,
     },
   });
   if (!provider) notFound();
 
   const isScraper = provider.providerType === "SCRAPER";
-  const tBadge = typeBadge[provider.providerType];
-  const TypeIcon = tBadge.icon;
 
-  // Para proveedores MANUAL/IMPORTED traemos un sample de productos del catálogo
-  // (lo que reemplaza visualmente al historial de extracciones).
-  const catalogProducts = isScraper
-    ? []
-    : await prisma.catalogProduct.findMany({
-        where: { providerId: provider.id, userId: session.user.id },
-        orderBy: { updatedAt: "desc" },
-        take: 50,
-        include: {
-          images: {
-            orderBy: [{ isPrimary: "desc" }, { position: "asc" }],
-            take: 1,
-            select: { url: true },
-          },
-          assignedCategory: { select: { name: true } },
-        },
-      });
-
-  const catalogProductsTotal = isScraper
-    ? 0
-    : await prisma.catalogProduct.count({
-        where: {
-          providerId: provider.id,
-          userId: session.user.id,
-          NOT: [
-            { internalStatus: "IGNORED" },
-            {
-              AND: [
-                { supplierStatus: "SUPPLIER_REMOVED" },
-                { stockSource: "SUPPLIER" },
-              ],
-            },
-          ],
-        },
-      });
-
-  // KPIs agregados
-  const totalProducts =
-    provider.extractionJobs.find((j) => j.status === "COMPLETED")
-      ?.totalProducts ?? 0;
-
-  const allComparisons = provider.extractionJobs
-    .filter((j) => j.comparison?.previousJobId)
-    .map((j) => j.comparison!);
-
-  const kpis = {
-    totalExtractions: provider.extractionJobs.length,
-    currentProducts: totalProducts,
-    totalChanges: allComparisons.reduce(
-      (acc, c) =>
-        acc +
-        c.newProducts +
-        c.removedProducts +
-        c.priceUp +
-        c.priceDown +
-        c.stockChanged,
-      0
-    ),
-    totalPriceUp: allComparisons.reduce((acc, c) => acc + c.priceUp, 0),
-    totalPriceDown: allComparisons.reduce((acc, c) => acc + c.priceDown, 0),
-    totalRemoved: allComparisons.reduce((acc, c) => acc + c.removedProducts, 0),
-    totalNew: allComparisons.reduce((acc, c) => acc + c.newProducts, 0),
+  // Where común para queries del catálogo. Excluye ignorados y removidos del
+  // proveedor cuando dependen del proveedor (los OWN/HYBRID sobreviven).
+  const catalogWhere = {
+    providerId: provider.id,
+    userId: session.user.id,
+    NOT: [
+      { internalStatus: "IGNORED" as const },
+      {
+        AND: [
+          { supplierStatus: "SUPPLIER_REMOVED" as const },
+          { stockSource: "SUPPLIER" as const },
+        ],
+      },
+    ],
   };
 
-  // Último Excel descargable
-  const lastExcelJob = provider.extractionJobs.find(
-    (j) => j.status === "COMPLETED" && j.excelFileUrl
-  );
+  const [
+    catalogProducts,
+    catalogTotal,
+    lastJob,
+    lastExcelJob,
+    extractionJobsTotal,
+  ] = await Promise.all([
+    prisma.catalogProduct.findMany({
+      where: catalogWhere,
+      select: {
+        id: true,
+        sku: true,
+        publicationSku: true,
+        supplierName: true,
+        commercialTitle: true,
+        wholesalePrice: true,
+        imageUrl: true,
+        supplierStatus: true,
+        internalStatus: true,
+        stockSource: true,
+        assignedCategory: { select: { name: true } },
+        images: {
+          where: { isPrimary: true },
+          select: { url: true },
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    }),
+    prisma.catalogProduct.count({ where: catalogWhere }),
+    isScraper
+      ? prisma.extractionJob.findFirst({
+          where: {
+            providerId: provider.id,
+            status: "COMPLETED",
+            comparison: { isNot: null },
+          },
+          orderBy: { createdAt: "desc" },
+          include: {
+            comparison: {
+              select: {
+                newProducts: true,
+                removedProducts: true,
+                priceUp: true,
+                priceDown: true,
+                stockChanged: true,
+                previousJobId: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve(null),
+    isScraper
+      ? prisma.extractionJob.findFirst({
+          where: {
+            providerId: provider.id,
+            status: "COMPLETED",
+            excelFileUrl: { not: null },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { excelFileUrl: true },
+        })
+      : Promise.resolve(null),
+    isScraper
+      ? prisma.extractionJob.count({ where: { providerId: provider.id } })
+      : Promise.resolve(0),
+  ]);
+
+  const tBadge = typeBadge[provider.providerType];
+  const TypeIcon = tBadge.icon;
 
   const hostname = (() => {
     try {
@@ -177,19 +198,61 @@ export default async function ProviderDashboardPage({
     }
   })();
 
-  const kpiCards: {
+  // KPIs del catálogo — basados en el sample de 50 productos cargados.
+  const withPrice = catalogProducts.filter((p) => p.wholesalePrice != null).length;
+  const withoutImage = catalogProducts.filter(
+    (p) => !p.imageUrl && !p.images[0]
+  ).length;
+  const withoutCategory = catalogProducts.filter(
+    (p) => !p.assignedCategory
+  ).length;
+
+  const kpis: {
     label: string;
-    value: number | string;
+    value: number;
     icon: typeof Package;
     tone: string;
+    suffix?: string;
   }[] = [
-    { label: "Productos actuales", value: kpis.currentProducts, icon: Package, tone: "text-primary" },
-    { label: "Total extracciones", value: kpis.totalExtractions, icon: Layers, tone: "text-primary" },
-    { label: "Precios subieron", value: kpis.totalPriceUp, icon: TrendingUp, tone: "text-orange-400" },
-    { label: "Precios bajaron", value: kpis.totalPriceDown, icon: TrendingDown, tone: "text-emerald-400" },
-    { label: "Productos nuevos", value: kpis.totalNew, icon: PlusCircle, tone: "text-green-400" },
-    { label: "Removidos", value: kpis.totalRemoved, icon: MinusCircle, tone: "text-red-400" },
+    {
+      label: "Productos activos",
+      value: catalogTotal,
+      icon: Package,
+      tone: "text-primary",
+    },
+    {
+      label: "Con precio",
+      value: withPrice,
+      icon: Tag,
+      tone: "text-emerald-400",
+      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
+    },
+    {
+      label: "Sin imagen",
+      value: withoutImage,
+      icon: ImageOff,
+      tone: "text-amber-400",
+      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
+    },
+    {
+      label: "Sin categoría",
+      value: withoutCategory,
+      icon: FolderMinus,
+      tone: "text-orange-400",
+      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
+    },
   ];
+
+  const comparison = lastJob?.comparison ?? null;
+  const hasComparison =
+    comparison != null && comparison.previousJobId != null;
+  const totalChanges = hasComparison
+    ? comparison.newProducts +
+      comparison.removedProducts +
+      comparison.priceUp +
+      comparison.priceDown +
+      comparison.stockChanged
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -236,18 +299,21 @@ export default async function ProviderDashboardPage({
               >
                 {hostname} <ExternalLink className="w-3 h-3" />
               </a>
-              <span className="opacity-40">·</span>
-              <span>Requiere login: {provider.requiresLogin ? "Sí" : "No"}</span>
+              {isScraper && (
+                <>
+                  <span className="opacity-40">·</span>
+                  <span>
+                    Última extracción:{" "}
+                    {provider.lastExtractionAt
+                      ? formatDistanceToNow(provider.lastExtractionAt, {
+                          locale: es,
+                          addSuffix: true,
+                        })
+                      : "Nunca"}
+                  </span>
+                </>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Última extracción:{" "}
-              {provider.lastExtractionAt
-                ? formatDistanceToNow(provider.lastExtractionAt, {
-                    locale: es,
-                    addSuffix: true,
-                  })
-                : "Nunca"}
-            </p>
           </div>
 
           {/* Acciones rápidas */}
@@ -258,13 +324,13 @@ export default async function ProviderDashboardPage({
                   href={`/new-extraction?providerId=${provider.id}`}
                   className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3.5 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
                 >
-                  <Play className="w-3.5 h-3.5" /> Nueva extracción
+                  <Play className="w-3.5 h-3.5" /> Extraer
                 </Link>
                 <Link
                   href={`/providers/${provider.id}/config`}
                   className="flex items-center gap-1.5 border border-border px-3.5 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                 >
-                  <Settings className="w-3.5 h-3.5" /> Configuración
+                  <Settings className="w-3.5 h-3.5" /> Configurar
                 </Link>
               </>
             ) : (
@@ -302,180 +368,222 @@ export default async function ProviderDashboardPage({
         </div>
       </div>
 
-      {/* KPIs — solo para proveedores scraping */}
-      {isScraper && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          {kpiCards.map((card) => (
+      {/* KPIs del catálogo — iguales para todos los tipos */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {kpis.map((k) => {
+          const Icon = k.icon;
+          return (
             <div
-              key={card.label}
+              key={k.label}
               className="bg-card border border-border rounded-xl p-4"
             >
               <div className="flex items-center gap-1.5 text-muted-foreground">
-                <card.icon className={`w-3.5 h-3.5 ${card.tone}`} />
+                <Icon className={`w-3.5 h-3.5 ${k.tone}`} />
                 <p className="text-[10px] uppercase tracking-wider font-medium">
-                  {card.label}
+                  {k.label}
                 </p>
               </div>
-              <p className="text-2xl font-semibold mt-1.5">{card.value}</p>
+              <p className="text-2xl font-semibold mt-1.5">
+                {k.value.toLocaleString("es-AR")}
+                {k.suffix && (
+                  <span className="text-xs text-muted-foreground font-normal">
+                    {k.suffix}
+                  </span>
+                )}
+              </p>
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
 
-      {/* Productos del catálogo — para proveedores MANUAL / IMPORTED */}
-      {!isScraper && (
-        <div className="bg-card border border-border rounded-xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-            <h2 className="font-semibold text-sm">
-              Productos del catálogo ({catalogProductsTotal})
-            </h2>
+      {/* Cambios de última comparación — solo SCRAPER con comparison */}
+      {hasComparison && comparison && lastJob && (
+        <details className="bg-card border border-border rounded-xl overflow-hidden group">
+          <summary className="px-5 py-4 cursor-pointer flex items-center justify-between hover:bg-muted/20 transition-colors list-none">
+            <div className="min-w-0">
+              <p className="font-medium text-sm">
+                Cambios vs extracción anterior
+                <span className="text-xs text-muted-foreground ml-2">
+                  · {totalChanges} cambio{totalChanges === 1 ? "" : "s"} ·{" "}
+                  {formatDistanceToNow(lastJob.createdAt, {
+                    locale: es,
+                    addSuffix: true,
+                  })}
+                </span>
+              </p>
+            </div>
+            <ChevronDown className="w-4 h-4 text-muted-foreground group-open:rotate-180 transition-transform flex-shrink-0" />
+          </summary>
+          <div className="px-5 pb-5 pt-1 space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                {
+                  label: "Nuevos",
+                  value: comparison.newProducts,
+                  icon: PlusCircle,
+                  tone: "text-green-400",
+                },
+                {
+                  label: "Removidos",
+                  value: comparison.removedProducts,
+                  icon: MinusCircle,
+                  tone: "text-red-400",
+                },
+                {
+                  label: "Precio ↑",
+                  value: comparison.priceUp,
+                  icon: TrendingUp,
+                  tone: "text-orange-400",
+                },
+                {
+                  label: "Precio ↓",
+                  value: comparison.priceDown,
+                  icon: TrendingDown,
+                  tone: "text-emerald-400",
+                },
+                {
+                  label: "Stock",
+                  value: comparison.stockChanged,
+                  icon: Package,
+                  tone: "text-blue-400",
+                },
+              ].map((m) => {
+                const Icon = m.icon;
+                return (
+                  <div
+                    key={m.label}
+                    className="bg-background/40 border border-border rounded-lg p-3"
+                  >
+                    <div className="flex items-center gap-1.5 text-muted-foreground">
+                      <Icon className={`w-3 h-3 ${m.tone}`} />
+                      <p className="text-[10px] uppercase tracking-wider font-medium">
+                        {m.label}
+                      </p>
+                    </div>
+                    <p className={`text-lg font-semibold mt-1 ${m.tone}`}>
+                      {m.value}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
             <Link
-              href={`/catalog?providerId=${provider.id}`}
-              className="text-xs text-primary hover:underline"
+              href={`/changes?providerId=${provider.id}&reviewStatus=PENDING`}
+              className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
             >
-              Ver todos →
+              Ver tabla completa de cambios <ExternalLink className="w-3 h-3" />
             </Link>
           </div>
-          {catalogProductsTotal === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">
-              Sin productos cargados.{" "}
+        </details>
+      )}
+
+      {/* Productos del catálogo — igual para todos los tipos */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="font-semibold text-sm">
+            Productos del catálogo ({catalogTotal.toLocaleString("es-AR")})
+          </h2>
+          <Link
+            href={`/catalog?providerId=${provider.id}`}
+            className="text-xs text-primary hover:underline"
+          >
+            Ver todos →
+          </Link>
+        </div>
+        {catalogTotal === 0 ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            Sin productos cargados.{" "}
+            {isScraper ? (
+              <Link
+                href={`/new-extraction?providerId=${provider.id}`}
+                className="text-primary hover:underline"
+              >
+                Lanzar primera extracción
+              </Link>
+            ) : (
               <Link
                 href={`/catalog/new?providerId=${provider.id}`}
                 className="text-primary hover:underline"
               >
                 Agregar el primero
               </Link>
-              .
-            </div>
-          ) : (
-            <div className="divide-y divide-border">
-              {catalogProducts.map((p) => {
-                const img = normalizeImageUrl(p.images[0]?.url ?? p.imageUrl);
-                return (
-                  <div
-                    key={p.id}
-                    className="px-5 py-2.5 flex items-center gap-3 hover:bg-muted/20 transition-colors"
-                  >
-                    {img ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={img}
-                        alt=""
-                        className="w-10 h-10 rounded-md object-cover bg-muted/30 border border-border flex-shrink-0"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 rounded-md bg-muted/30 border border-border flex-shrink-0" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium truncate">
-                        {p.commercialTitle ?? p.supplierName}
-                      </p>
-                      <p className="text-[11px] text-muted-foreground truncate">
-                        {p.sku ?? "—"}
-                        {p.assignedCategory?.name
-                          ? ` · ${p.assignedCategory.name}`
-                          : ""}
-                      </p>
-                    </div>
-                    <span className="text-xs font-mono text-muted-foreground whitespace-nowrap">
-                      {p.wholesalePrice != null
-                        ? `$${Math.round(p.wholesalePrice).toLocaleString("es-AR")}`
-                        : "—"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Historial de extracciones — solo SCRAPER */}
-      {isScraper && (
-      <>
-
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-border">
-          <h2 className="font-semibold text-sm">
-            Historial de extracciones ({provider.extractionJobs.length})
-          </h2>
-        </div>
-
-        {provider.extractionJobs.length === 0 ? (
-          <div className="py-12 text-center text-sm text-muted-foreground">
-            Sin extracciones todavía
+            )}
+            .
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {provider.extractionJobs.map((job) => {
-              const c = job.comparison;
-              const isFirst = c != null && !c.previousJobId;
-              const hasComparison = c != null && c.previousJobId != null;
+            {catalogProducts.slice(0, 20).map((p) => {
+              const img = normalizeImageUrl(p.images[0]?.url ?? p.imageUrl);
+              const badge = internalBadge[p.internalStatus];
               return (
                 <div
-                  key={job.id}
-                  className="px-5 py-3.5 hover:bg-muted/20 transition-colors"
+                  key={p.id}
+                  className="px-5 py-2.5 flex items-center gap-3 hover:bg-muted/20 transition-colors"
                 >
-                  <div className="flex items-center justify-between gap-4 flex-wrap">
-                    <div className="flex items-center gap-4 text-sm flex-wrap">
-                      <span className="font-medium">
-                        {formatDate(job.createdAt)}
-                      </span>
-                      <span className="text-muted-foreground font-mono text-xs">
-                        {formatDuration(job.startedAt, job.finishedAt)}
-                      </span>
-                      <span className="text-muted-foreground text-xs">
-                        {job.totalProducts} productos
-                      </span>
-                      <StatusBadge status={job.status} />
+                  {img ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={img}
+                      alt=""
+                      className="w-10 h-10 rounded-md object-cover bg-muted/30 border border-border flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-md bg-muted/30 border border-border flex-shrink-0 flex items-center justify-center">
+                      <ImageOff className="w-4 h-4 text-muted-foreground/40" />
                     </div>
-                    <Link
-                      href={`/extractions/${job.id}`}
-                      className="text-xs text-primary hover:underline flex items-center gap-1"
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">
+                      {p.commercialTitle ?? p.supplierName}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      <span className="font-mono">
+                        {p.publicationSku ?? p.sku ?? "—"}
+                      </span>
+                      {p.assignedCategory?.name
+                        ? ` · ${p.assignedCategory.name}`
+                        : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono text-muted-foreground whitespace-nowrap">
+                    {p.wholesalePrice != null
+                      ? `$${Math.round(p.wholesalePrice).toLocaleString("es-AR")}`
+                      : "—"}
+                  </span>
+                  {badge && (
+                    <span
+                      className={`text-[10px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${badge.cls}`}
                     >
-                      Ver detalle →
-                    </Link>
-                  </div>
-
-                  {/* Comparación inline */}
-                  <div className="mt-2 flex items-center gap-3 text-xs flex-wrap">
-                    {isFirst && (
-                      <span className="text-[10px] text-muted-foreground bg-muted/40 border border-border px-2 py-0.5 rounded-full">
-                        Primera extracción
-                      </span>
-                    )}
-                    {hasComparison && (
-                      <>
-                        <span className="text-green-400">
-                          Nuevos +{c!.newProducts}
-                        </span>
-                        <span className="text-red-400">
-                          Removidos {c!.removedProducts}
-                        </span>
-                        <span className="text-orange-400">
-                          ↑ {c!.priceUp}
-                        </span>
-                        <span className="text-emerald-400">
-                          ↓ {c!.priceDown}
-                        </span>
-                        <span className="text-blue-400">
-                          Stock {c!.stockChanged}
-                        </span>
-                      </>
-                    )}
-                    {!isFirst && !hasComparison && (
-                      <span className="text-[10px] text-muted-foreground/50">
-                        Sin comparación
-                      </span>
-                    )}
-                  </div>
+                      {badge.label}
+                    </span>
+                  )}
                 </div>
               );
             })}
+            {catalogProducts.length > 20 && (
+              <div className="px-5 py-3 text-center">
+                <Link
+                  href={`/catalog?providerId=${provider.id}`}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Ver los {catalogTotal.toLocaleString("es-AR")} productos →
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
-      </>
+
+      {/* Link discreto al historial (solo SCRAPER) */}
+      {isScraper && extractionJobsTotal > 0 && (
+        <div className="text-center">
+          <Link
+            href={`/extractions?providerId=${provider.id}`}
+            className="text-xs text-muted-foreground hover:text-primary inline-flex items-center gap-1"
+          >
+            Ver historial de extracciones ({extractionJobsTotal}) →
+          </Link>
+        </div>
       )}
     </div>
   );
