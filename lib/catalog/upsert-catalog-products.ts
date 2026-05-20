@@ -71,9 +71,10 @@ export async function upsertCatalogProducts(
     });
 
     // Datos que el worker puede actualizar (siempre supplier*, nunca comerciales).
-    // publicationSku se deriva auto: prefix + sku original. El sku original NO se
-    // sobrescribe.
-    const supplierData = {
+    // publicationSku NO va acá: lo decidimos abajo según si el valor existente
+    // sigue siendo el default del proveedor (= nunca editado) o si el usuario
+    // ya lo personalizó (en ese caso lo respetamos y no lo pisamos).
+    const supplierDataBase = {
       supplierName: product.name,
       supplierDescription: product.description ?? null,
       wholesalePrice:
@@ -82,16 +83,29 @@ export async function upsertCatalogProducts(
       supplierCategory: product.category ?? null,
       imageUrl: product.imageUrl ?? null,
       productUrl: product.productUrl ?? null,
-      publicationSku: buildPublicationSku(publicationPrefix, identity.sku),
       lastSeenAt,
       supplierStatus: "ACTIVE" as const,
       latestExtractedProductId: product.id,
     };
 
+    const defaultPublicationSku = buildPublicationSku(
+      publicationPrefix,
+      identity.sku
+    );
+
+    // Decide si el publicationSku debe escribirse en un update existente:
+    //   - Siempre que el valor actual sea null/vacío (todavía no se asignó).
+    //   - O cuando coincide exactamente con el default del proveedor
+    //     (= prefix + sku, el patrón que el worker hubiera generado).
+    // Si no coincide es porque el usuario lo editó manualmente — respetar.
+    function shouldUpdatePubSku(current: string | null | undefined): boolean {
+      if (!current) return true;
+      return current === defaultPublicationSku;
+    }
+
     let upsertedId: string | null = null;
     if (identity.sku) {
-      // Upsert por la clave compuesta única userId+providerId+sku.
-      const up = await prismaClient.catalogProduct.upsert({
+      const existing = await prismaClient.catalogProduct.findUnique({
         where: {
           userId_providerId_sku: {
             userId,
@@ -99,16 +113,33 @@ export async function upsertCatalogProducts(
             sku: identity.sku,
           },
         },
-        create: {
-          userId,
-          providerId,
-          sku: identity.sku,
-          ...supplierData,
-        },
-        update: supplierData,
-        select: { id: true },
+        select: { id: true, publicationSku: true },
       });
-      upsertedId = up.id;
+
+      if (existing) {
+        await prismaClient.catalogProduct.update({
+          where: { id: existing.id },
+          data: {
+            ...supplierDataBase,
+            ...(shouldUpdatePubSku(existing.publicationSku)
+              ? { publicationSku: defaultPublicationSku }
+              : {}),
+          },
+        });
+        upsertedId = existing.id;
+      } else {
+        const created = await prismaClient.catalogProduct.create({
+          data: {
+            userId,
+            providerId,
+            sku: identity.sku,
+            ...supplierDataBase,
+            publicationSku: defaultPublicationSku,
+          },
+          select: { id: true },
+        });
+        upsertedId = created.id;
+      }
     } else {
       // Sin SKU: buscar manualmente por productUrl o identityHash dentro del scope
       // userId×providerId. Si no hay ninguno de los dos, no podemos identificar.
@@ -123,13 +154,18 @@ export async function upsertCatalogProducts(
 
       const existing = await prismaClient.catalogProduct.findFirst({
         where: { userId, providerId, OR: orClauses },
-        select: { id: true },
+        select: { id: true, publicationSku: true },
       });
 
       if (existing) {
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
-          data: supplierData,
+          data: {
+            ...supplierDataBase,
+            ...(shouldUpdatePubSku(existing.publicationSku)
+              ? { publicationSku: defaultPublicationSku }
+              : {}),
+          },
         });
         upsertedId = existing.id;
       } else {
@@ -139,7 +175,8 @@ export async function upsertCatalogProducts(
             providerId,
             ...(identity.productUrl ? { productUrl: identity.productUrl } : {}),
             ...(identity.identityHash ? { identityHash: identity.identityHash } : {}),
-            ...supplierData,
+            ...supplierDataBase,
+            publicationSku: defaultPublicationSku,
           },
           select: { id: true },
         });
@@ -153,13 +190,13 @@ export async function upsertCatalogProducts(
     // se tocan. En el modelo nuevo no se crean más duplicados (copy_own_stock
     // setea stockSource sobre la misma fila), pero conservamos este puente por
     // si quedan registros legacy de instalaciones previas.
-    if (upsertedId && supplierData.wholesalePrice != null) {
+    if (upsertedId && supplierDataBase.wholesalePrice != null) {
       await prismaClient.catalogProduct.updateMany({
         where: {
           sourceCatalogProductId: upsertedId,
           stockSource: "OWN",
         },
-        data: { wholesalePrice: supplierData.wholesalePrice },
+        data: { wholesalePrice: supplierDataBase.wholesalePrice },
       });
     }
   }
