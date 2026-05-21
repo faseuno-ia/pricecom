@@ -138,6 +138,7 @@ export function buildCatalogListWhere(
       { commercialTitle: { contains: search, mode: "insensitive" } },
       { commercialName: { contains: search, mode: "insensitive" } },
       { sku: { contains: search, mode: "insensitive" } },
+      { publicationSku: { contains: search, mode: "insensitive" } },
     ];
   }
 
