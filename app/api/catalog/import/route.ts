@@ -307,17 +307,37 @@ export async function POST(req: NextRequest) {
     };
 
     // Caso 1: PREPARED|PUBLISHED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED.
-    const removedPaused = await prisma.catalogProduct.updateMany({
+    // Pre-resolvemos los IDs para poder propagar pendingSync=true a sus
+    // ProductPublication (que están desincronizadas: PricEcom = PAUSED pero
+    // WooCommerce sigue mostrando publish).
+    const toAutoPause = await prisma.catalogProduct.findMany({
       where: {
         ...baseWhere,
         stockSource: "SUPPLIER",
         internalStatus: { in: ["PREPARED", "PUBLISHED"] },
       },
-      data: {
-        supplierStatus: "SUPPLIER_REMOVED",
-        internalStatus: "PAUSED",
-      },
+      select: { id: true },
     });
+
+    let removedPausedCount = 0;
+    if (toAutoPause.length > 0) {
+      const pauseIds = toAutoPause.map((p) => p.id);
+      const removedPaused = await prisma.catalogProduct.updateMany({
+        where: { id: { in: pauseIds } },
+        data: {
+          supplierStatus: "SUPPLIER_REMOVED",
+          internalStatus: "PAUSED",
+        },
+      });
+      removedPausedCount = removedPaused.count;
+      await prisma.productPublication.updateMany({
+        where: {
+          catalogProductId: { in: pauseIds },
+          status: "ACTIVE",
+        },
+        data: { pendingSync: true, syncStatus: "PENDING_SYNC" },
+      });
+    }
 
     // Caso 2: el resto (excepto IGNORED y el caso 1) → solo SUPPLIER_REMOVED
     const removedRest = await prisma.catalogProduct.updateMany({
@@ -334,7 +354,7 @@ export async function POST(req: NextRequest) {
       data: { supplierStatus: "SUPPLIER_REMOVED" },
     });
 
-    report.removed = removedPaused.count + removedRest.count;
+    report.removed = removedPausedCount + removedRest.count;
   }
 
   return NextResponse.json(report);

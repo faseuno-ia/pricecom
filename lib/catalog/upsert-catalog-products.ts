@@ -215,8 +215,9 @@ export async function upsertCatalogProducts(
 
   if (seenSkus.length > 0) {
     // Caso 1: PREPARED|PUBLISHED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED.
-    // Si dependíamos del proveedor para esa publicación, frenamos automáticamente.
-    await prismaClient.catalogProduct.updateMany({
+    // Pre-resolvemos los IDs para poder propagar el cambio a ProductPublication
+    // (marcarlas pendingSync=true) en el mismo paso.
+    const toAutoPause = await prismaClient.catalogProduct.findMany({
       where: {
         userId,
         providerId,
@@ -225,11 +226,30 @@ export async function upsertCatalogProducts(
         internalStatus: { in: ["PREPARED", "PUBLISHED"] },
         sku: { notIn: seenSkus },
       },
-      data: {
-        supplierStatus: "SUPPLIER_REMOVED",
-        internalStatus: "PAUSED",
-      },
+      select: { id: true },
     });
+
+    if (toAutoPause.length > 0) {
+      const pauseIds = toAutoPause.map((p) => p.id);
+      await prismaClient.catalogProduct.updateMany({
+        where: { id: { in: pauseIds } },
+        data: {
+          supplierStatus: "SUPPLIER_REMOVED",
+          internalStatus: "PAUSED",
+        },
+      });
+      // Las publications que estaban ACTIVE quedan desincronizadas: la app
+      // dice PAUSED pero WooCommerce las sigue mostrando como publish. Las
+      // marcamos pendingSync=true para que el próximo /sync/publications
+      // las baje a draft en la tienda.
+      await prismaClient.productPublication.updateMany({
+        where: {
+          catalogProductId: { in: pauseIds },
+          status: "ACTIVE",
+        },
+        data: { pendingSync: true, syncStatus: "PENDING_SYNC" },
+      });
+    }
 
     // Caso 2: el resto (NOT_PUBLISHED, PAUSED, o cualquier estado con stockSource
     // OWN/HYBRID) → sólo marcar SUPPLIER_REMOVED. IGNORED queda excluido.
