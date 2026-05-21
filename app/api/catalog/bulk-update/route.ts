@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { InternalPublicationStatus } from "@prisma/client";
 import { z } from "zod";
+import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
+import { publishProductToWoo } from "@/lib/integrations/woocommerce/publication-service";
+import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
 
 // Acciones de usuario — NUNCA tocan supplierStatus (ese estado lo maneja
 // exclusivamente el worker / importador en base a presencia del producto en
@@ -14,6 +17,7 @@ const ACTIONS = [
   "clear_price",
   "copy_own_stock",
   "remove_own_stock",
+  "publish",
 ] as const;
 
 const bodySchema = z.object({
@@ -77,6 +81,96 @@ export async function POST(req: NextRequest) {
       data: { stockSource: "OWN" },
     });
     return NextResponse.json({ updated: result.count });
+  }
+
+  // publish: empuja los productos a la tienda WooCommerce conectada. Crea o
+  // actualiza el producto remoto, sincroniza precio/stock/categorías y deja
+  // ProductPublication.status = ACTIVE + CatalogProduct.internalStatus =
+  // PUBLISHED. Los errores se acumulan por producto sin abortar el batch.
+  if (action === "publish") {
+    const store = await prisma.store.findFirst({
+      where: { userId: session.user.id },
+      include: { integrations: { orderBy: { createdAt: "desc" }, take: 1 } },
+    });
+    if (!store) {
+      return NextResponse.json(
+        { error: "Sin tienda conectada" },
+        { status: 400 }
+      );
+    }
+    if (store.platform !== "WOOCOMMERCE") {
+      return NextResponse.json(
+        { error: "Solo WooCommerce soportado por ahora" },
+        { status: 400 }
+      );
+    }
+    const integration = store.integrations[0];
+    if (!integration) {
+      return NextResponse.json(
+        { error: "Sin integración configurada" },
+        { status: 400 }
+      );
+    }
+
+    let client: WooCommerceClient;
+    try {
+      client = WooCommerceClient.fromIntegration({
+        storeUrl: store.url,
+        consumerKeyEncrypted: integration.consumerKeyEncrypted,
+        consumerSecretEncrypted: integration.consumerSecretEncrypted,
+      });
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error:
+            err instanceof Error ? err.message : "Error de credenciales",
+        },
+        { status: 400 }
+      );
+    }
+
+    const rules = (await prisma.pricingRule.findMany({
+      where: { userId: session.user.id, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        scopeId: true,
+        marginPercent: true,
+        roundingMode: true,
+        isActive: true,
+        priority: true,
+      },
+    })) as PricingRuleForCalc[];
+
+    // Filtramos por userId acá para evitar publicar productos ajenos por
+    // un id leakeado en el body.
+    const owned = await prisma.catalogProduct.findMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
+
+    let published = 0;
+    const errors: { id: string; error: string }[] = [];
+
+    for (const id of ownedIds) {
+      const result = await publishProductToWoo(
+        prisma,
+        client,
+        store.id,
+        id,
+        rules
+      );
+      if (result.success) published++;
+      else errors.push({ id, error: result.error ?? "Error desconocido" });
+    }
+
+    return NextResponse.json({
+      published,
+      errors,
+      total: ownedIds.length,
+    });
   }
 
   // remove_own_stock: revierte a stockSource=SUPPLIER. Si el producto está

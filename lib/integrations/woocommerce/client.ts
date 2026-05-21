@@ -164,6 +164,30 @@ export class WooCommerceClient {
   // Estructura lista para el sync engine; los handlers del worker llaman a
   // estos métodos cuando se procesan publicaciones con pendingSync=true.
 
+  async createProduct(data: {
+    name: string;
+    sku: string;
+    regular_price: string;
+    status: "publish" | "draft" | "private" | "pending";
+    description?: string;
+    stock_quantity?: number;
+    manage_stock?: boolean;
+    categories?: { id: number }[];
+    images?: { src: string }[];
+  }): Promise<WooProduct> {
+    const res = await this.fetchWoo(`${this.baseUrl}/products`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `WooCommerce create error: HTTP ${res.status} ${text.slice(0, 200)}`
+      );
+    }
+    return res.json();
+  }
+
   async updateProduct(
     productId: number,
     data: {
@@ -173,6 +197,7 @@ export class WooCommerceClient {
       status?: string;
       name?: string;
       description?: string;
+      categories?: { id: number }[];
     }
   ): Promise<WooProduct> {
     const res = await this.fetchWoo(`${this.baseUrl}/products/${productId}`, {

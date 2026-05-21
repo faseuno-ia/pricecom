@@ -14,7 +14,6 @@ import {
   Search,
   MoreHorizontal,
   ExternalLink,
-  Lock,
   Plus,
   Ban,
   Eye,
@@ -30,6 +29,7 @@ import {
   FolderMinus,
   PackagePlus,
   PackageMinus,
+  Globe,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -675,6 +675,53 @@ export function CatalogTable({
     }
   }
 
+  async function handlePublishToStore(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      ids.length > 1 &&
+      !window.confirm(
+        `¿Publicar ${ids.length} productos en tu tienda WooCommerce? El proceso puede tardar unos segundos por producto.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, action: "publish" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { published, errors, total } = (await res.json()) as {
+        published: number;
+        errors: { id: string; error: string }[];
+        total: number;
+      };
+      if (errors.length === 0) {
+        toast.success(
+          published === 1
+            ? "Producto publicado en WooCommerce"
+            : `${published} productos publicados en WooCommerce`
+        );
+      } else if (published > 0) {
+        toast.warning(
+          `${published}/${total} publicados — ${errors.length} con error (${errors[0]?.error?.slice(0, 80) ?? "ver detalles"})`
+        );
+      } else {
+        toast.error(
+          `Ninguno publicado — ${errors[0]?.error?.slice(0, 120) ?? "error desconocido"}`
+        );
+      }
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   async function handleRemoveFromOwnStock(ids: string[]) {
     if (ids.length === 0) return;
     if (
@@ -821,11 +868,9 @@ export function CatalogTable({
     },
     publish: {
       id: "publish",
-      label: "Publicar",
-      icon: Lock,
-      disabled: true,
-      title: "Próximamente — requiere tienda ecommerce conectada",
-      onClick: () => {},
+      label: "Publicar en tienda",
+      icon: Globe,
+      onClick: () => handlePublishToStore(idsArr),
     },
     pause: {
       id: "pause",
@@ -1484,11 +1529,13 @@ export function CatalogTable({
                             )}
                             <button
                               type="button"
-                              disabled
-                              title="Próximamente — requiere tienda ecommerce conectada"
-                              className="opacity-40 cursor-not-allowed w-full text-left px-3 py-1.5 text-xs flex items-center gap-2"
+                              onClick={() => {
+                                setContextMenuFor(null);
+                                handlePublishToStore([p.id]);
+                              }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2"
                             >
-                              <Lock className="w-3 h-3" /> Publicar en tienda
+                              <Globe className="w-3 h-3" /> Publicar en tienda
                             </button>
                             {p.productUrl && (
                               <a
