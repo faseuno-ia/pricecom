@@ -20,6 +20,7 @@ import { es } from "date-fns/locale";
 export interface CatalogProductDetail {
   id: string;
   sku: string | null;
+  publicationSku: string | null;
   productUrl: string | null;
   supplierName: string;
   supplierDescription: string | null;
@@ -151,6 +152,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   // Editable fields (mirror of product, lifted while drawer is open)
   const [commercialTitle, setCommercialTitle] = useState("");
   const [commercialDescription, setCommercialDescription] = useState("");
+  const [publicationSku, setPublicationSku] = useState("");
   const [finalPrice, setFinalPrice] = useState<string>("");
   const [manualMargin, setManualMargin] = useState<string>("");
   const [notes, setNotes] = useState("");
@@ -315,6 +317,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         setProduct(data);
         setCommercialTitle(data.commercialTitle ?? "");
         setCommercialDescription(data.commercialDescription ?? "");
+        setPublicationSku(data.publicationSku ?? "");
         setFinalPrice(data.finalPrice != null ? String(data.finalPrice) : "");
         setManualMargin(data.manualMargin != null ? String(data.manualMargin) : "");
         setNotes(data.notes ?? "");
@@ -344,6 +347,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         body: JSON.stringify({
           commercialTitle: commercialTitle.trim() || null,
           commercialDescription: commercialDescription.trim() || null,
+          publicationSku: publicationSku.trim() || null,
           finalPrice: finalPrice ? parseFloat(finalPrice) : null,
           manualMargin: manualMargin ? parseFloat(manualMargin) : null,
           notes: notes.trim() || null,
@@ -675,6 +679,22 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
                 Datos comerciales
               </p>
+
+              <div>
+                <label className="block text-[11px] text-muted-foreground mb-1">
+                  SKU comercial
+                </label>
+                <input
+                  type="text"
+                  value={publicationSku}
+                  onChange={(e) => setPublicationSku(e.target.value)}
+                  placeholder="SKU usado en la tienda (ej. JOR123)"
+                  className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60 font-mono"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  SKU proveedor: {product.sku ?? "—"}
+                </p>
+              </div>
 
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">

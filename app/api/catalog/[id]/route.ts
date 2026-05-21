@@ -66,13 +66,16 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
   return NextResponse.json({ ...product, pricing });
 }
 
-// Solo campos comerciales editables — el worker NUNCA toca estos campos, y la
-// API tampoco permite editar campos supplier* por esta ruta.
+// Solo campos comerciales editables — el worker NUNCA toca estos campos
+// cuando difieren del default del proveedor (regla user-first en
+// upsert-catalog-products.ts), y la API tampoco permite editar campos
+// supplier* por esta ruta.
 const patchSchema = z
   .object({
     commercialTitle: z.string().nullable().optional(),
     commercialName: z.string().nullable().optional(),
     commercialDescription: z.string().nullable().optional(),
+    publicationSku: z.string().min(1).max(100).nullable().optional(),
     finalPrice: z.number().nullable().optional(),
     manualMargin: z.number().nullable().optional(),
     manualPrice: z.number().nullable().optional(),
