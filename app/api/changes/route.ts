@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
   const reviewStatusParam = url.searchParams.get("reviewStatus");
   const modeParam = (url.searchParams.get("mode") ?? "recent") as Mode;
   const mode: Mode = VALID_MODES.includes(modeParam) ? modeParam : "recent";
+  const search = url.searchParams.get("search")?.trim() ?? "";
 
   const pageParam = parseInt(url.searchParams.get("page") ?? "1", 10);
   const pageSizeParam = parseInt(url.searchParams.get("pageSize") ?? "50", 10);
@@ -120,6 +121,41 @@ export async function GET(req: NextRequest) {
     };
   }
 
+  // Búsqueda libre: matchea contra el snapshot del change (name/sku) y, para
+  // cubrir los SKUs comerciales del usuario, pre-resuelve los SKUs en catálogo
+  // cuyos commercialTitle/publicationSku contengan el término. ProductChange
+  // no tiene relación directa a CatalogProduct, por eso el pre-fetch.
+  let searchClause: Prisma.ProductChangeWhereInput | null = null;
+  if (search) {
+    const matchingCatalog = await prisma.catalogProduct.findMany({
+      where: {
+        userId: session.user.id,
+        ...(providerId ? { providerId } : {}),
+        OR: [
+          { commercialTitle: { contains: search, mode: "insensitive" } },
+          { publicationSku: { contains: search, mode: "insensitive" } },
+        ],
+      },
+      select: { sku: true },
+      take: 1000,
+    });
+    const skusFromCatalog = Array.from(
+      new Set(
+        matchingCatalog
+          .map((p) => p.sku)
+          .filter((s): s is string => !!s && s.length > 0)
+      )
+    );
+    const searchOr: Prisma.ProductChangeWhereInput[] = [
+      { name: { contains: search, mode: "insensitive" } },
+      { sku: { contains: search, mode: "insensitive" } },
+    ];
+    if (skusFromCatalog.length > 0) {
+      searchOr.push({ sku: { in: skusFromCatalog } });
+    }
+    searchClause = { OR: searchOr };
+  }
+
   const where: Prisma.ProductChangeWhereInput = {
     comparison:
       mode === "recent" && latestJobIds
@@ -130,10 +166,11 @@ export async function GET(req: NextRequest) {
     VALID_REVIEW_STATUSES.includes(reviewStatusParam as ChangeReviewStatus)
       ? { reviewStatus: reviewStatusParam as ChangeReviewStatus }
       : {}),
+    ...(searchClause ? { AND: [searchClause] } : {}),
   };
 
   // `whereForCounts` = mismo where pero SIN el filtro changeType, para que
-  // los KPIs muestren los totales por tipo dentro del modo/proveedor elegido.
+  // los KPIs muestren los totales por tipo dentro del modo/proveedor/búsqueda.
   const whereForCounts: Prisma.ProductChangeWhereInput = {
     comparison:
       mode === "recent" && latestJobIds
@@ -143,6 +180,7 @@ export async function GET(req: NextRequest) {
     VALID_REVIEW_STATUSES.includes(reviewStatusParam as ChangeReviewStatus)
       ? { reviewStatus: reviewStatusParam as ChangeReviewStatus }
       : {}),
+    ...(searchClause ? { AND: [searchClause] } : {}),
   };
 
   const [total, changes, countsByType] = await Promise.all([

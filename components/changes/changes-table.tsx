@@ -17,6 +17,7 @@ import {
   TrendingUp,
   TrendingDown,
   Package,
+  Search,
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
@@ -157,6 +158,8 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
   const [activeTab, setActiveTab] = useState<ChangeType | "ALL">("ALL");
   const [onlyCritical, setOnlyCritical] = useState(false);
   const [onlyPending, setOnlyPending] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize] = useState(50);
   const [data, setData] = useState<ApiResponse>({
@@ -176,10 +179,16 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
   const [pending, setPending] = useState(false);
   const [reload, setReload] = useState(0);
 
+  // Debounce de 300ms: evita pegarle al server con cada tecla.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
   useEffect(() => {
     setPage(1);
     setSelectedIds(new Set());
-  }, [mode, providerId, activeTab, onlyPending]);
+  }, [mode, providerId, activeTab, onlyPending, debouncedSearch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,6 +200,7 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
         if (providerId !== "all") params.set("providerId", providerId);
         if (activeTab !== "ALL") params.append("changeType", activeTab);
         if (onlyPending) params.set("reviewStatus", "PENDING");
+        if (debouncedSearch) params.set("search", debouncedSearch);
         params.set("page", String(page));
         params.set("pageSize", String(pageSize));
 
@@ -208,7 +218,16 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [mode, providerId, activeTab, onlyPending, page, pageSize, reload]);
+  }, [
+    mode,
+    providerId,
+    activeTab,
+    onlyPending,
+    debouncedSearch,
+    page,
+    pageSize,
+    reload,
+  ]);
 
   function refresh() {
     setReload((k) => k + 1);
@@ -392,6 +411,17 @@ export function ChangesTable({ providers, initialProviderId }: Props) {
 
       {/* Filtros + modo */}
       <div className="bg-card border border-border rounded-xl p-3 flex items-center gap-3 flex-wrap">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60 pointer-events-none" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nombre o SKU…"
+            className="text-xs bg-background border border-border rounded-md pl-8 pr-3 py-1.5 w-64 focus:outline-none focus:ring-1 focus:ring-primary/60"
+          />
+        </div>
+
         <select
           value={mode}
           onChange={(e) => setMode(e.target.value as Mode)}
