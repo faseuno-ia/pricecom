@@ -8,7 +8,12 @@
 //     PricEcom pero la tienda todavía lo tiene activo — reconciliación pull)
 //
 // Decisión por publication:
-//   - PAUSED en PricEcom        → pauseProductInWoo
+//   - PAUSED (en la publication o en el CatalogProduct.internalStatus) →
+//     pauseProductInWoo. Mirar también internalStatus es clave para el
+//     escenario de auto-pause: el worker pasa CatalogProduct a PAUSED y
+//     marca pendingSync=true, pero ProductPublication.status sigue ACTIVE
+//     hasta que confirmemos el push a Woo. Si solo mirásemos status nos
+//     equivocaríamos y republicaríamos.
 //   - cualquier otro estado     → publishProductToWoo (re-empuja datos)
 
 import { NextResponse } from "next/server";
@@ -77,6 +82,7 @@ export async function POST() {
       id: true,
       catalogProductId: true,
       status: true,
+      catalogProduct: { select: { internalStatus: true } },
     },
   });
 
@@ -102,16 +108,19 @@ export async function POST() {
   const errors: { catalogProductId: string; error: string }[] = [];
 
   for (const t of targets) {
-    const result =
-      t.status === "PAUSED"
-        ? await pauseProductInWoo(prisma, client, store.id, t.catalogProductId)
-        : await publishProductToWoo(
-            prisma,
-            client,
-            store.id,
-            t.catalogProductId,
-            rules
-          );
+    const shouldPause =
+      t.status === "PAUSED" ||
+      t.catalogProduct.internalStatus === "PAUSED" ||
+      t.catalogProduct.internalStatus === "IGNORED";
+    const result = shouldPause
+      ? await pauseProductInWoo(prisma, client, store.id, t.catalogProductId)
+      : await publishProductToWoo(
+          prisma,
+          client,
+          store.id,
+          t.catalogProductId,
+          rules
+        );
     if (result.success) {
       synced++;
     } else {
