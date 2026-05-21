@@ -271,7 +271,14 @@ export default async function ProvidersPage() {
                           Productos
                         </p>
                         <p className="font-mono font-semibold mt-0.5">
-                          {p._count.catalogProducts}
+                          {/* Para OWN_STOCK usamos el conteo unificado (cross-provider,
+                              stockSource=OWN, excluye IGNORED) — mismo número que la card
+                              "Stock propio" de arriba. Para el resto, el conteo "usable"
+                              específico del provider. */}
+                          {(p.providerType === "OWN_STOCK"
+                            ? ownStockCount
+                            : p._count.catalogProducts
+                          ).toLocaleString("es-AR")}
                         </p>
                       </div>
                       <div>
