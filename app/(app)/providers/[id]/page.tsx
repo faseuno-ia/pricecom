@@ -121,6 +121,9 @@ export default async function ProviderDashboardPage({
   const [
     catalogProducts,
     catalogTotal,
+    withPrice,
+    withoutImage,
+    withoutCategory,
     lastJob,
     lastExcelJob,
     extractionJobsTotal,
@@ -146,9 +149,26 @@ export default async function ProviderDashboardPage({
         },
       },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 20,
     }),
     prisma.catalogProduct.count({ where: catalogWhere }),
+    prisma.catalogProduct.count({
+      where: { ...catalogWhere, wholesalePrice: { not: null } },
+    }),
+    prisma.catalogProduct.count({
+      where: {
+        ...catalogWhere,
+        OR: [{ imageUrl: null }, { imageUrl: "" }],
+        images: { none: {} },
+      },
+    }),
+    prisma.catalogProduct.count({
+      where: {
+        ...catalogWhere,
+        assignedCategoryId: null,
+        categories: { none: {} },
+      },
+    }),
     isScraper
       ? prisma.extractionJob.findFirst({
           where: {
@@ -198,21 +218,12 @@ export default async function ProviderDashboardPage({
     }
   })();
 
-  // KPIs del catálogo — basados en el sample de 50 productos cargados.
-  const withPrice = catalogProducts.filter((p) => p.wholesalePrice != null).length;
-  const withoutImage = catalogProducts.filter(
-    (p) => !p.imageUrl && !p.images[0]
-  ).length;
-  const withoutCategory = catalogProducts.filter(
-    (p) => !p.assignedCategory
-  ).length;
-
+  // KPIs del catálogo — counts reales sobre la DB (no sobre la muestra).
   const kpis: {
     label: string;
     value: number;
     icon: typeof Package;
     tone: string;
-    suffix?: string;
   }[] = [
     {
       label: "Productos activos",
@@ -225,21 +236,18 @@ export default async function ProviderDashboardPage({
       value: withPrice,
       icon: Tag,
       tone: "text-emerald-400",
-      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
     },
     {
       label: "Sin imagen",
       value: withoutImage,
       icon: ImageOff,
       tone: "text-amber-400",
-      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
     },
     {
       label: "Sin categoría",
       value: withoutCategory,
       icon: FolderMinus,
       tone: "text-orange-400",
-      suffix: catalogProducts.length > 0 ? ` / ${catalogProducts.length}` : "",
     },
   ];
 
@@ -385,11 +393,6 @@ export default async function ProviderDashboardPage({
               </div>
               <p className="text-2xl font-semibold mt-1.5">
                 {k.value.toLocaleString("es-AR")}
-                {k.suffix && (
-                  <span className="text-xs text-muted-foreground font-normal">
-                    {k.suffix}
-                  </span>
-                )}
               </p>
             </div>
           );
@@ -512,7 +515,7 @@ export default async function ProviderDashboardPage({
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {catalogProducts.slice(0, 20).map((p) => {
+            {catalogProducts.map((p) => {
               const img = normalizeImageUrl(p.images[0]?.url ?? p.imageUrl);
               const badge = internalBadge[p.internalStatus];
               return (
@@ -560,7 +563,7 @@ export default async function ProviderDashboardPage({
                 </div>
               );
             })}
-            {catalogProducts.length > 20 && (
+            {catalogTotal > catalogProducts.length && (
               <div className="px-5 py-3 text-center">
                 <Link
                   href={`/catalog?providerId=${provider.id}`}
