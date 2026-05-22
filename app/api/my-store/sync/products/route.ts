@@ -219,12 +219,18 @@ export async function POST() {
       externalStatus,
       catalogProduct.internalStatus
     );
-    if (nextInternal) {
-      await prisma.catalogProduct.update({
-        where: { id: catalogProduct.id },
-        data: { internalStatus: nextInternal },
-      });
-    }
+
+    // WooCommerce es fuente de verdad para nombre y descripción comercial:
+    // el cliente los edita directo en la tienda, y los importamos hacia
+    // PricEcom en cada sync (siempre, no sólo cuando están vacíos).
+    await prisma.catalogProduct.update({
+      where: { id: catalogProduct.id },
+      data: {
+        commercialTitle: woo.name,
+        commercialDescription: woo.description?.trim() ? woo.description : null,
+        ...(nextInternal ? { internalStatus: nextInternal } : {}),
+      },
+    });
   }
 
   // Cleanup de fantasmas: cualquier UnmatchedStoreProduct cuyo externalProductId

@@ -10,7 +10,6 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { syncPrimaryCategory } from "@/lib/catalog/product-categories";
-import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 
 async function findOwnedProduct(productId: string, userId: string) {
   return prisma.catalogProduct.findFirst({
@@ -103,8 +102,6 @@ export async function POST(
   });
 
   await syncPrimaryCategory(prisma, product.id);
-  // Las categorías se mapean a Woo vía StoreCategory.externalCategoryId — drift.
-  await markPublicationsDrift(prisma, [product.id]);
 
   return NextResponse.json({ ok: true });
 }
@@ -140,7 +137,6 @@ export async function DELETE(
   });
 
   await syncPrimaryCategory(prisma, product.id);
-  await markPublicationsDrift(prisma, [product.id]);
 
   return NextResponse.json({ ok: true });
 }

@@ -89,33 +89,39 @@ export async function publishProductToWoo(
   });
 
   try {
-    const baseData = {
-      name: product.commercialTitle ?? product.supplierName,
-      regular_price: price.toFixed(2),
-      description: product.commercialDescription ?? undefined,
-      ...(stockQty != null
-        ? { stock_quantity: stockQty, manage_stock: true }
-        : {}),
-      ...(wooCategories.length > 0 ? { categories: wooCategories } : {}),
-    };
-
     let wooId: number;
     let wooSku: string;
     let wooPermalink: string;
 
     if (existingPub?.externalProductId) {
+      // SCOPE REDUCIDO: PricEcom es fuente de verdad sólo para precio y
+      // estado. Nombre, descripción, SKU, stock y categorías son propiedad
+      // de WooCommerce — el cliente los edita allá. El update masivo
+      // sólo manda regular_price + status para no sobreescribirlos.
       const updated = await client.updateProduct(
         parseInt(existingPub.externalProductId, 10),
-        { ...baseData, status: "publish" }
+        {
+          regular_price: price.toFixed(2),
+          status: "publish",
+        }
       );
       wooId = updated.id;
       wooSku = updated.sku;
       wooPermalink = updated.permalink;
     } else {
+      // CREATE: primera publicación, sí mandamos todo para sembrar la ficha
+      // en la tienda. Una vez creada, los updates posteriores son sólo
+      // precio + estado.
       const created = await client.createProduct({
-        ...baseData,
+        name: product.commercialTitle ?? product.supplierName,
         sku,
+        regular_price: price.toFixed(2),
         status: "publish",
+        description: product.commercialDescription ?? undefined,
+        ...(stockQty != null
+          ? { stock_quantity: stockQty, manage_stock: true }
+          : {}),
+        ...(wooCategories.length > 0 ? { categories: wooCategories } : {}),
       });
       wooId = created.id;
       wooSku = created.sku;

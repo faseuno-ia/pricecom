@@ -121,14 +121,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     },
   });
 
-  // Drift detection: si el usuario tocó un campo visible en WooCommerce y el
-  // producto tiene publication ACTIVE, marcamos OUTDATED para que el sync
-  // engine lo levante y empuje los cambios. `notes` se excluye — no llega
-  // a la tienda.
+  // Drift detection: el sync a WooCommerce sólo empuja precio y estado.
+  // Cualquier otro campo (commercialTitle, description, publicationSku,
+  // categorías, etc.) es propiedad de WooCommerce — el cliente los edita
+  // directo en la tienda y se importan hacia PricEcom. Por eso únicamente
+  // los cambios de precio (directo o vía margen/regla) marcan drift.
   const affectsWoo =
-    parsed.data.commercialTitle !== undefined ||
-    parsed.data.commercialDescription !== undefined ||
-    parsed.data.publicationSku !== undefined ||
     parsed.data.finalPrice !== undefined ||
     parsed.data.manualMargin !== undefined ||
     parsed.data.manualPrice !== undefined ||

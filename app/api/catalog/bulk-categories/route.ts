@@ -10,7 +10,6 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { syncPrimaryCategory } from "@/lib/catalog/product-categories";
-import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 
 const postSchema = z.object({
   productIds: z.array(z.string().min(1)).min(1).max(1000),
@@ -99,9 +98,6 @@ export async function POST(req: NextRequest) {
     await syncPrimaryCategory(prisma, pid);
   }
 
-  // Drift: categorías llegan a Woo vía StoreCategory.externalCategoryId.
-  await markPublicationsDrift(prisma, ownedIds);
-
   return NextResponse.json({ added, skipped, total: ownedIds.length });
 }
 
@@ -139,8 +135,6 @@ export async function DELETE(req: NextRequest) {
   for (const pid of ownedIds) {
     await syncPrimaryCategory(prisma, pid);
   }
-
-  await markPublicationsDrift(prisma, ownedIds);
 
   return NextResponse.json({ removed: deleted.count, total: ownedIds.length });
 }
