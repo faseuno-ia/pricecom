@@ -1,11 +1,21 @@
 // POST /api/my-store/sync/publications — pushea a WooCommerce todas las
-// publications con cambios locales pendientes.
+// publications con cambios locales pendientes (o un subset si el body
+// incluye `catalogProductIds`).
 //
-// Universo a procesar:
+// Body opcional:
+//   { "catalogProductIds": ["..."] }  → sync solo de esos productos.
+//   Sin body o body vacío             → sync de TODAS las publications
+//                                       pendientes del usuario.
+//
+// Universo a procesar (cuando es global, sin catalogProductIds):
 //   - pendingSync = true  (flag legacy / drift detectado en el último import)
-//   - syncStatus = PENDING_SYNC | ERROR (cola del sync engine y reintentos)
+//   - syncStatus = PENDING_SYNC | OUTDATED | ERROR  (cola del sync engine,
+//     drift por edición local, y reintentos)
 //   - status = PAUSED && externalStatus = "publish"  (cliente pausó en
 //     PricEcom pero la tienda todavía lo tiene activo — reconciliación pull)
+//
+// Cuando viene catalogProductIds, NO aplicamos el filtro de pendientes:
+// la acción individual fuerza el push aunque la publication ya esté SYNCED.
 //
 // Decisión por publication:
 //   - PAUSED (en la publication o en el CatalogProduct.internalStatus) →
@@ -16,7 +26,8 @@
 //     equivocaríamos y republicaríamos.
 //   - cualquier otro estado     → publishProductToWoo (re-empuja datos)
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
@@ -29,8 +40,27 @@ import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function POST() {
+const bodySchema = z
+  .object({
+    catalogProductIds: z.array(z.string()).optional(),
+  })
+  .optional();
+
+export async function POST(req: NextRequest) {
   const session = await requireSession();
+
+  // Body opcional con filtro de ids. Si el body no es JSON válido lo
+  // tratamos como ausente — el flujo histórico es sin body.
+  let parsedIds: string[] | undefined;
+  try {
+    const raw = await req.json();
+    const parsed = bodySchema.safeParse(raw);
+    if (parsed.success && parsed.data?.catalogProductIds?.length) {
+      parsedIds = parsed.data.catalogProductIds;
+    }
+  } catch {
+    // sin body, sigue como sync global
+  }
 
   const store = await prisma.store.findFirst({
     where: { userId: session.user.id },
@@ -68,16 +98,26 @@ export async function POST() {
   }
 
   const targets = await prisma.productPublication.findMany({
-    where: {
-      storeId: store.id,
-      OR: [
-        { pendingSync: true },
-        { syncStatus: "PENDING_SYNC" },
-        { syncStatus: "ERROR" },
-        // Drift: el usuario lo pausó en PricEcom pero sigue "publish" en Woo.
-        { AND: [{ status: "PAUSED" }, { externalStatus: "publish" }] },
-      ],
-    },
+    where: parsedIds
+      ? {
+          // Sync individual/selectivo: tomamos exactamente los productos
+          // pedidos por el cliente, sin filtro de "pendientes". El usuario
+          // está forzando el push.
+          storeId: store.id,
+          catalogProductId: { in: parsedIds },
+        }
+      : {
+          // Sync global: solo publications con cambios pendientes o drift.
+          storeId: store.id,
+          OR: [
+            { pendingSync: true },
+            { syncStatus: "PENDING_SYNC" },
+            { syncStatus: "OUTDATED" },
+            { syncStatus: "ERROR" },
+            // Drift: el usuario lo pausó en PricEcom pero sigue "publish" en Woo.
+            { AND: [{ status: "PAUSED" }, { externalStatus: "publish" }] },
+          ],
+        },
     select: {
       id: true,
       catalogProductId: true,

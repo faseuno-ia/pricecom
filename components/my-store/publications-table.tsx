@@ -109,11 +109,47 @@ export function PublicationsTable() {
   const [loading, setLoading] = useState(false);
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerFor, setDrawerFor] = useState<PubRow | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Reset de página al cambiar filtro o search.
   useEffect(() => {
     setPage(1);
   }, [filter, search]);
+
+  async function handleSyncRow(p: PubRow) {
+    setSyncingId(p.id);
+    try {
+      const res = await fetch("/api/my-store/sync/publications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogProductIds: [p.catalogProduct.id] }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? `HTTP ${res.status}`);
+      }
+      const { synced, errors } = (await res.json()) as {
+        synced: number;
+        errors: { catalogProductId: string; error: string }[];
+        total: number;
+      };
+      if (errors.length > 0) {
+        toast.error(
+          `Error al sincronizar: ${errors[0].error.slice(0, 120)}`
+        );
+      } else {
+        toast.success(
+          synced > 0 ? "Publicación sincronizada" : "Sin cambios para sincronizar"
+        );
+      }
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSyncingId(null);
+    }
+  }
 
   // Fetch con debounce sobre search; los demás cambios disparan inmediato.
   useEffect(() => {
@@ -146,7 +182,7 @@ export function PublicationsTable() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [page, pageSize, filter, search]);
+  }, [page, pageSize, filter, search, reloadKey]);
 
   const drawerDetail: PubDetail | null = drawerFor ? { ...drawerFor } : null;
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
@@ -364,14 +400,41 @@ export function PublicationsTable() {
                             <ExternalLink className="w-3.5 h-3.5" />
                           </a>
                         )}
-                        <button
-                          type="button"
-                          disabled
-                          title="Próximamente — forzar sync individual"
-                          className="text-muted-foreground/40 cursor-not-allowed"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                        </button>
+                        {(() => {
+                          // Habilitado solo cuando hay algo que empujar:
+                          // OUTDATED (drift por edición local), PENDING_SYNC
+                          // (encolado por el worker / importer) o ERROR (último
+                          // push falló). Para SYNCED/READY no hay nada que hacer.
+                          const canSync =
+                            p.syncStatus === "OUTDATED" ||
+                            p.syncStatus === "PENDING_SYNC" ||
+                            p.syncStatus === "ERROR" ||
+                            p.pendingSync;
+                          const isSyncing = syncingId === p.id;
+                          return (
+                            <button
+                              type="button"
+                              disabled={!canSync || isSyncing}
+                              onClick={() => handleSyncRow(p)}
+                              title={
+                                canSync
+                                  ? "Forzar sync individual"
+                                  : "Sin cambios pendientes para sincronizar"
+                              }
+                              className={
+                                canSync
+                                  ? "text-primary hover:text-primary/80 disabled:opacity-60"
+                                  : "text-muted-foreground/40 cursor-not-allowed"
+                              }
+                            >
+                              {isSyncing ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          );
+                        })()}
                       </div>
                     </td>
                   </tr>
