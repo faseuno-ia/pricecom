@@ -101,6 +101,14 @@ export default async function ProviderDashboardPage({
   if (!provider) notFound();
 
   const isScraper = provider.providerType === "SCRAPER";
+  // SCRAPER y IMPORTED comparten la infraestructura de ExtractionJob +
+  // Comparison + ProductChange. SCRAPER lo alimenta el worker, IMPORTED lo
+  // alimenta POST /api/catalog/import con un job sintético source="IMPORT".
+  // Los botones de "Extraer" / "Configurar" siguen siendo exclusivos de
+  // SCRAPER.
+  const hasExtractionHistory =
+    provider.providerType === "SCRAPER" ||
+    provider.providerType === "IMPORTED";
 
   // Where común para queries del catálogo. Excluye ignorados y removidos del
   // proveedor cuando dependen del proveedor (los OWN/HYBRID sobreviven).
@@ -169,7 +177,7 @@ export default async function ProviderDashboardPage({
         categories: { none: {} },
       },
     }),
-    isScraper
+    hasExtractionHistory
       ? prisma.extractionJob.findFirst({
           where: {
             providerId: provider.id,
@@ -177,7 +185,10 @@ export default async function ProviderDashboardPage({
             comparison: { isNot: null },
           },
           orderBy: { createdAt: "desc" },
-          include: {
+          select: {
+            id: true,
+            createdAt: true,
+            source: true,
             comparison: {
               select: {
                 newProducts: true,
@@ -202,6 +213,9 @@ export default async function ProviderDashboardPage({
           select: { excelFileUrl: true },
         })
       : Promise.resolve(null),
+    // Historial de jobs: para SCRAPER cuenta extracciones reales; para IMPORTED
+    // cuenta los jobs sintéticos de import. El link discreto al final solo
+    // aparece para SCRAPER (los jobs IMPORT no se ven en /extractions).
     isScraper
       ? prisma.extractionJob.count({ where: { providerId: provider.id } })
       : Promise.resolve(0),
@@ -252,9 +266,12 @@ export default async function ProviderDashboardPage({
   ];
 
   const comparison = lastJob?.comparison ?? null;
-  const hasComparison =
-    comparison != null && comparison.previousJobId != null;
-  const totalChanges = hasComparison
+  // Para SCRAPER, `previousJobId != null` indica que hubo una extracción
+  // anterior contra la que comparar (la primera extracción no tiene diff).
+  // Para IMPORT, los jobs no encadenan a un previousJob por ahora — el diff
+  // se compara contra el estado actual del catálogo. Por eso lo medimos por
+  // totalChanges > 0 directamente.
+  const totalChanges = comparison
     ? comparison.newProducts +
       comparison.removedProducts +
       comparison.priceUp +
@@ -399,13 +416,16 @@ export default async function ProviderDashboardPage({
         })}
       </div>
 
-      {/* Cambios de última comparación — solo SCRAPER con comparison */}
-      {hasComparison && comparison && lastJob && (
+      {/* Cambios de última extracción o importación */}
+      {comparison && lastJob && totalChanges > 0 && (
         <details className="bg-card border border-border rounded-xl overflow-hidden group">
           <summary className="px-5 py-4 cursor-pointer flex items-center justify-between hover:bg-muted/20 transition-colors list-none">
             <div className="min-w-0">
               <p className="font-medium text-sm">
-                Cambios vs extracción anterior
+                Cambios vs{" "}
+                {lastJob.source === "IMPORT"
+                  ? "importación anterior"
+                  : "extracción anterior"}
                 <span className="text-xs text-muted-foreground ml-2">
                   · {totalChanges} cambio{totalChanges === 1 ? "" : "s"} ·{" "}
                   {formatDistanceToNow(lastJob.createdAt, {

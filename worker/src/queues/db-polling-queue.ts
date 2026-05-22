@@ -26,6 +26,10 @@ export class DbPollingQueue implements IJobQueue {
   async claimNextJob(): Promise<JobPayload | null> {
     // FOR UPDATE SKIP LOCKED es la primitiva de PostgreSQL para worker pools:
     // cada worker ve solo filas que ningún otro tiene bloqueadas en su transacción.
+    // Filtramos por source: los jobs con source='IMPORT' son sintéticos
+    // (creados por POST /api/catalog/import para emitir el diff de cambios
+    // contra un Excel) y nunca deben procesarse acá. source IS NULL es el
+    // default histórico = scraper automático.
     const rows = await this.prisma.$queryRaw<{ id: string; providerId: string }[]>`
       UPDATE "ExtractionJob"
       SET
@@ -38,6 +42,7 @@ export class DbPollingQueue implements IJobQueue {
         SELECT id
         FROM   "ExtractionJob"
         WHERE  status = 'PENDING'
+        AND    ("source" IS NULL OR "source" <> 'IMPORT')
         ORDER  BY "createdAt" ASC
         LIMIT  1
         FOR UPDATE SKIP LOCKED

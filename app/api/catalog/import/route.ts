@@ -1,7 +1,13 @@
 // POST /api/catalog/import — recibe multipart/form-data con un archivo Excel/CSV
 // + providerId. Hace upsert de CatalogProduct (sourceType=IMPORTED) por
 // (userId, providerId, sku). Crea categorías que no existan. Asigna imagen
-// principal si viene URL. Devuelve resumen.
+// principal si viene URL.
+//
+// Además del upsert, al cerrar el batch emite un ExtractionJob sintético
+// con source="IMPORT" + ExtractionComparison + ProductChange[] para que el
+// diff (nuevos / removidos / precios) aparezca en el dashboard del provider
+// y en /changes, igual que para los proveedores SCRAPER. El worker ignora
+// estos jobs (filtra source IS NULL).
 
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
@@ -30,6 +36,26 @@ interface ImportReport {
   removed: number;
   errors: { row: number; sku?: string; message: string }[];
   importBatchId: string;
+  diff: {
+    new: number;
+    removed: number;
+    priceUp: number;
+    priceDown: number;
+  };
+}
+
+interface DiffChange {
+  sku: string;
+  name: string;
+  previousPrice: number | null;
+  currentPrice: number | null;
+  previousStock: string | null;
+  currentStock: string | null;
+}
+
+function priceChangePercent(prev: number, curr: number): number | null {
+  if (prev === 0) return null;
+  return Math.round(((curr - prev) / prev) * 10000) / 100; // 2 decimales
 }
 
 export async function POST(req: NextRequest) {
@@ -98,9 +124,36 @@ export async function POST(req: NextRequest) {
     removed: 0,
     errors: [],
     importBatchId,
+    diff: { new: 0, removed: 0, priceUp: 0, priceDown: 0 },
   };
 
+  // Pre-fetch de TODOS los CatalogProduct del provider — 1 query reemplaza
+  // los N findFirst que hacíamos en el loop. Indexamos por SKU para lookup
+  // O(1) y obtenemos el snapshot previo necesario para diff de precios.
+  const existingProducts = await prisma.catalogProduct.findMany({
+    where: { providerId, userId: session.user.id },
+    select: {
+      id: true,
+      sku: true,
+      supplierName: true,
+      wholesalePrice: true,
+      stock: true,
+      assignedCategoryId: true,
+      supplierStatus: true,
+      _count: { select: { categories: true } },
+    },
+  });
+  const existingBySku = new Map<string, (typeof existingProducts)[number]>();
+  for (const p of existingProducts) {
+    if (p.sku) existingBySku.set(p.sku, p);
+  }
+
   const categoryCache = new Map<string, string>();
+
+  // Acumuladores de diff para emitir ProductChange al final.
+  const diffNew: DiffChange[] = [];
+  const diffPriceUp: DiffChange[] = [];
+  const diffPriceDown: DiffChange[] = [];
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -169,16 +222,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Upsert por (userId, providerId, sku) — pero la unicidad de prisma usa
-      // userId_providerId_sku como clave compuesta única.
-      const existing = await prisma.catalogProduct.findFirst({
-        where: { userId: session.user.id, providerId, sku },
-        select: {
-          id: true,
-          assignedCategoryId: true,
-          _count: { select: { categories: true } },
-        },
-      });
+      const existing = existingBySku.get(sku);
 
       if (existing) {
         // REGLA: solo asignar la categoría del Excel si el producto NO tiene
@@ -228,8 +272,26 @@ export async function POST(req: NextRequest) {
         }
 
         report.updated++;
+
+        // Diff de precio — solo si ambos lados tienen valor.
+        if (
+          wholesalePrice != null &&
+          existing.wholesalePrice != null &&
+          wholesalePrice !== existing.wholesalePrice
+        ) {
+          const record: DiffChange = {
+            sku,
+            name: existing.supplierName ?? name,
+            previousPrice: existing.wholesalePrice,
+            currentPrice: wholesalePrice,
+            previousStock: existing.stock,
+            currentStock: stock || null,
+          };
+          if (wholesalePrice > existing.wholesalePrice) diffPriceUp.push(record);
+          else diffPriceDown.push(record);
+        }
       } else {
-        const created = await prisma.catalogProduct.create({
+        await prisma.catalogProduct.create({
           data: {
             userId: session.user.id,
             providerId,
@@ -249,31 +311,76 @@ export async function POST(req: NextRequest) {
             internalStatus: "NOT_PUBLISHED",
             lastSeenAt: new Date(),
           },
+          select: { id: true },
         });
         report.created++;
+        diffNew.push({
+          sku,
+          name,
+          previousPrice: null,
+          currentPrice: wholesalePrice,
+          previousStock: null,
+          currentStock: stock || null,
+        });
 
         // Espejo en la M2M para productos recién creados.
         if (assignedCategoryId) {
-          await prisma.catalogProductCategory.create({
-            data: {
-              catalogProductId: created.id,
-              categoryId: assignedCategoryId,
-              isPrimary: true,
+          // El producto recién creado no estaba en el map; resolvemos su id
+          // por (userId, providerId, sku) que es unique.
+          const fresh = await prisma.catalogProduct.findUnique({
+            where: {
+              userId_providerId_sku: {
+                userId: session.user.id,
+                providerId,
+                sku,
+              },
             },
+            select: { id: true },
           });
-        }
-
-        if (imageUrl) {
-          await prisma.catalogProductImage.create({
-            data: {
-              catalogProductId: created.id,
-              url: imageUrl,
-              position: 0,
-              isPrimary: true,
-              source: "USER",
+          if (fresh) {
+            await prisma.catalogProductCategory.create({
+              data: {
+                catalogProductId: fresh.id,
+                categoryId: assignedCategoryId,
+                isPrimary: true,
+              },
+            });
+            if (imageUrl) {
+              await prisma.catalogProductImage.create({
+                data: {
+                  catalogProductId: fresh.id,
+                  url: imageUrl,
+                  position: 0,
+                  isPrimary: true,
+                  source: "USER",
+                },
+              });
+              report.imagesAdded++;
+            }
+          }
+        } else if (imageUrl) {
+          const fresh = await prisma.catalogProduct.findUnique({
+            where: {
+              userId_providerId_sku: {
+                userId: session.user.id,
+                providerId,
+                sku,
+              },
             },
+            select: { id: true },
           });
-          report.imagesAdded++;
+          if (fresh) {
+            await prisma.catalogProductImage.create({
+              data: {
+                catalogProductId: fresh.id,
+                url: imageUrl,
+                position: 0,
+                isPrimary: true,
+                source: "USER",
+              },
+            });
+            report.imagesAdded++;
+          }
         }
       }
     } catch (err) {
@@ -296,6 +403,39 @@ export async function POST(req: NextRequest) {
   const importedSkus = rows
     .map((r) => pickField(r, "sku") || pickField(r, "publicationSku"))
     .filter((s) => s && !INVALID_SKU_RE.test(s));
+
+  // Capturamos los productos que pasarán a SUPPLIER_REMOVED en este import
+  // (antes de aplicar el cambio) para emitir ProductChange tipo REMOVED.
+  const diffRemoved: DiffChange[] = [];
+  if (importedSkus.length > 0) {
+    const removed = await prisma.catalogProduct.findMany({
+      where: {
+        userId: session.user.id,
+        providerId,
+        supplierStatus: "ACTIVE",
+        sourceType: { in: ["SCRAPED", "IMPORTED"] },
+        sku: { notIn: importedSkus },
+        internalStatus: { not: "IGNORED" },
+      },
+      select: {
+        sku: true,
+        supplierName: true,
+        wholesalePrice: true,
+        stock: true,
+      },
+    });
+    for (const p of removed) {
+      if (!p.sku) continue;
+      diffRemoved.push({
+        sku: p.sku,
+        name: p.supplierName,
+        previousPrice: p.wholesalePrice,
+        currentPrice: null,
+        previousStock: p.stock,
+        currentStock: null,
+      });
+    }
+  }
 
   if (importedSkus.length > 0) {
     const baseWhere = {
@@ -355,6 +495,112 @@ export async function POST(req: NextRequest) {
     });
 
     report.removed = removedPausedCount + removedRest.count;
+  }
+
+  // Emisión del job sintético + comparison + changes. Se hace en una sola
+  // transacción para mantener consistencia: si algo falla, no quedan jobs
+  // huérfanos en COMPLETED sin su diff.
+  report.diff = {
+    new: diffNew.length,
+    removed: diffRemoved.length,
+    priceUp: diffPriceUp.length,
+    priceDown: diffPriceDown.length,
+  };
+
+  const hasAnyChange =
+    diffNew.length + diffRemoved.length + diffPriceUp.length + diffPriceDown.length >
+    0;
+
+  if (hasAnyChange) {
+    await prisma.$transaction(async (tx) => {
+      const job = await tx.extractionJob.create({
+        data: {
+          providerId,
+          userId: session.user.id,
+          status: "COMPLETED",
+          source: "IMPORT",
+          importBatchId,
+          finishedAt: new Date(),
+          startedAt: new Date(),
+          progress: 100,
+          totalProducts: importedSkus.length,
+        },
+        select: { id: true },
+      });
+
+      const comparison = await tx.extractionComparison.create({
+        data: {
+          jobId: job.id,
+          previousJobId: null,
+          newProducts: diffNew.length,
+          removedProducts: diffRemoved.length,
+          priceUp: diffPriceUp.length,
+          priceDown: diffPriceDown.length,
+          stockChanged: 0,
+          unchanged: 0,
+        },
+        select: { id: true },
+      });
+
+      const changes = [
+        ...diffNew.map((d) => ({
+          comparisonId: comparison.id,
+          sku: d.sku,
+          name: d.name,
+          changeType: "NEW" as const,
+          previousPrice: d.previousPrice,
+          currentPrice: d.currentPrice,
+          previousStock: d.previousStock,
+          currentStock: d.currentStock,
+          importBatchId,
+        })),
+        ...diffRemoved.map((d) => ({
+          comparisonId: comparison.id,
+          sku: d.sku,
+          name: d.name,
+          changeType: "REMOVED" as const,
+          previousPrice: d.previousPrice,
+          currentPrice: d.currentPrice,
+          previousStock: d.previousStock,
+          currentStock: d.currentStock,
+          importBatchId,
+        })),
+        ...diffPriceUp.map((d) => ({
+          comparisonId: comparison.id,
+          sku: d.sku,
+          name: d.name,
+          changeType: "PRICE_UP" as const,
+          previousPrice: d.previousPrice,
+          currentPrice: d.currentPrice,
+          priceChangePercent:
+            d.previousPrice != null && d.currentPrice != null
+              ? priceChangePercent(d.previousPrice, d.currentPrice)
+              : null,
+          previousStock: d.previousStock,
+          currentStock: d.currentStock,
+          importBatchId,
+        })),
+        ...diffPriceDown.map((d) => ({
+          comparisonId: comparison.id,
+          sku: d.sku,
+          name: d.name,
+          changeType: "PRICE_DOWN" as const,
+          previousPrice: d.previousPrice,
+          currentPrice: d.currentPrice,
+          priceChangePercent:
+            d.previousPrice != null && d.currentPrice != null
+              ? priceChangePercent(d.previousPrice, d.currentPrice)
+              : null,
+          previousStock: d.previousStock,
+          currentStock: d.currentStock,
+          importBatchId,
+        })),
+      ];
+
+      if (changes.length > 0) {
+        await tx.productChange.createMany({ data: changes });
+      }
+    });
   }
 
   return NextResponse.json(report);

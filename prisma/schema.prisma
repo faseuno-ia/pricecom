@@ -121,6 +121,13 @@ model ExtractionJob {
   workerLockedAt       DateTime?
   /// ID del proceso worker que bloqueó el job (útil para debug multi-instancia)
   workerPid            Int?
+  /// Origen del job. null = scraper automático (default histórico, lo procesa
+  /// el worker). "IMPORT" = job sintético creado por POST /api/catalog/import
+  /// para emitir cambios comerciales contra un Excel del usuario; el worker
+  /// los ignora.
+  source               String?
+  /// Cuando source = "IMPORT", apunta al batchId del lote de importación.
+  importBatchId        String?
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
   products             ExtractedProduct[]
@@ -130,6 +137,8 @@ model ExtractionJob {
 
   @@index([status, createdAt])
   @@index([userId])
+  @@index([source])
+  @@index([importBatchId])
 }
 
 enum JobStatus {
@@ -190,6 +199,10 @@ model ProductChange {
   /// para llevar el radar al día sin perder histórico.
   reviewStatus       ChangeReviewStatus   @default(PENDING)
   reviewedAt         DateTime?
+  /// Cuando el change proviene de un import Excel (no de una extracción
+  /// automática), guardamos el batchId del lote para poder filtrar/agrupar
+  /// sin tener que joinearse a ExtractionJob.
+  importBatchId      String?
   createdAt          DateTime             @default(now())
 
   @@index([comparisonId])
@@ -199,6 +212,7 @@ model ProductChange {
   @@index([createdAt])
   @@index([reviewStatus])
   @@index([changeType, reviewStatus])
+  @@index([importBatchId])
 }
 
 model ExtractedProduct {
