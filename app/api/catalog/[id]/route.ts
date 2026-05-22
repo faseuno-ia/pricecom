@@ -6,6 +6,7 @@ import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
+import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireSession();
@@ -119,6 +120,23 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       publications: { select: { status: true, storeId: true } },
     },
   });
+
+  // Drift detection: si el usuario tocó un campo visible en WooCommerce y el
+  // producto tiene publication ACTIVE, marcamos OUTDATED para que el sync
+  // engine lo levante y empuje los cambios. `notes` se excluye — no llega
+  // a la tienda.
+  const affectsWoo =
+    parsed.data.commercialTitle !== undefined ||
+    parsed.data.commercialDescription !== undefined ||
+    parsed.data.publicationSku !== undefined ||
+    parsed.data.finalPrice !== undefined ||
+    parsed.data.manualMargin !== undefined ||
+    parsed.data.manualPrice !== undefined ||
+    parsed.data.pricingRuleId !== undefined;
+
+  if (affectsWoo) {
+    await markPublicationsDrift(prisma, [params.id]);
+  }
 
   return NextResponse.json(updated);
 }

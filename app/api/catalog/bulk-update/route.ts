@@ -6,6 +6,7 @@ import { z } from "zod";
 import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
 import { publishProductToWoo } from "@/lib/integrations/woocommerce/publication-service";
 import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
+import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 
 // Acciones de usuario — NUNCA tocan supplierStatus (ese estado lo maneja
 // exclusivamente el worker / importador en base a presencia del producto en
@@ -55,20 +56,33 @@ export async function POST(req: NextRequest) {
   const { productIds, action } = parsed.data;
 
   if (action === "clear_margin") {
-    const result = await prisma.catalogProduct.updateMany({
+    const owned = await prisma.catalogProduct.findMany({
       where: { id: { in: productIds }, userId: session.user.id },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: ownedIds } },
       data: { manualMargin: null },
     });
+    // El precio cambia → drift en las publications ACTIVE.
+    await markPublicationsDrift(prisma, ownedIds);
     return NextResponse.json({ updated: result.count });
   }
 
   // clear_price: limpia el override de finalPrice; el motor de pricing vuelve
   // a calcular el precio a partir de la regla aplicable.
   if (action === "clear_price") {
-    const result = await prisma.catalogProduct.updateMany({
+    const owned = await prisma.catalogProduct.findMany({
       where: { id: { in: productIds }, userId: session.user.id },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: ownedIds } },
       data: { finalPrice: null },
     });
+    await markPublicationsDrift(prisma, ownedIds);
     return NextResponse.json({ updated: result.count });
   }
 
@@ -201,10 +215,24 @@ export async function POST(req: NextRequest) {
 
   const internalStatus = actionMap[action];
 
-  const result = await prisma.catalogProduct.updateMany({
+  const owned = await prisma.catalogProduct.findMany({
     where: { id: { in: productIds }, userId: session.user.id },
+    select: { id: true },
+  });
+  const ownedIds = owned.map((p) => p.id);
+
+  const result = await prisma.catalogProduct.updateMany({
+    where: { id: { in: ownedIds } },
     data: { internalStatus },
   });
+
+  // Drift: cambios de estado que en la tienda implican pausar (PAUSED, IGNORED)
+  // marcamos OUTDATED para que el próximo sync los baje a draft en Woo. Los
+  // demás (PREPARED, NOT_PUBLISHED) son estados internos previos a publicar y
+  // no producen drift accionable.
+  if (action === "pause" || action === "ignore") {
+    await markPublicationsDrift(prisma, ownedIds);
+  }
 
   return NextResponse.json({ updated: result.count });
 }

@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/auth";
 import { RoundingMode } from "@prisma/client";
 import { applyMarkup } from "@/lib/pricing/pricing-engine";
 import { buildApplyMarginWhere } from "@/lib/catalog/apply-margin-where";
+import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 import { z } from "zod";
 
 const ROUNDINGS: RoundingMode[] = ["NONE", "NEAREST_100", "NEAREST_500", "ENDING_990"];
@@ -68,12 +69,27 @@ export async function POST(req: NextRequest) {
       });
       updated++;
     }
+    // Drift: cambio masivo de margen + precio → publications ACTIVE quedan
+    // OUTDATED.
+    await markPublicationsDrift(
+      prisma,
+      targets.map((t) => t.id)
+    );
     return NextResponse.json({ updated });
   }
 
-  const result = await prisma.catalogProduct.updateMany({
+  // Necesitamos los ids para el drift (updateMany no los devuelve).
+  const targets = await prisma.catalogProduct.findMany({
     where,
+    select: { id: true },
+  });
+  const result = await prisma.catalogProduct.updateMany({
+    where: { id: { in: targets.map((t) => t.id) } },
     data: { manualMargin: parsed.data.marginPercent },
   });
+  await markPublicationsDrift(
+    prisma,
+    targets.map((t) => t.id)
+  );
   return NextResponse.json({ updated: result.count });
 }
