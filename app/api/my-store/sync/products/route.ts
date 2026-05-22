@@ -173,10 +173,16 @@ export async function POST() {
           storeId: store.id,
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        commercialTitleUserEdited: true,
+        commercialDescriptionUserEdited: true,
+      },
     });
 
-    const data = {
+    const wooDescription = woo.description?.trim() ? woo.description : null;
+
+    const baseData = {
       status: pubStatus as
         | "ACTIVE"
         | "DRAFT"
@@ -198,17 +204,32 @@ export async function POST() {
     };
 
     if (existing) {
+      // Override per-publication: solo pisamos los campos comerciales si el
+      // usuario NO los editó desde PricEcom. Si los editó, mantenemos su
+      // valor (el push a Woo se encarga de subir su versión).
       await prisma.productPublication.update({
         where: { id: existing.id },
-        data,
+        data: {
+          ...baseData,
+          ...(existing.commercialTitleUserEdited
+            ? {}
+            : { commercialTitle: woo.name }),
+          ...(existing.commercialDescriptionUserEdited
+            ? {}
+            : { commercialDescription: wooDescription }),
+        },
       });
       updated++;
     } else {
+      // Publicación nueva: sembramos título y descripción desde Woo con los
+      // flags de user-edited en false (default).
       await prisma.productPublication.create({
         data: {
           catalogProductId: catalogProduct.id,
           storeId: store.id,
-          ...data,
+          ...baseData,
+          commercialTitle: woo.name,
+          commercialDescription: wooDescription,
         },
       });
       created++;
@@ -220,14 +241,20 @@ export async function POST() {
       catalogProduct.internalStatus
     );
 
-    // WooCommerce es fuente de verdad para nombre y descripción comercial:
-    // el cliente los edita directo en la tienda, y los importamos hacia
-    // PricEcom en cada sync (siempre, no sólo cuando están vacíos).
+    // WooCommerce es fuente inicial de nombre/descripción, pero si el usuario
+    // los editó desde PricEcom (flag userEdited en la ProductPublication),
+    // respetamos su versión. CatalogProduct refleja lo que la UI debería
+    // mostrar al usuario; usamos los mismos flags de la publication para
+    // decidir si pisar o no.
     await prisma.catalogProduct.update({
       where: { id: catalogProduct.id },
       data: {
-        commercialTitle: woo.name,
-        commercialDescription: woo.description?.trim() ? woo.description : null,
+        ...(existing?.commercialTitleUserEdited
+          ? {}
+          : { commercialTitle: woo.name }),
+        ...(existing?.commercialDescriptionUserEdited
+          ? {}
+          : { commercialDescription: wooDescription }),
         ...(nextInternal ? { internalStatus: nextInternal } : {}),
       },
     });

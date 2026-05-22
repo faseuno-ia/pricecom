@@ -562,6 +562,14 @@ model ProductPublication {
   stockInStore      Int?
   /// Snapshot del nombre de categoría asignado en la tienda externa.
   categoryInStore   String?
+  /// Override per-publication del título comercial. Si commercialTitleUserEdited
+  /// es true, este valor pisa a CatalogProduct.commercialTitle en el push a la
+  /// tienda y NO se sobreescribe en pulls desde Woo. Pensado para multi-store:
+  /// el cliente puede tener un título distinto en cada tienda.
+  commercialTitle                 String?
+  commercialTitleUserEdited       Boolean           @default(false)
+  commercialDescription           String?
+  commercialDescriptionUserEdited Boolean           @default(false)
   /// Marca que tenemos cambios locales (precio/stock/título/etc.) que aún
   /// no se empujaron a la tienda. El worker de sync lee este flag para
   /// priorizar qué publicar.

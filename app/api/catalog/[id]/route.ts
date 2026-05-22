@@ -121,16 +121,40 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     },
   });
 
-  // Drift detection: el sync a WooCommerce sólo empuja precio y estado.
-  // Cualquier otro campo (commercialTitle, description, publicationSku,
-  // categorías, etc.) es propiedad de WooCommerce — el cliente los edita
-  // directo en la tienda y se importan hacia PricEcom. Por eso únicamente
-  // los cambios de precio (directo o vía margen/regla) marcan drift.
+  // Si el usuario tocó título o descripción desde PricEcom, mirroreamos el
+  // valor a la ProductPublication ACTIVE marcando el flag userEdited=true.
+  // Eso bloquea futuras pisadas desde Woo→PricEcom y permite que el push
+  // PricEcom→Woo mande estos campos en updateProduct.
+  if (parsed.data.commercialTitle !== undefined) {
+    await prisma.productPublication.updateMany({
+      where: { catalogProductId: params.id, status: "ACTIVE" },
+      data: {
+        commercialTitle: parsed.data.commercialTitle,
+        commercialTitleUserEdited: true,
+      },
+    });
+  }
+  if (parsed.data.commercialDescription !== undefined) {
+    await prisma.productPublication.updateMany({
+      where: { catalogProductId: params.id, status: "ACTIVE" },
+      data: {
+        commercialDescription: parsed.data.commercialDescription,
+        commercialDescriptionUserEdited: true,
+      },
+    });
+  }
+
+  // Drift detection: el sync a WooCommerce empuja precio + estado siempre,
+  // y nombre/descripción solo si el flag userEdited está activo en la
+  // publication. Por eso cualquier cambio en estos campos dispara drift.
+  // publicationSku, categorías y notes no llegan a Woo → no marcan drift.
   const affectsWoo =
     parsed.data.finalPrice !== undefined ||
     parsed.data.manualMargin !== undefined ||
     parsed.data.manualPrice !== undefined ||
-    parsed.data.pricingRuleId !== undefined;
+    parsed.data.pricingRuleId !== undefined ||
+    parsed.data.commercialTitle !== undefined ||
+    parsed.data.commercialDescription !== undefined;
 
   if (affectsWoo) {
     await markPublicationsDrift(prisma, [params.id]);

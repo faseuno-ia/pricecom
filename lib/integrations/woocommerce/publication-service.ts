@@ -85,7 +85,14 @@ export async function publishProductToWoo(
 
   const existingPub = await prisma.productPublication.findUnique({
     where: { catalogProductId_storeId: { catalogProductId, storeId } },
-    select: { id: true, externalProductId: true },
+    select: {
+      id: true,
+      externalProductId: true,
+      commercialTitle: true,
+      commercialTitleUserEdited: true,
+      commercialDescription: true,
+      commercialDescriptionUserEdited: true,
+    },
   });
 
   try {
@@ -94,16 +101,34 @@ export async function publishProductToWoo(
     let wooPermalink: string;
 
     if (existingPub?.externalProductId) {
-      // SCOPE REDUCIDO: PricEcom es fuente de verdad sólo para precio y
-      // estado. Nombre, descripción, SKU, stock y categorías son propiedad
-      // de WooCommerce — el cliente los edita allá. El update masivo
-      // sólo manda regular_price + status para no sobreescribirlos.
+      // PricEcom es fuente de verdad para precio y estado siempre. Nombre y
+      // descripción solo se mandan si el usuario los editó desde PricEcom
+      // (override per-publication con flag userEdited). El resto de campos
+      // (SKU, stock, categorías, imágenes) son propiedad de WooCommerce.
+      const updatePayload: {
+        regular_price: string;
+        status: string;
+        name?: string;
+        description?: string;
+      } = {
+        regular_price: price.toFixed(2),
+        status: "publish",
+      };
+      if (
+        existingPub.commercialTitleUserEdited &&
+        existingPub.commercialTitle
+      ) {
+        updatePayload.name = existingPub.commercialTitle;
+      }
+      if (
+        existingPub.commercialDescriptionUserEdited &&
+        existingPub.commercialDescription
+      ) {
+        updatePayload.description = existingPub.commercialDescription;
+      }
       const updated = await client.updateProduct(
         parseInt(existingPub.externalProductId, 10),
-        {
-          regular_price: price.toFixed(2),
-          status: "publish",
-        }
+        updatePayload
       );
       wooId = updated.id;
       wooSku = updated.sku;
@@ -145,6 +170,11 @@ export async function publishProductToWoo(
         lastSyncedAt: new Date(),
         lastSyncAt: new Date(),
         syncError: null,
+        // Seed: la primera vez que publicamos guardamos los textos que
+        // mandamos a Woo como referencia, con userEdited=false (default).
+        // Después un pull desde Woo o una edición del drawer flipean el flag.
+        commercialTitle: product.commercialTitle ?? product.supplierName,
+        commercialDescription: product.commercialDescription ?? null,
       },
       update: {
         externalProductId: String(wooId),
