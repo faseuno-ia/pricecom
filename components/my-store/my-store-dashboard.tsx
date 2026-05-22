@@ -139,7 +139,7 @@ export function MyStoreDashboard({ store, integration, kpis }: Props) {
 
   const kpiCards = [
     { label: "Publicados", value: kpis.active, cls: "bg-accent/10 text-accent border-accent/30" },
-    { label: "Preparados", value: kpis.draft, cls: "bg-blue-500/10 text-blue-300 border-blue-500/30" },
+    { label: "Borradores", value: kpis.draft, cls: "bg-blue-500/10 text-blue-300 border-blue-500/30" },
     { label: "Pausados", value: kpis.paused, cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
     { label: "Pendientes sync", value: kpis.pendingSync, cls: "bg-orange-500/10 text-orange-300 border-orange-500/30" },
     { label: "Errores", value: kpis.error, cls: "bg-red-500/10 text-red-300 border-red-500/30" },
