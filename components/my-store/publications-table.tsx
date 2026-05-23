@@ -15,7 +15,10 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { PublicationDrawer, type PubDetail } from "./publication-drawer";
-import { visualStatusConfig } from "@/lib/catalog/visual-status";
+import {
+  deriveVisualStatus,
+  visualStatusConfig,
+} from "@/lib/catalog/visual-status";
 import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 type PubStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "REMOVED" | "ERROR";
@@ -50,6 +53,8 @@ interface PubRow {
     finalPrice: number | null;
     stock: string | null;
     stockSource: "SUPPLIER" | "OWN" | "HYBRID";
+    internalStatus: string;
+    supplierStatus: string;
     pricing?: { effectivePrice: number | null };
   };
 }
@@ -64,13 +69,8 @@ type Filter =
   | "PENDING_SYNC"
   | "OUTDATED";
 
-const statusBadgeFor: Record<PubStatus, { label: string; cls: string }> = {
-  ACTIVE: { label: "Publicado", cls: "bg-accent/15 text-accent border-accent/30" },
-  DRAFT: { label: "Borrador", cls: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
-  PAUSED: { label: "Pausado", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
-  REMOVED: { label: "Removido", cls: "bg-muted/30 text-muted-foreground border-border" },
-  ERROR: { label: "Error", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
-};
+// statusBadgeFor (PubStatus crudo) reemplazado por visualStatusConfig via
+// deriveVisualStatus — misma semántica que /catalog.
 
 // Badges de sync reutilizan los colores de visualStatusConfig (PUBLISHED ↔
 // emerald = "Sincronizado", OUTDATED ↔ violet, PAUSED ↔ amber). Errores y
@@ -105,7 +105,7 @@ const syncBadgeFor: Record<SyncStatus, { label: string; cls: string }> = {
 const FILTER_LABELS: Record<Filter, string> = {
   ALL: "Todos",
   ACTIVE: "Publicados",
-  DRAFT: "Borradores",
+  DRAFT: "Borrador en Woo",
   PAUSED: "Pausados",
   SIN_STOCK: "Sin stock",
   ERROR: "Errores",
@@ -352,7 +352,14 @@ export function PublicationsTable() {
                 </tr>
               )}
               {data.publications.map((p) => {
-                const sBadge = statusBadgeFor[p.status];
+                // Estado visual unificado: misma derivación que /catalog.
+                const visualStatus = deriveVisualStatus({
+                  internalStatus: p.catalogProduct.internalStatus,
+                  supplierStatus: p.catalogProduct.supplierStatus,
+                  pendingSync: p.pendingSync,
+                  syncStatus: p.syncStatus,
+                });
+                const vBadge = visualStatusConfig[visualStatus];
                 const syncB = syncBadgeFor[p.syncStatus];
                 const sku =
                   p.externalSku ?? p.catalogProduct.publicationSku ?? "—";
@@ -404,9 +411,9 @@ export function PublicationsTable() {
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${sBadge.cls}`}
+                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
                       >
-                        {sBadge.label}
+                        {vBadge.label}
                       </span>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">

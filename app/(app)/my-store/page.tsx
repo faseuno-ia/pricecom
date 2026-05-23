@@ -35,18 +35,33 @@ export default async function MyStorePage() {
     );
   }
 
-  // Solo KPIs + categorías globales. La tabla de publicaciones fetchea por
-  // su cuenta vía /api/my-store/publications (paginada + buscable).
-  const [active, draft, paused, pubError, pendingSync, unmatchedCount, categories] =
+  // KPIs alineados a deriveVisualStatus:
+  //   - Publicados: pub ACTIVE
+  //   - Pausados: pub PAUSED + proveedor activo (la pausa por SUPPLIER_REMOVED
+  //     entra en Sin stock).
+  //   - Sin stock: catalogProduct.supplierStatus = SUPPLIER_REMOVED.
+  //   - Errores: pub ERROR
+  //   - Desactualizadas: syncStatus OUTDATED. (Reemplaza el viejo "pendientes"
+  //     que mezclaba PENDING_SYNC y OUTDATED.)
+  const [active, sinStock, paused, pubError, pendingSync, unmatchedCount, categories] =
     await Promise.all([
       prisma.productPublication.count({
         where: { storeId: store.id, status: "ACTIVE" },
       }),
       prisma.productPublication.count({
-        where: { storeId: store.id, status: "DRAFT" },
+        where: {
+          storeId: store.id,
+          catalogProduct: { is: { supplierStatus: "SUPPLIER_REMOVED" } },
+        },
       }),
       prisma.productPublication.count({
-        where: { storeId: store.id, status: "PAUSED" },
+        where: {
+          storeId: store.id,
+          status: "PAUSED",
+          catalogProduct: {
+            is: { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          },
+        },
       }),
       prisma.productPublication.count({
         where: { storeId: store.id, status: "ERROR" },
@@ -97,7 +112,7 @@ export default async function MyStorePage() {
         }
         kpis={{
           active,
-          draft,
+          sinStock,
           paused,
           error: pubError,
           pendingSync,

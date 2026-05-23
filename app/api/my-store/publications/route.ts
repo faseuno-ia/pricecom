@@ -155,6 +155,8 @@ export async function GET(req: NextRequest) {
             manualMargin: true,
             assignedCategoryId: true,
             providerId: true,
+            internalStatus: true,
+            supplierStatus: true,
             provider: { select: { listDiscountPercent: true } },
           },
         },
@@ -214,6 +216,8 @@ export async function GET(req: NextRequest) {
         finalPrice: p.catalogProduct.finalPrice,
         stock: p.catalogProduct.stock,
         stockSource: p.catalogProduct.stockSource,
+        internalStatus: p.catalogProduct.internalStatus,
+        supplierStatus: p.catalogProduct.supplierStatus,
         pricing: { effectivePrice: pricing.effectivePrice },
       },
     };

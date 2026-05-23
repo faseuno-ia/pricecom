@@ -3,10 +3,22 @@
 //
 // Query params:
 //   includeIgnored=true → incluye los que fueron marcados como ignorados.
+//
+// Performance: en lugar de hacer una query de scoring por cada unmatched
+// (N+1 con 500 items = 500+ round-trips a la DB), pre-cargamos todos los
+// CatalogProduct del usuario en memoria y matcheamos en local. Mismo patrón
+// que app/api/catalog/import/route.ts.
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
+
+interface SuggestionPlain {
+  catalogProductId: string;
+  name: string;
+  score: number;
+  reason: string;
+}
 
 export async function GET(req: NextRequest) {
   const session = await requireSession();
@@ -19,93 +31,88 @@ export async function GET(req: NextRequest) {
   });
   if (!store) return NextResponse.json({ unmatched: [] });
 
-  const items = await prisma.unmatchedStoreProduct.findMany({
-    where: {
-      storeId: store.id,
-      ...(includeIgnored ? {} : { ignored: false }),
-    },
-    orderBy: { updatedAt: "desc" },
-    take: 500,
-  });
+  // 1. Lista unmatched + 2. Pre-fetch de todos los CatalogProduct del usuario.
+  // Las dos queries se disparan en paralelo.
+  const [items, catalogProducts] = await Promise.all([
+    prisma.unmatchedStoreProduct.findMany({
+      where: {
+        storeId: store.id,
+        ...(includeIgnored ? {} : { ignored: false }),
+      },
+      orderBy: { updatedAt: "desc" },
+      take: 500,
+    }),
+    prisma.catalogProduct.findMany({
+      where: { userId: session.user.id },
+      select: {
+        id: true,
+        sku: true,
+        publicationSku: true,
+        supplierName: true,
+        commercialTitle: true,
+      },
+    }),
+  ]);
 
-  // Scoring: para cada unmatched, sugerimos un CatalogProduct si encontramos
-  // matchs por SKU o nombre. Tres niveles:
-  //   - publicationSku === externalSku (score 95)
-  //   - sku === externalSku (score 90)
-  //   - supplierName/commercialTitle contiene name o viceversa (60-80)
-  const suggestions: Array<{
-    unmatchedId: string;
-    catalogProductId: string;
-    name: string;
-    score: number;
-    reason: string;
-  }> = [];
+  // Indexes en memoria:
+  //   - bySku / byPubSku: lookup O(1) para match exacto.
+  //   - byNameLower: lista preparada con el nombre normalizado (lowercase)
+  //     para el fallback contains.
+  const bySku = new Map<string, (typeof catalogProducts)[number]>();
+  const byPubSku = new Map<string, (typeof catalogProducts)[number]>();
+  const byNameLower = catalogProducts.map((p) => ({
+    cp: p,
+    name: (p.commercialTitle ?? p.supplierName).toLowerCase(),
+  }));
+  for (const p of catalogProducts) {
+    if (p.sku) bySku.set(p.sku, p);
+    if (p.publicationSku) byPubSku.set(p.publicationSku, p);
+  }
 
-  for (const it of items) {
-    let suggestion: typeof suggestions[number] | null = null;
-
-    if (it.externalSku) {
-      const byPub = await prisma.catalogProduct.findFirst({
-        where: { userId: session.user.id, publicationSku: it.externalSku },
-        select: { id: true, supplierName: true, commercialTitle: true },
-      });
+  function scoreFor(unmatched: (typeof items)[number]): SuggestionPlain | null {
+    // 1. publicationSku exacto (score 95).
+    if (unmatched.externalSku) {
+      const byPub = byPubSku.get(unmatched.externalSku);
       if (byPub) {
-        suggestion = {
-          unmatchedId: it.id,
+        return {
           catalogProductId: byPub.id,
           name: byPub.commercialTitle ?? byPub.supplierName,
           score: 95,
           reason: "publicationSku exacto",
         };
-      } else {
-        const bySku = await prisma.catalogProduct.findFirst({
-          where: { userId: session.user.id, sku: it.externalSku },
-          select: { id: true, supplierName: true, commercialTitle: true },
-        });
-        if (bySku) {
-          suggestion = {
-            unmatchedId: it.id,
-            catalogProductId: bySku.id,
-            name: bySku.commercialTitle ?? bySku.supplierName,
-            score: 90,
-            reason: "sku exacto",
-          };
-        }
+      }
+      // 2. sku exacto (score 90).
+      const skuMatch = bySku.get(unmatched.externalSku);
+      if (skuMatch) {
+        return {
+          catalogProductId: skuMatch.id,
+          name: skuMatch.commercialTitle ?? skuMatch.supplierName,
+          score: 90,
+          reason: "sku exacto",
+        };
       }
     }
-
-    // Fallback por nombre — solo si no encontramos por SKU. Búsqueda contains
-    // case-insensitive. Score baja a 60-80 según largo del nombre matcheado.
-    if (!suggestion && it.name.length >= 5) {
-      const namePrefix = it.name.slice(0, Math.min(24, it.name.length));
-      const byName = await prisma.catalogProduct.findFirst({
-        where: {
-          userId: session.user.id,
-          OR: [
-            { supplierName: { contains: namePrefix, mode: "insensitive" } },
-            { commercialTitle: { contains: namePrefix, mode: "insensitive" } },
-          ],
-        },
-        select: { id: true, supplierName: true, commercialTitle: true },
-      });
-      if (byName) {
-        const score = Math.min(80, 60 + Math.floor(namePrefix.length / 3));
-        suggestion = {
-          unmatchedId: it.id,
-          catalogProductId: byName.id,
-          name: byName.commercialTitle ?? byName.supplierName,
+    // 3. Fallback contains por nombre. Solo si name >= 5 chars, para evitar
+    //    matches espurios sobre prefijos cortos.
+    if (unmatched.name.length >= 5) {
+      const prefix = unmatched.name
+        .slice(0, Math.min(24, unmatched.name.length))
+        .toLowerCase();
+      const found = byNameLower.find(
+        (e) => e.name.includes(prefix) || prefix.includes(e.name)
+      );
+      if (found) {
+        const score = Math.min(80, 60 + Math.floor(prefix.length / 3));
+        return {
+          catalogProductId: found.cp.id,
+          name: found.cp.commercialTitle ?? found.cp.supplierName,
           score,
           reason: "nombre similar",
         };
       }
     }
-
-    if (suggestion) suggestions.push(suggestion);
+    return null;
   }
-
-  const suggestionByUnmatched = new Map(
-    suggestions.map((s) => [s.unmatchedId, s])
-  );
 
   return NextResponse.json({
     unmatched: items.map((it) => ({
@@ -119,7 +126,7 @@ export async function GET(req: NextRequest) {
       categories: it.categories ? safeJsonArray(it.categories) : [],
       permalink: it.permalink,
       ignored: it.ignored,
-      suggestedMatch: suggestionByUnmatched.get(it.id) ?? null,
+      suggestedMatch: scoreFor(it),
     })),
   });
 }

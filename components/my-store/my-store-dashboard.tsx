@@ -33,7 +33,7 @@ interface Props {
   } | null;
   kpis: {
     active: number;
-    draft: number;
+    sinStock: number;
     paused: number;
     error: number;
     pendingSync: number;
@@ -138,11 +138,11 @@ export function MyStoreDashboard({ store, integration, kpis }: Props) {
   })();
 
   const kpiCards = [
-    { label: "Publicados", value: kpis.active, cls: "bg-accent/10 text-accent border-accent/30" },
-    { label: "Borradores", value: kpis.draft, cls: "bg-blue-500/10 text-blue-300 border-blue-500/30" },
-    { label: "Pausados", value: kpis.paused, cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
-    { label: "Pendientes sync", value: kpis.pendingSync, cls: "bg-orange-500/10 text-orange-300 border-orange-500/30" },
-    { label: "Errores", value: kpis.error, cls: "bg-red-500/10 text-red-300 border-red-500/30" },
+    { label: "Publicados", value: kpis.active, cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
+    { label: "Sin stock", value: kpis.sinStock, cls: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
+    { label: "Pausados", value: kpis.paused, cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+    { label: "Pendientes sync", value: kpis.pendingSync, cls: "bg-violet-500/15 text-violet-300 border-violet-500/30" },
+    { label: "Errores", value: kpis.error, cls: "bg-red-500/15 text-red-300 border-red-500/30" },
     { label: "No vinculados", value: kpis.unmatched, cls: "bg-muted/30 text-muted-foreground border-border" },
   ];
 

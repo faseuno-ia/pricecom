@@ -66,6 +66,9 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
   const [includeIgnored, setIncludeIgnored] = useState(false);
   const [linkModalFor, setLinkModalFor] = useState<UnmatchedRow | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  // Preview modal del flujo "vincular al sugerido": el usuario confirma antes
+  // de aceptar el match. Evita vinculaciones accidentales con score=60.
+  const [previewFor, setPreviewFor] = useState<UnmatchedRow | null>(null);
 
   async function load() {
     setLoading(true);
@@ -157,6 +160,11 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
 
   return (
     <div className="space-y-3">
+      <p className="text-xs text-muted-foreground bg-muted/20 border border-border rounded-lg px-3 py-2">
+        Estos productos existen en WooCommerce pero no están vinculados a
+        ningún producto de tu catálogo en PricEcom. Vinculalos para poder
+        gestionar su precio y estado desde PricEcom.
+      </p>
       <div className="flex items-center gap-2 flex-wrap">
         <label className="text-xs flex items-center gap-2 text-muted-foreground">
           <input
@@ -265,11 +273,14 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                             <span
                               className={`inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border font-medium ${
                                 it.suggestedMatch.score >= 90
-                                  ? "bg-accent/10 text-accent border-accent/30"
-                                  : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                                  : "bg-amber-500/15 text-amber-300 border-amber-500/30"
                               }`}
+                              title={`${it.suggestedMatch.score}% — ${it.suggestedMatch.reason}`}
                             >
-                              {it.suggestedMatch.score}% · {it.suggestedMatch.reason}
+                              {it.suggestedMatch.score >= 90
+                                ? "SKU exacto"
+                                : "Nombre similar"}
                             </span>
                             <span
                               className="text-[10px] text-muted-foreground truncate"
@@ -281,7 +292,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                           </div>
                         ) : (
                           <span className="text-muted-foreground/50 text-[10px]">
-                            sin sugerencia
+                            Sin coincidencia
                           </span>
                         )}
                       </td>
@@ -301,7 +312,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                           {it.suggestedMatch && (
                             <button
                               type="button"
-                              onClick={() => linkTo(it.id, it.suggestedMatch!.catalogProductId)}
+                              onClick={() => setPreviewFor(it)}
                               disabled={isPending}
                               title={`Vincular al sugerido (${it.suggestedMatch.score}%)`}
                               className="text-xs flex items-center gap-1 border border-primary/30 bg-primary/10 text-primary px-2 py-1 rounded-md hover:bg-primary/20 disabled:opacity-60"
@@ -311,7 +322,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                               ) : (
                                 <Link2 className="w-3 h-3" />
                               )}
-                              Vincular
+                              Vincular al sugerido
                             </button>
                           )}
                           {!it.suggestedMatch && (
@@ -320,7 +331,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                               onClick={() => setLinkModalFor(it)}
                               className="text-xs flex items-center gap-1 border border-border px-2 py-1 rounded-md hover:bg-muted/40"
                             >
-                              <Link2 className="w-3 h-3" /> Vincular…
+                              <Link2 className="w-3 h-3" /> Buscar en catálogo
                             </button>
                           )}
                           <button
@@ -330,14 +341,14 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                             title="Crear nuevo CatalogProduct desde este producto WooCommerce"
                             className="text-xs flex items-center gap-1 border border-border px-2 py-1 rounded-md hover:bg-muted/40 disabled:opacity-60"
                           >
-                            <PlusCircle className="w-3 h-3" /> Crear
+                            <PlusCircle className="w-3 h-3" /> Crear en Mi stock
                           </button>
                           {!it.ignored && (
                             <button
                               type="button"
                               onClick={() => ignore(it.id)}
                               disabled={isPending}
-                              title="Ignorar"
+                              title="No vincular"
                               className="text-xs flex items-center gap-1 border border-border px-2 py-1 rounded-md hover:bg-muted/40 text-muted-foreground disabled:opacity-60"
                             >
                               <Ban className="w-3 h-3" />
@@ -362,7 +373,116 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
           }
         />
       )}
+
+      {previewFor && previewFor.suggestedMatch && (
+        <LinkPreviewModal
+          unmatched={previewFor}
+          onClose={() => setPreviewFor(null)}
+          onConfirm={() => {
+            const target = previewFor;
+            setPreviewFor(null);
+            linkTo(target.id, target.suggestedMatch!.catalogProductId);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function LinkPreviewModal({
+  unmatched,
+  onClose,
+  onConfirm,
+}: {
+  unmatched: UnmatchedRow;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const m = unmatched.suggestedMatch!;
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-md pointer-events-auto">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+            <h3 className="text-sm font-semibold">Confirmar vinculación</h3>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted/40"
+              aria-label="Cerrar"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="px-5 py-4 space-y-4 text-xs">
+            <div className="space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                Producto en WooCommerce
+              </p>
+              <div className="flex items-center gap-3">
+                {unmatched.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={unmatched.imageUrl}
+                    alt=""
+                    className="w-12 h-12 rounded-md object-cover bg-muted/30 border border-border flex-shrink-0"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-md bg-muted/20 border border-border flex items-center justify-center text-muted-foreground/50 flex-shrink-0">
+                    <ImageOff className="w-4 h-4" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium truncate">{unmatched.name}</p>
+                  <p className="text-[10px] text-muted-foreground font-mono">
+                    {unmatched.externalSku ?? "(sin SKU)"} ·{" "}
+                    {formatPrice(unmatched.price)}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-center text-muted-foreground">
+              <Link2 className="w-4 h-4" />
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                Se vinculará con
+              </p>
+              <p className="font-medium">{m.name}</p>
+              <span
+                className={`inline-flex items-center text-[10px] px-2 py-0.5 rounded-full border font-medium ${
+                  m.score >= 90
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                    : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                }`}
+                title={`${m.score}%`}
+              >
+                {m.score >= 90 ? "SKU exacto" : "Nombre similar"} · {m.reason}
+              </span>
+            </div>
+          </div>
+          <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-xs px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              className="text-xs flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-1.5 rounded-md hover:bg-primary/90"
+            >
+              <Link2 className="w-3 h-3" /> Confirmar vinculación
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
