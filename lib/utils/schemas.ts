@@ -14,6 +14,7 @@ export const providerSchema = z
     password: z.string().optional().nullable(),
     isActive: z.boolean().default(true),
     notes: z.string().optional().nullable(),
+    listDiscountPercent: z.number().min(0).max(100).default(0),
   })
   .superRefine((data, ctx) => {
     const url = data.baseUrl?.trim() ?? "";

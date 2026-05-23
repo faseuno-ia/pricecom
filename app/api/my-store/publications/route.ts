@@ -130,6 +130,7 @@ export async function GET(req: NextRequest) {
             manualMargin: true,
             assignedCategoryId: true,
             providerId: true,
+            provider: { select: { listDiscountPercent: true } },
           },
         },
       },
@@ -159,6 +160,9 @@ export async function GET(req: NextRequest) {
         finalPrice: p.catalogProduct.finalPrice,
         assignedCategoryId: p.catalogProduct.assignedCategoryId,
         providerId: p.catalogProduct.providerId,
+        listDiscountPercent: p.catalogProduct.provider?.listDiscountPercent
+          ? Number(p.catalogProduct.provider.listDiscountPercent)
+          : 0,
       },
       rulesForCalc
     );

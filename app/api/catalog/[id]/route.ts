@@ -16,7 +16,13 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
       where: { id: params.id, userId: session.user.id },
       include: {
         provider: {
-          select: { id: true, name: true, baseUrl: true, requiresLogin: true },
+          select: {
+            id: true,
+            name: true,
+            baseUrl: true,
+            requiresLogin: true,
+            listDiscountPercent: true,
+          },
         },
         images: { orderBy: { position: "asc" } },
         assignedCategory: { select: { id: true, name: true } },
@@ -60,6 +66,9 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
       finalPrice: product.finalPrice,
       assignedCategoryId: product.assignedCategoryId,
       providerId: product.providerId,
+      listDiscountPercent: product.provider.listDiscountPercent
+        ? Number(product.provider.listDiscountPercent)
+        : 0,
     },
     rules as PricingRuleForCalc[]
   );

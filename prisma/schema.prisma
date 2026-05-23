@@ -46,6 +46,10 @@ model Provider {
   encryptedPassword String?
   isActive          Boolean                @default(true)
   notes             String?
+  /// Descuento comercial que el proveedor aplica sobre su lista de precios.
+  /// Se descuenta del wholesalePrice antes de calcular el precio de venta.
+  /// 0 = sin descuento. Ejemplo: 12 = 12% off list.
+  listDiscountPercent Decimal              @default(0) @db.Decimal(5, 2)
   lastExtractionAt  DateTime?
   userId            String?
   user              User?                  @relation(fields: [userId], references: [id])

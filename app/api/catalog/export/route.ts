@@ -117,6 +117,7 @@ export async function POST(req: NextRequest) {
       orderBy: { updatedAt: "desc" },
       include: {
         assignedCategory: { select: { name: true } },
+        provider: { select: { listDiscountPercent: true } },
         images: {
           orderBy: [{ isPrimary: "desc" }, { position: "asc" }],
           take: 1,
@@ -176,6 +177,9 @@ export async function POST(req: NextRequest) {
         finalPrice: p.finalPrice,
         assignedCategoryId: p.assignedCategoryId,
         providerId: p.providerId,
+        listDiscountPercent: p.provider.listDiscountPercent
+          ? Number(p.provider.listDiscountPercent)
+          : 0,
       },
       rulesForCalc
     );

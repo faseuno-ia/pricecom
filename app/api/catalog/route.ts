@@ -30,7 +30,13 @@ export async function GET(req: NextRequest) {
       take: pageSize,
       include: {
         provider: {
-          select: { id: true, name: true, baseUrl: true, providerType: true },
+          select: {
+            id: true,
+            name: true,
+            baseUrl: true,
+            providerType: true,
+            listDiscountPercent: true,
+          },
         },
         // isPrimary primero (si está marcada), luego por posición. Cubre el caso
         // en que la imagen primaria no es la de menor `position`.
@@ -76,6 +82,9 @@ export async function GET(req: NextRequest) {
         finalPrice: p.finalPrice,
         assignedCategoryId: p.assignedCategoryId,
         providerId: p.providerId,
+        listDiscountPercent: p.provider.listDiscountPercent
+          ? Number(p.provider.listDiscountPercent)
+          : 0,
       },
       rulesForCalc
     );

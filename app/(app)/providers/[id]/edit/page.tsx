@@ -27,6 +27,9 @@ export default async function EditProviderPage({ params }: { params: { id: strin
             username: provider.username,
             isActive: provider.isActive,
             notes: provider.notes,
+            listDiscountPercent: provider.listDiscountPercent
+              ? Number(provider.listDiscountPercent)
+              : 0,
           }}
         />
       </div>

@@ -79,6 +79,7 @@ export default async function ProviderDashboardPage({
       isActive: true,
       requiresLogin: true,
       lastExtractionAt: true,
+      listDiscountPercent: true,
     },
   });
   if (!provider) notFound();
@@ -309,6 +310,19 @@ export default async function ProviderDashboardPage({
                   <Lock className="w-2.5 h-2.5" /> Requiere login
                 </span>
               )}
+              {provider.listDiscountPercent &&
+                Number(provider.listDiscountPercent) > 0 ? (
+                <span
+                  className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full border bg-amber-500/15 text-amber-300 border-amber-500/30"
+                  title="Descuento que el proveedor aplica sobre su lista de precios. El motor de pricing lo aplica antes del margen."
+                >
+                  Descuento lista:{" "}
+                  {Number(provider.listDiscountPercent).toFixed(
+                    Number(provider.listDiscountPercent) % 1 === 0 ? 0 : 1
+                  )}
+                  %
+                </span>
+              ) : null}
             </div>
             <div className="flex items-center gap-3 mt-1.5 text-sm text-muted-foreground flex-wrap">
               <a

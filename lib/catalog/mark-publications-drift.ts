@@ -53,6 +53,7 @@ export async function markPublicationsDrift(
           assignedCategoryId: true,
           providerId: true,
           userId: true,
+          provider: { select: { listDiscountPercent: true } },
         },
       },
     },
@@ -112,6 +113,9 @@ export async function markPublicationsDrift(
         finalPrice: pub.catalogProduct.finalPrice,
         assignedCategoryId: pub.catalogProduct.assignedCategoryId,
         providerId: pub.catalogProduct.providerId,
+        listDiscountPercent: pub.catalogProduct.provider?.listDiscountPercent
+          ? Number(pub.catalogProduct.provider.listDiscountPercent)
+          : 0,
       },
       rules
     );

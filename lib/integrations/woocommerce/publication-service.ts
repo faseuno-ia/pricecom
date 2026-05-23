@@ -51,7 +51,10 @@ export async function publishProductToWoo(
 ): Promise<PublishResult> {
   const product = await prisma.catalogProduct.findUnique({
     where: { id: catalogProductId },
-    include: { categories: { select: { categoryId: true } } },
+    include: {
+      categories: { select: { categoryId: true } },
+      provider: { select: { listDiscountPercent: true } },
+    },
   });
   if (!product) return { success: false, error: "Producto no encontrado" };
 
@@ -62,6 +65,9 @@ export async function publishProductToWoo(
       finalPrice: product.finalPrice,
       assignedCategoryId: product.assignedCategoryId,
       providerId: product.providerId,
+      listDiscountPercent: product.provider.listDiscountPercent
+        ? Number(product.provider.listDiscountPercent)
+        : 0,
     },
     rules
   );

@@ -62,6 +62,11 @@ export interface CatalogProductDetail {
     ruleApplied: "manual" | "category" | "provider" | "global" | "none";
     ruleName: string | null;
     ruleId: string | null;
+    /// Si el proveedor tiene descuento sobre lista, estos campos permiten
+    /// mostrar el desglose: precio lista → descuento → costo real → margen.
+    listDiscountPercent?: number;
+    effectiveCost?: number | null;
+    wholesalePrice?: number | null;
   };
 }
 
@@ -658,17 +663,60 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                   product.finalPrice != null &&
                   calc != null &&
                   Math.abs(product.finalPrice - calc) > 0.005;
+                const discount = product.pricing?.listDiscountPercent ?? 0;
+                const effCost = product.pricing?.effectiveCost ?? null;
+                const hasDiscount =
+                  discount > 0 &&
+                  product.wholesalePrice != null &&
+                  effCost != null;
                 return (
                   <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-2 text-xs">
-                    {/* Costo */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Costo mayorista</span>
-                      <span className="font-mono">
-                        {product.wholesalePrice != null
-                          ? formatPrice(product.wholesalePrice)
-                          : "—"}
-                      </span>
-                    </div>
+                    {/* Costo — con desglose si el proveedor da descuento sobre lista */}
+                    {hasDiscount ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            Precio lista
+                          </span>
+                          <span className="font-mono">
+                            {formatPrice(product.wholesalePrice as number)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            Desc. proveedor
+                          </span>
+                          <span className="font-mono text-amber-300">
+                            −
+                            {(discount % 1 === 0
+                              ? discount.toFixed(0)
+                              : discount.toFixed(1))}
+                            % ({formatPrice(
+                              (product.wholesalePrice as number) -
+                                (effCost as number)
+                            )}
+                            )
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1 border-t border-border/40">
+                          <span className="text-muted-foreground font-medium">
+                            Costo real
+                          </span>
+                          <span className="font-mono font-medium">
+                            {formatPrice(effCost as number)}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Costo mayorista</span>
+                        <span className="font-mono">
+                          {product.wholesalePrice != null
+                            ? formatPrice(product.wholesalePrice)
+                            : "—"}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Precio sugerido (motor) */}
                     <div className="pt-2 border-t border-border space-y-1">

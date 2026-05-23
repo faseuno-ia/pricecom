@@ -16,6 +16,7 @@ interface ProviderFormProps {
     username: string | null;
     isActive: boolean;
     notes: string | null;
+    listDiscountPercent?: number;
   };
 }
 
@@ -55,6 +56,7 @@ export function ProviderForm({ provider }: ProviderFormProps) {
     password: "",
     isActive: provider?.isActive ?? true,
     notes: provider?.notes ?? "",
+    listDiscountPercent: provider?.listDiscountPercent ?? 0,
   });
 
   const [loading, setLoading] = useState(false);
@@ -199,6 +201,32 @@ export function ProviderForm({ provider }: ProviderFormProps) {
           )}
         </>
       )}
+
+      {/* Condiciones comerciales */}
+      <div className="space-y-4 p-4 bg-muted/20 border border-border rounded-xl">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Condiciones comerciales
+        </p>
+        <div>
+          <label className={labelCls}>Descuento sobre lista (%)</label>
+          <input
+            className={`${inputCls} max-w-[160px]`}
+            type="number"
+            min={0}
+            max={100}
+            step={0.1}
+            value={form.listDiscountPercent}
+            onChange={(e) =>
+              set("listDiscountPercent", Number(e.target.value) || 0)
+            }
+            placeholder="0"
+          />
+          <p className="text-[11px] text-muted-foreground mt-1.5">
+            Se aplica al precio extraído antes de calcular el precio de venta.
+            No modifica el precio original de la lista.
+          </p>
+        </div>
+      </div>
 
       <div>
         <label className={labelCls}>Notas internas</label>

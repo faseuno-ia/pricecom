@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/client";
 import { providerSchema } from "@/lib/utils/schemas";
 import { encrypt } from "@/lib/utils/crypto";
 import { requireSession } from "@/lib/auth";
+import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 
 // Verifica que el provider exista Y pertenezca al usuario logueado.
 // Centralizado acá para no repetir el check en cada handler.
@@ -51,6 +52,28 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     where: { id: params.id },
     data: updateData,
   });
+
+  // Si cambió el descuento sobre lista, marcamos como drift las publications
+  // ACTIVE de este provider — el precio efectivo se va a recalcular distinto
+  // y conviene que el usuario pushee a la tienda. markPublicationsDrift ya
+  // hace la comparación inteligente con priceInStore (solo marca si la
+  // diferencia es > $0.50).
+  const oldDiscount = existing.listDiscountPercent
+    ? Number(existing.listDiscountPercent)
+    : 0;
+  const newDiscount = data.listDiscountPercent ?? 0;
+  if (oldDiscount !== newDiscount) {
+    const affected = await prisma.catalogProduct.findMany({
+      where: { providerId: params.id, userId: session.user.id },
+      select: { id: true },
+    });
+    if (affected.length > 0) {
+      await markPublicationsDrift(
+        prisma,
+        affected.map((p) => p.id)
+      );
+    }
+  }
 
   const { encryptedPassword: _, ...safe } = provider;
   return NextResponse.json(safe);
