@@ -19,6 +19,7 @@
     "catalog:clean-stock": "npx tsx scripts/clean-stock-values.ts",
     "catalog:backfill-categories": "npx tsx scripts/backfill-product-categories.ts",
     "fix:prepared-removed": "tsx scripts/fix-prepared-supplier-removed.ts",
+    "fix:outdated-residual": "tsx scripts/fix-outdated-residual.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
