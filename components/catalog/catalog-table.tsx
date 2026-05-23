@@ -30,7 +30,6 @@ import {
   PackagePlus,
   PackageMinus,
   Globe,
-  Info,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -44,6 +43,7 @@ import {
   VISUAL_STATUS_ORDER,
   type VisualStatus,
 } from "@/lib/catalog/visual-status";
+import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
 type InternalStatus =
@@ -167,7 +167,6 @@ export function CatalogTable({
   const [visualStatusFilter, setVisualStatusFilter] = useState<
     VisualStatus | "all"
   >("all");
-  const [statusHelpOpen, setStatusHelpOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceType | "all">(
     initialSourceType ?? "all"
   );
@@ -1003,7 +1002,7 @@ export function CatalogTable({
           <option value="SUPPLIER_REMOVED">Removido por proveedor</option>
         </select>
 
-        <div className="relative inline-flex items-center gap-1">
+        <div className="inline-flex items-center gap-1">
           <select
             value={visualStatusFilter}
             onChange={(e) =>
@@ -1018,35 +1017,7 @@ export function CatalogTable({
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => setStatusHelpOpen((v) => !v)}
-            onBlur={() => setTimeout(() => setStatusHelpOpen(false), 150)}
-            className="p-1 text-muted-foreground hover:text-foreground"
-            aria-label="Ver descripción de cada estado"
-            title="Qué significa cada estado"
-          >
-            <Info className="w-3.5 h-3.5" />
-          </button>
-          {statusHelpOpen && (
-            <div className="absolute z-30 top-full mt-2 left-0 w-80 bg-card border border-border rounded-lg shadow-xl p-3 text-xs space-y-2">
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold pb-1 border-b border-border">
-                Qué significa cada estado
-              </p>
-              {VISUAL_STATUS_ORDER.map((s) => (
-                <div key={s} className="space-y-0.5">
-                  <span
-                    className={`inline-block text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${visualStatusConfig[s].className}`}
-                  >
-                    {visualStatusConfig[s].label}
-                  </span>
-                  <p className="text-muted-foreground leading-snug">
-                    {visualStatusDescriptions[s]}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
+          <StatusHelpModal />
         </div>
 
         <select

@@ -28,6 +28,10 @@ import {
 } from "lucide-react";
 import type { ProviderType } from "@prisma/client";
 import { normalizeImageUrl } from "@/lib/utils";
+import {
+  deriveVisualStatus,
+  visualStatusConfig,
+} from "@/lib/catalog/visual-status";
 
 const typeBadge: Record<
   ProviderType,
@@ -55,28 +59,8 @@ const typeBadge: Record<
   },
 };
 
-const internalBadge: Record<string, { label: string; cls: string }> = {
-  NOT_PUBLISHED: {
-    label: "Sin publicar",
-    cls: "bg-muted/40 text-muted-foreground border-border",
-  },
-  PREPARED: {
-    label: "Preparado",
-    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  },
-  PUBLISHED: {
-    label: "Publicado",
-    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  },
-  PAUSED: {
-    label: "Pausado",
-    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  },
-  IGNORED: {
-    label: "Ignorado",
-    cls: "bg-muted/30 text-muted-foreground border-border",
-  },
-};
+// Badges del estado del producto: deriveVisualStatus + visualStatusConfig
+// (lib/catalog/visual-status.ts). Misma fuente de verdad que /catalog.
 
 export default async function ProviderDashboardPage({
   params,
@@ -152,6 +136,11 @@ export default async function ProviderDashboardPage({
         images: {
           where: { isPrimary: true },
           select: { url: true },
+          take: 1,
+        },
+        publications: {
+          where: { status: "ACTIVE" },
+          select: { pendingSync: true, syncStatus: true },
           take: 1,
         },
       },
@@ -554,7 +543,13 @@ export default async function ProviderDashboardPage({
           <div className="divide-y divide-border">
             {catalogProducts.map((p) => {
               const img = normalizeImageUrl(p.images[0]?.url ?? p.imageUrl);
-              const badge = internalBadge[p.internalStatus];
+              const visualStatus = deriveVisualStatus({
+                internalStatus: p.internalStatus,
+                supplierStatus: p.supplierStatus,
+                pendingSync: p.publications[0]?.pendingSync,
+                syncStatus: p.publications[0]?.syncStatus,
+              });
+              const badge = visualStatusConfig[visualStatus];
               return (
                 <div
                   key={p.id}
@@ -590,13 +585,11 @@ export default async function ProviderDashboardPage({
                       ? `$${Math.round(p.wholesalePrice).toLocaleString("es-AR")}`
                       : "—"}
                   </span>
-                  {badge && (
-                    <span
-                      className={`text-[10px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${badge.cls}`}
-                    >
-                      {badge.label}
-                    </span>
-                  )}
+                  <span
+                    className={`text-[10px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${badge.className}`}
+                  >
+                    {badge.label}
+                  </span>
                 </div>
               );
             })}

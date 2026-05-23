@@ -117,7 +117,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       provider: { select: { id: true, name: true, baseUrl: true } },
       images: { orderBy: { position: "asc" } },
       assignedCategory: { select: { id: true, name: true } },
-      publications: { select: { status: true, storeId: true } },
+      publications: {
+        select: {
+          status: true,
+          storeId: true,
+          pendingSync: true,
+          syncStatus: true,
+        },
+      },
     },
   });
 

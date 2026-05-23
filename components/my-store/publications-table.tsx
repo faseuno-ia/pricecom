@@ -15,6 +15,8 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { PublicationDrawer, type PubDetail } from "./publication-drawer";
+import { visualStatusConfig } from "@/lib/catalog/visual-status";
+import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 type PubStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "REMOVED" | "ERROR";
 type SyncStatus =
@@ -69,13 +71,34 @@ const statusBadgeFor: Record<PubStatus, { label: string; cls: string }> = {
   ERROR: { label: "Error", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
 };
 
+// Badges de sync reutilizan los colores de visualStatusConfig (PUBLISHED ↔
+// emerald = "Sincronizado", OUTDATED ↔ violet, PAUSED ↔ amber). Errores y
+// estados intermedios mantienen labels específicos del flujo de sync.
 const syncBadgeFor: Record<SyncStatus, { label: string; cls: string }> = {
-  READY: { label: "Listo", cls: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
-  PENDING_SYNC: { label: "Pend. sync", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
-  SYNCED: { label: "Sincronizado", cls: "bg-green-500/15 text-green-300 border-green-500/30" },
-  OUTDATED: { label: "Desactualizado", cls: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
-  ERROR: { label: "Error sync", cls: "bg-red-500/15 text-red-300 border-red-500/30" },
-  PAUSED: { label: "Pausado", cls: "bg-muted/30 text-muted-foreground border-border" },
+  READY: {
+    label: "Listo",
+    cls: visualStatusConfig.NOT_PUBLISHED.className,
+  },
+  PENDING_SYNC: {
+    label: "Pend. sync",
+    cls: visualStatusConfig.PAUSED.className,
+  },
+  SYNCED: {
+    label: "Sincronizado",
+    cls: visualStatusConfig.PUBLISHED.className,
+  },
+  OUTDATED: {
+    label: "Desactualizado",
+    cls: visualStatusConfig.OUTDATED.className,
+  },
+  ERROR: {
+    label: "Error sync",
+    cls: "bg-red-500/15 text-red-300 border-red-500/30",
+  },
+  PAUSED: {
+    label: "Pausado",
+    cls: visualStatusConfig.PAUSED.className,
+  },
 };
 
 const FILTER_LABELS: Record<Filter, string> = {
@@ -219,6 +242,10 @@ export function PublicationsTable() {
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
+          <StatusHelpModal
+            triggerLabel="Guía de estados"
+            statuses={["PUBLISHED", "OUTDATED", "PAUSED", "SIN_STOCK"]}
+          />
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input

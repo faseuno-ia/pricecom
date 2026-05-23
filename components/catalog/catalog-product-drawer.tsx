@@ -16,6 +16,12 @@ import {
 import { formatPrice, normalizeImageUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
+import {
+  deriveVisualStatus,
+  visualStatusConfig,
+  visualStatusDescriptions,
+} from "@/lib/catalog/visual-status";
+import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 export interface CatalogProductDetail {
   id: string;
@@ -42,7 +48,13 @@ export interface CatalogProductDetail {
   provider: { id: string; name: string; baseUrl: string };
   images: { id: string; url: string; isPrimary: boolean; source: string }[];
   assignedCategory: { id: string; name: string } | null;
-  publications: { status: string; storeId: string }[];
+  publications: {
+    status: string;
+    storeId: string;
+    pendingSync?: boolean;
+    syncStatus?: string | null;
+  }[];
+  internalStatus?: string;
   pricing?: {
     calculatedPrice: number | null;
     effectivePrice: number | null;
@@ -500,8 +512,53 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
               )}
             </div>
 
+            {/* Estado del producto — visualStatus derivado */}
+            {(() => {
+              const activePub = product.publications.find(
+                (p) => p.status === "ACTIVE"
+              );
+              const vStatus = deriveVisualStatus({
+                internalStatus: product.internalStatus ?? "NOT_PUBLISHED",
+                supplierStatus: product.supplierStatus,
+                pendingSync: activePub?.pendingSync,
+                syncStatus: activePub?.syncStatus,
+              });
+              const vCfg = visualStatusConfig[vStatus];
+              const extra =
+                vStatus === "SIN_STOCK"
+                  ? "El proveedor dejó de tener este producto. Podés reactivarlo manualmente cuando vuelva a estar disponible."
+                  : vStatus === "OUTDATED"
+                    ? "Hay cambios pendientes de sincronizar con WooCommerce."
+                    : null;
+              return (
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                      Estado del producto
+                    </p>
+                    <StatusHelpModal triggerLabel="Guía de estados" />
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`inline-flex items-center text-xs px-2.5 py-1 rounded-full border font-medium ${vCfg.className}`}
+                    >
+                      {vCfg.label}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {visualStatusDescriptions[vStatus]}
+                  </p>
+                  {extra && (
+                    <p className="text-xs text-muted-foreground/80 italic leading-relaxed">
+                      {extra}
+                    </p>
+                  )}
+                </section>
+              );
+            })()}
+
             {/* Datos del proveedor (readonly) */}
-            <section className="space-y-2">
+            <section className="space-y-2 border-t border-border pt-4">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
                 Datos del proveedor
               </p>

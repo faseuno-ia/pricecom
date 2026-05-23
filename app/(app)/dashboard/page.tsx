@@ -417,7 +417,7 @@ export default async function DashboardPage() {
     },
     {
       id: "own_stock_no_supplier",
-      label: "Stock propio sin reposición del proveedor",
+      label: "Stock propio sin stock del proveedor",
       count: stats.ownStockWithoutSupplier,
       severity: "warning",
       href: "/catalog?stockSource=OWN&supplierStatus=SUPPLIER_REMOVED",
@@ -433,7 +433,7 @@ export default async function DashboardPage() {
     },
     {
       id: "pending_sync",
-      label: "Publicaciones pendientes de sync",
+      label: "Publicaciones desactualizadas",
       count: stats.storeKpis?.pendingSync ?? 0,
       severity: "info",
       href: "/my-store",
@@ -664,9 +664,9 @@ export default async function DashboardPage() {
               {[
                 { label: "Publicadas", value: stats.storeKpis?.active ?? 0, cls: "" },
                 {
-                  label: "Pend. sync",
+                  label: "Desactualizadas",
                   value: stats.storeKpis?.pendingSync ?? 0,
-                  cls: (stats.storeKpis?.pendingSync ?? 0) > 0 ? "text-amber-400" : "",
+                  cls: (stats.storeKpis?.pendingSync ?? 0) > 0 ? "text-violet-400" : "",
                 },
                 {
                   label: "Errores",
