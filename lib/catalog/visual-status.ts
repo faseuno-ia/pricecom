@@ -20,21 +20,39 @@ export interface VisualStatusInput {
 }
 
 export function deriveVisualStatus(p: VisualStatusInput): VisualStatus {
-  if (p.internalStatus === "IGNORED") return "IGNORED";
-  if (p.internalStatus === "PAUSED") return "PAUSED";
-  if (p.supplierStatus === "SUPPLIER_REMOVED") return "SIN_STOCK";
-  if (p.internalStatus === "NOT_PUBLISHED") return "NOT_PUBLISHED";
-  if (p.internalStatus === "PREPARED") return "PREPARED";
-  // internalStatus = PUBLISHED a esta altura. Si la publication está
-  // desincronizada (pendingSync o syncStatus != SYNCED/READY) marcamos
-  // OUTDATED — el usuario ve drift sin tener que mirar el detalle.
+  // 1. OUTDATED — máxima prioridad: si hay drift pendiente sobre una
+  //    publicación viva, el usuario tiene que verlo aunque el proveedor
+  //    haya removido el producto o el item esté pausado, porque hay
+  //    cambios sin pushear.
   if (
-    p.pendingSync ||
-    (p.syncStatus && p.syncStatus !== "SYNCED" && p.syncStatus !== "READY")
+    p.internalStatus === "PUBLISHED" &&
+    (p.pendingSync ||
+      (p.syncStatus && p.syncStatus !== "SYNCED" && p.syncStatus !== "READY"))
   ) {
     return "OUTDATED";
   }
-  return "PUBLISHED";
+
+  // 2. SIN_STOCK — gana sobre PAUSED. Si el proveedor removió el producto,
+  //    "Sin stock" es la información comercialmente relevante, no la causa
+  //    interna (pausa automática vs manual).
+  if (p.supplierStatus === "SUPPLIER_REMOVED") return "SIN_STOCK";
+
+  // 3. PAUSED — pausa manual/intencional del usuario, con proveedor activo.
+  if (p.internalStatus === "PAUSED") return "PAUSED";
+
+  // 4. PUBLISHED — sincronizado y disponible.
+  if (p.internalStatus === "PUBLISHED") return "PUBLISHED";
+
+  // 5. PREPARED — listo para publicar, todavía no fue enviado a la tienda.
+  if (p.internalStatus === "PREPARED") return "PREPARED";
+
+  // 6. NOT_PUBLISHED — no se preparó ni se publicó.
+  if (p.internalStatus === "NOT_PUBLISHED") return "NOT_PUBLISHED";
+
+  // 7. IGNORED — fallback. Solo aplica cuando el proveedor no removió el
+  //    producto (caso contrario gana SIN_STOCK), porque "olvidá esto" es
+  //    una decisión que pierde sentido si el item ya no existe afuera.
+  return "IGNORED";
 }
 
 export const visualStatusConfig: Record<

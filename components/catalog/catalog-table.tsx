@@ -1260,9 +1260,13 @@ export function CatalogTable({
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);
+                  // Opacidad reducida basada en el estado visual derivado:
+                  // SIN_STOCK (proveedor removió el item) e IGNORED (el usuario
+                  // lo descartó). Los PAUSED manuales se ven normales — el
+                  // badge alcanza para identificarlos.
                   const isInactive =
-                    p.supplierStatus === "SUPPLIER_REMOVED" ||
-                    p.internalStatus === "IGNORED";
+                    visualStatus === "SIN_STOCK" ||
+                    visualStatus === "IGNORED";
                   // El "precio de venta" se destaca cuando el producto está
                   // PREPARED (listo para publicar) o ya PUBLISHED; en otros
                   // estados queda muted para no robar atención.
