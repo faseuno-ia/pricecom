@@ -24,7 +24,6 @@ import {
   Boxes,
   ChevronDown,
   ImageOff,
-  FolderMinus,
   Tag,
 } from "lucide-react";
 import type { ProviderType } from "@prisma/client";
@@ -131,7 +130,7 @@ export default async function ProviderDashboardPage({
     catalogTotal,
     withPrice,
     withoutImage,
-    withoutCategory,
+    publishedInStore,
     lastJob,
     lastExcelJob,
     extractionJobsTotal,
@@ -170,11 +169,16 @@ export default async function ProviderDashboardPage({
         images: { none: {} },
       },
     }),
-    prisma.catalogProduct.count({
+    // Publications ACTIVE de este provider: cuenta cuántos productos del
+    // proveedor están publicados en alguna tienda (status=ACTIVE en la
+    // ProductPublication). Multi-store-safe (cuenta cada publication).
+    prisma.productPublication.count({
       where: {
-        ...catalogWhere,
-        assignedCategoryId: null,
-        categories: { none: {} },
+        catalogProduct: {
+          providerId: provider.id,
+          userId: session.user.id,
+        },
+        status: "ACTIVE",
       },
     }),
     hasExtractionHistory
@@ -238,6 +242,7 @@ export default async function ProviderDashboardPage({
     value: number;
     icon: typeof Package;
     tone: string;
+    href?: string;
   }[] = [
     {
       label: "Productos activos",
@@ -258,10 +263,11 @@ export default async function ProviderDashboardPage({
       tone: "text-amber-400",
     },
     {
-      label: "Sin categoría",
-      value: withoutCategory,
-      icon: FolderMinus,
-      tone: "text-orange-400",
+      label: "Publicados en tienda",
+      value: publishedInStore,
+      icon: Globe,
+      tone: "text-emerald-400",
+      href: `/catalog?providerId=${provider.id}&internalStatus=PUBLISHED`,
     },
   ];
 
@@ -397,10 +403,14 @@ export default async function ProviderDashboardPage({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {kpis.map((k) => {
           const Icon = k.icon;
-          return (
+          const isClickable = k.href && k.value > 0;
+          const card = (
             <div
-              key={k.label}
-              className="bg-card border border-border rounded-xl p-4"
+              className={`bg-card border border-border rounded-xl p-4 ${
+                isClickable
+                  ? "hover:border-primary/40 hover:bg-muted/20 transition-colors cursor-pointer"
+                  : ""
+              }`}
             >
               <div className="flex items-center gap-1.5 text-muted-foreground">
                 <Icon className={`w-3.5 h-3.5 ${k.tone}`} />
@@ -412,6 +422,13 @@ export default async function ProviderDashboardPage({
                 {k.value.toLocaleString("es-AR")}
               </p>
             </div>
+          );
+          return isClickable ? (
+            <Link key={k.label} href={k.href!}>
+              {card}
+            </Link>
+          ) : (
+            <div key={k.label}>{card}</div>
           );
         })}
       </div>
