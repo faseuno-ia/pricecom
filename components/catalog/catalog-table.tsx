@@ -30,12 +30,20 @@ import {
   PackagePlus,
   PackageMinus,
   Globe,
+  Info,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 import { ApplyMarginModal } from "./apply-margin-modal";
 import { CategoryBulkModal } from "./category-bulk-modal";
 import { usePinnedActions } from "@/lib/hooks/use-pinned-actions";
+import {
+  deriveVisualStatus,
+  visualStatusConfig,
+  visualStatusDescriptions,
+  VISUAL_STATUS_ORDER,
+  type VisualStatus,
+} from "@/lib/catalog/visual-status";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
 type InternalStatus =
@@ -44,7 +52,6 @@ type InternalStatus =
   | "PUBLISHED"
   | "PAUSED"
   | "IGNORED";
-type PubStatusFilter = "ALL" | "NONE" | "DRAFT" | "ACTIVE" | "PAUSED";
 type StatusBulkAction = "ignore" | "restore" | "prepare" | "pause";
 type SourceType = "SCRAPED" | "MANUAL" | "IMPORTED";
 type StockSource = "SUPPLIER" | "OWN" | "HYBRID";
@@ -80,6 +87,8 @@ interface CatalogRow {
     status: string;
     storeId: string;
     externalProductId: string | null;
+    pendingSync: boolean;
+    syncStatus: string | null;
   }[];
   pricing?: {
     calculatedPrice: number | null;
@@ -136,45 +145,9 @@ const originLabel: Record<RuleOrigin, string> = {
   none: "Sin regla",
 };
 
-const supplierBadgeFor: Record<
-  SupplierStatus,
-  { label: string; cls: string; tooltip: string }
-> = {
-  ACTIVE: {
-    label: "Activo",
-    cls: "bg-accent/15 text-accent border-accent/30",
-    tooltip: "El proveedor sigue mostrando este producto",
-  },
-  SUPPLIER_REMOVED: {
-    label: "Removido",
-    cls: "bg-red-500/15 text-red-300 border-red-500/30",
-    tooltip:
-      "Este producto ya no aparece en el proveedor. La publicación puede pausarse automáticamente según el origen del stock.",
-  },
-};
-
-const internalBadgeFor: Record<InternalStatus, { label: string; cls: string }> = {
-  NOT_PUBLISHED: {
-    label: "Sin pub.",
-    cls: "bg-muted/40 text-muted-foreground border-border",
-  },
-  PREPARED: {
-    label: "Preparado",
-    cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  },
-  PUBLISHED: {
-    label: "Publicado",
-    cls: "bg-green-500/15 text-green-300 border-green-500/30",
-  },
-  PAUSED: {
-    label: "Pausado",
-    cls: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  },
-  IGNORED: {
-    label: "Ignorado",
-    cls: "bg-muted/30 text-muted-foreground/70 border-border",
-  },
-};
+// Badges del catálogo: ver lib/catalog/visual-status.ts. La columna única
+// "Estado" muestra el VisualStatus derivado de internalStatus + supplierStatus
+// + el estado de sync de las publications.
 
 export function CatalogTable({
   providers,
@@ -188,10 +161,13 @@ export function CatalogTable({
   const [supplierStatus, setSupplierStatus] = useState<SupplierStatus | "all">(
     initialSupplierStatus ?? "all"
   );
-  const [internalStatus, setInternalStatus] = useState<InternalStatus | "all">(
-    "all"
-  );
-  const [pubFilter, setPubFilter] = useState<PubStatusFilter>("ALL");
+  // Filtro unificado: estado visual derivado (Sin publicar / Preparado /
+  // Publicado / Desactualizado / Sin stock / Pausado / Ignorado). Reemplaza
+  // los dos filtros viejos de internalStatus + publicationStatus.
+  const [visualStatusFilter, setVisualStatusFilter] = useState<
+    VisualStatus | "all"
+  >("all");
+  const [statusHelpOpen, setStatusHelpOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceType | "all">(
     initialSourceType ?? "all"
   );
@@ -232,8 +208,7 @@ export function CatalogTable({
     search,
     providerId,
     supplierStatus,
-    internalStatus,
-    pubFilter,
+    visualStatusFilter,
     sourceFilter,
     stockSourceFilter,
     noImage,
@@ -250,8 +225,7 @@ export function CatalogTable({
     search,
     providerId,
     supplierStatus,
-    internalStatus,
-    pubFilter,
+    visualStatusFilter,
     sourceFilter,
     stockSourceFilter,
     noImage,
@@ -265,7 +239,9 @@ export function CatalogTable({
       ...(search.trim() ? { search: search.trim() } : {}),
       ...(providerId !== "all" ? { providerId } : {}),
       ...(supplierStatus !== "all" ? { supplierStatus } : {}),
-      ...(internalStatus !== "all" ? { internalStatus } : {}),
+      ...(visualStatusFilter !== "all"
+        ? { visualStatus: visualStatusFilter }
+        : {}),
       ...(sourceFilter !== "all" ? { sourceType: sourceFilter } : {}),
       ...(stockSourceFilter !== "all" ? { stockSource: stockSourceFilter } : {}),
       ...(noImage ? { noImage: true } : {}),
@@ -276,7 +252,7 @@ export function CatalogTable({
       search,
       providerId,
       supplierStatus,
-      internalStatus,
+      visualStatusFilter,
       sourceFilter,
       stockSourceFilter,
       noImage,
@@ -301,9 +277,8 @@ export function CatalogTable({
         if (providerId !== "all") params.set("providerId", providerId);
         if (supplierStatus !== "all")
           params.set("supplierStatus", supplierStatus);
-        if (internalStatus !== "all")
-          params.set("internalStatus", internalStatus);
-        if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
+        if (visualStatusFilter !== "all")
+          params.set("visualStatus", visualStatusFilter);
         if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
         if (stockSourceFilter !== "all")
           params.set("stockSource", stockSourceFilter);
@@ -334,8 +309,7 @@ export function CatalogTable({
     search,
     providerId,
     supplierStatus,
-    internalStatus,
-    pubFilter,
+    visualStatusFilter,
     sourceFilter,
     stockSourceFilter,
     noImage,
@@ -421,8 +395,8 @@ export function CatalogTable({
       if (search.trim()) params.set("search", search.trim());
       if (providerId !== "all") params.set("providerId", providerId);
       if (supplierStatus !== "all") params.set("supplierStatus", supplierStatus);
-      if (internalStatus !== "all") params.set("internalStatus", internalStatus);
-      if (pubFilter !== "ALL") params.set("publicationStatus", pubFilter);
+      if (visualStatusFilter !== "all")
+        params.set("visualStatus", visualStatusFilter);
       if (sourceFilter !== "all") params.set("sourceType", sourceFilter);
       if (stockSourceFilter !== "all")
         params.set("stockSource", stockSourceFilter);
@@ -1029,32 +1003,51 @@ export function CatalogTable({
           <option value="SUPPLIER_REMOVED">Removido por proveedor</option>
         </select>
 
-        <select
-          value={internalStatus}
-          onChange={(e) =>
-            setInternalStatus(e.target.value as InternalStatus | "all")
-          }
-          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
-        >
-          <option value="all">Estado interno: Todos</option>
-          <option value="NOT_PUBLISHED">Sin publicar</option>
-          <option value="PREPARED">Preparado</option>
-          <option value="PUBLISHED">Publicado</option>
-          <option value="PAUSED">Pausado</option>
-          <option value="IGNORED">Ignorado</option>
-        </select>
-
-        <select
-          value={pubFilter}
-          onChange={(e) => setPubFilter(e.target.value as PubStatusFilter)}
-          className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
-        >
-          <option value="ALL">Estado pub.: Todos</option>
-          <option value="NONE">Sin publicar</option>
-          <option value="DRAFT">Borrador</option>
-          <option value="ACTIVE">Activo</option>
-          <option value="PAUSED">Pausado</option>
-        </select>
+        <div className="relative inline-flex items-center gap-1">
+          <select
+            value={visualStatusFilter}
+            onChange={(e) =>
+              setVisualStatusFilter(e.target.value as VisualStatus | "all")
+            }
+            className="text-xs bg-background border border-border rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+          >
+            <option value="all">Estado: Todos</option>
+            {VISUAL_STATUS_ORDER.map((s) => (
+              <option key={s} value={s}>
+                {visualStatusConfig[s].label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setStatusHelpOpen((v) => !v)}
+            onBlur={() => setTimeout(() => setStatusHelpOpen(false), 150)}
+            className="p-1 text-muted-foreground hover:text-foreground"
+            aria-label="Ver descripción de cada estado"
+            title="Qué significa cada estado"
+          >
+            <Info className="w-3.5 h-3.5" />
+          </button>
+          {statusHelpOpen && (
+            <div className="absolute z-30 top-full mt-2 left-0 w-80 bg-card border border-border rounded-lg shadow-xl p-3 text-xs space-y-2">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold pb-1 border-b border-border">
+                Qué significa cada estado
+              </p>
+              {VISUAL_STATUS_ORDER.map((s) => (
+                <div key={s} className="space-y-0.5">
+                  <span
+                    className={`inline-block text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${visualStatusConfig[s].className}`}
+                  >
+                    {visualStatusConfig[s].label}
+                  </span>
+                  <p className="text-muted-foreground leading-snug">
+                    {visualStatusDescriptions[s]}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         <select
           value={stockSourceFilter}
@@ -1242,15 +1235,9 @@ export function CatalogTable({
                 </th>
                 <th
                   className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
-                  style={{ minWidth: 110 }}
+                  style={{ minWidth: 140 }}
                 >
-                  Est. Prov.
-                </th>
-                <th
-                  className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
-                  style={{ minWidth: 100 }}
-                >
-                  Est. Interno
+                  Estado
                 </th>
                 <th
                   className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap"
@@ -1263,7 +1250,7 @@ export function CatalogTable({
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
                     Cargando catálogo...
                   </td>
@@ -1271,7 +1258,7 @@ export function CatalogTable({
               )}
               {!loading && data.products.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
                     <Search className="w-6 h-6 mx-auto mb-2 opacity-30" />
                     Sin productos para los filtros aplicados
                   </td>
@@ -1279,8 +1266,20 @@ export function CatalogTable({
               )}
               {!loading &&
                 data.products.map((p) => {
-                  const sBadge = supplierBadgeFor[p.supplierStatus];
-                  const iBadge = internalBadgeFor[p.internalStatus];
+                  const anyDrift = p.publications.some(
+                    (pub) =>
+                      pub.pendingSync ||
+                      (pub.syncStatus &&
+                        pub.syncStatus !== "SYNCED" &&
+                        pub.syncStatus !== "READY")
+                  );
+                  const visualStatus = deriveVisualStatus({
+                    internalStatus: p.internalStatus,
+                    supplierStatus: p.supplierStatus,
+                    pendingSync: anyDrift,
+                  });
+                  const vBadge = visualStatusConfig[visualStatus];
+                  const vDescription = visualStatusDescriptions[visualStatus];
                   const effPrice = p.pricing?.effectivePrice ?? null;
                   const origin: RuleOrigin = p.pricing?.ruleApplied ?? "none";
                   const enginePct = p.pricing?.marginPercent ?? null;
@@ -1420,17 +1419,10 @@ export function CatalogTable({
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span
-                          title={sBadge.tooltip}
-                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${sBadge.cls}`}
+                          title={vDescription}
+                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
                         >
-                          {sBadge.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${iBadge.cls}`}
-                        >
-                          {iBadge.label}
+                          {vBadge.label}
                         </span>
                       </td>
                       <td className="px-3 py-2 relative">
