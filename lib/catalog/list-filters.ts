@@ -42,37 +42,69 @@ const VALID_VISUAL: VisualStatus[] = [
 
 // Traduce un VisualStatus al fragmento de Prisma where correspondiente.
 // Cada estado visual deriva de combinaciones específicas de internalStatus +
-// supplierStatus + estado de sync de las publications. Mantener acá la
-// fuente de verdad evita que UI y backend diverjan.
+// supplierStatus + estado de sync de las publications. Tiene que reflejar
+// la misma prioridad que `deriveVisualStatus` en visual-status.ts para que
+// el badge y el filtro coincidan:
+//   OUTDATED > SIN_STOCK > PAUSED > PUBLISHED > PREPARED > NOT_PUBLISHED > IGNORED
 function visualStatusToWhere(
   s: VisualStatus
 ): Prisma.CatalogProductWhereInput {
   switch (s) {
-    case "NOT_PUBLISHED":
-      return { internalStatus: "NOT_PUBLISHED" };
+    case "OUTDATED":
+      // PUBLISHED con drift pendiente. Sin restringir supplierStatus: si el
+      // proveedor removió el producto pero todavía hay un push sin pushear,
+      // el usuario tiene que verlo aquí.
+      return {
+        internalStatus: "PUBLISHED",
+        publications: {
+          some: {
+            OR: [
+              { pendingSync: true },
+              { syncStatus: { notIn: ["SYNCED", "READY"] } },
+            ],
+          },
+        },
+      };
+    case "SIN_STOCK":
+      // El proveedor removió el producto. Cubre PAUSED+SUPPLIER_REMOVED,
+      // NOT_PUBLISHED+SUPPLIER_REMOVED, etc. IGNORED queda excluido porque
+      // tiene su propio filtro.
+      return {
+        supplierStatus: "SUPPLIER_REMOVED",
+        internalStatus: { notIn: ["IGNORED"] },
+      };
+    case "PAUSED":
+      // Pausa manual estricta: proveedor todavía activo. Productos pausados
+      // automáticamente por el worker (porque el proveedor los removió)
+      // entran en SIN_STOCK, no acá.
+      return {
+        internalStatus: "PAUSED",
+        supplierStatus: { not: "SUPPLIER_REMOVED" },
+      };
+    case "PUBLISHED":
+      // Sincronizado y disponible: PUBLISHED + proveedor activo + sin drift.
+      return {
+        internalStatus: "PUBLISHED",
+        supplierStatus: { not: "SUPPLIER_REMOVED" },
+        publications: {
+          none: {
+            OR: [
+              { pendingSync: true },
+              { syncStatus: { notIn: ["SYNCED", "READY"] } },
+            ],
+          },
+        },
+      };
     case "PREPARED":
       return {
         internalStatus: "PREPARED",
         supplierStatus: { not: "SUPPLIER_REMOVED" },
       };
-    case "PUBLISHED":
+    case "NOT_PUBLISHED":
       return {
-        internalStatus: "PUBLISHED",
+        internalStatus: "NOT_PUBLISHED",
         supplierStatus: { not: "SUPPLIER_REMOVED" },
-        publications: { none: { pendingSync: true } },
       };
-    case "OUTDATED":
-      return {
-        internalStatus: "PUBLISHED",
-        publications: { some: { pendingSync: true } },
-      };
-    case "SIN_STOCK":
-      return {
-        supplierStatus: "SUPPLIER_REMOVED",
-        internalStatus: { notIn: ["PAUSED", "IGNORED"] },
-      };
-    case "PAUSED":
-      return { internalStatus: "PAUSED" };
     case "IGNORED":
       return { internalStatus: "IGNORED" };
   }
