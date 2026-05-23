@@ -17,12 +17,17 @@ interface Props {
   publicationsTotal: number;
   unmatchedCount: number;
   categories: CategoryOpt[];
+  /// Total de StoreCategory (categorías importadas desde la tienda externa).
+  /// Es lo que efectivamente muestra la tab Categorías y la barra superior.
+  /// `categories` arriba refiere a las Category internas de PricEcom (sugerencias).
+  categoriesTotal: number;
 }
 
 export function MyStoreTabs({
   publicationsTotal,
   unmatchedCount: initialUnmatchedCount,
   categories,
+  categoriesTotal,
 }: Props) {
   const [tab, setTab] = useState<Tab>("publications");
   // El conteo inicial viene del server, pero `UnmatchedTable` re-fetchea cada
@@ -38,7 +43,7 @@ export function MyStoreTabs({
       icon: Boxes,
     },
     { key: "unmatched", label: "No vinculados", count: unmatchedCount, icon: Link2 },
-    { key: "categories", label: "Categorías", count: categories.length, icon: FolderTree },
+    { key: "categories", label: "Categorías", count: categoriesTotal, icon: FolderTree },
   ];
 
   return (

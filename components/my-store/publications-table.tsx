@@ -59,6 +59,7 @@ type Filter =
   | "ACTIVE"
   | "DRAFT"
   | "PAUSED"
+  | "SIN_STOCK"
   | "ERROR"
   | "PENDING_SYNC"
   | "OUTDATED";
@@ -106,9 +107,25 @@ const FILTER_LABELS: Record<Filter, string> = {
   ACTIVE: "Publicados",
   DRAFT: "Borradores",
   PAUSED: "Pausados",
+  SIN_STOCK: "Sin stock",
   ERROR: "Errores",
   PENDING_SYNC: "Pend. sync",
   OUTDATED: "Desactualizados",
+};
+
+// Tooltips contextuales para diferenciar PENDING_SYNC (acción de sistema
+// pendiente) de OUTDATED (drift de precio).
+const SYNC_TOOLTIPS: Record<SyncStatus, string> = {
+  READY: "Listo. No hay acciones pendientes ni drift detectado.",
+  PENDING_SYNC:
+    "Acción pendiente de ejecutarse en WooCommerce (pausa automática u otra operación del sistema).",
+  SYNCED:
+    "Sincronizado: el precio en WooCommerce coincide con el precio efectivo en PricEcom.",
+  OUTDATED:
+    "El precio en PricEcom difiere del precio en WooCommerce. Sincronizá para actualizar.",
+  ERROR:
+    "El último push a WooCommerce falló. Reintentá desde el botón de sync.",
+  PAUSED: "Publicación pausada en la tienda.",
 };
 
 function formatPrice(p: number | null): string {
@@ -215,6 +232,7 @@ export function PublicationsTable() {
     "ACTIVE",
     "DRAFT",
     "PAUSED",
+    "SIN_STOCK",
     "ERROR",
     "PENDING_SYNC",
     "OUTDATED",
@@ -292,7 +310,10 @@ export function PublicationsTable() {
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider">
                   Estado
                 </th>
-                <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider">
+                <th
+                  className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider"
+                  title="Pend. sync: acción de sistema (auto-pausa, alta) pendiente. · Desactualizado: el precio en PricEcom difiere del precio en WooCommerce."
+                >
                   Sync
                 </th>
                 <th className="px-3 py-2.5 text-left font-medium text-muted-foreground uppercase tracking-wider">
@@ -390,7 +411,8 @@ export function PublicationsTable() {
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${syncB.cls}`}
+                        title={SYNC_TOOLTIPS[p.syncStatus]}
+                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium cursor-help ${syncB.cls}`}
                       >
                         {syncB.label}
                       </span>

@@ -4,8 +4,17 @@
 // Query params:
 //   page (default 1)
 //   pageSize (default 50, max 200)
-//   filter: ALL | ACTIVE | DRAFT | PAUSED | ERROR | PENDING_SYNC | OUTDATED
+//   filter: ALL | ACTIVE | DRAFT | PAUSED | ERROR | PENDING_SYNC | OUTDATED | SIN_STOCK
 //   search: matchea externalSku, catalogProduct.publicationSku, commercialTitle, supplierName
+//
+// Semántica de los filtros que comparten "drift":
+//   PENDING_SYNC  → acciones de sistema pendientes (auto-pausa, alta nueva).
+//                   Filtra estrictamente syncStatus=PENDING_SYNC. NO incluye
+//                   las OUTDATED aunque también tengan pendingSync=true.
+//   OUTDATED      → drift de precio entre PricEcom y la tienda externa.
+//   PAUSED        → pausa manual del usuario, proveedor todavía activo.
+//   SIN_STOCK     → catalogProduct.supplierStatus = SUPPLIER_REMOVED,
+//                   independiente del estado interno.
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
@@ -22,6 +31,7 @@ type Filter =
   | "ACTIVE"
   | "DRAFT"
   | "PAUSED"
+  | "SIN_STOCK"
   | "ERROR"
   | "PENDING_SYNC"
   | "OUTDATED";
@@ -30,6 +40,7 @@ const VALID_FILTERS: Filter[] = [
   "ACTIVE",
   "DRAFT",
   "PAUSED",
+  "SIN_STOCK",
   "ERROR",
   "PENDING_SYNC",
   "OUTDATED",
@@ -68,11 +79,25 @@ export async function GET(req: NextRequest) {
 
   if (filter !== "ALL") {
     if (filter === "PENDING_SYNC") {
-      andClauses.push({
-        OR: [{ syncStatus: "PENDING_SYNC" }, { pendingSync: true }],
-      });
+      // Estrictamente acciones de sistema pendientes (no OUTDATED, aunque
+      // ambos compartan pendingSync=true).
+      andClauses.push({ syncStatus: "PENDING_SYNC" });
     } else if (filter === "OUTDATED") {
       andClauses.push({ syncStatus: "OUTDATED" });
+    } else if (filter === "PAUSED") {
+      // Pausa manual estricta: proveedor todavía activo. Los productos
+      // pausados automáticamente por SUPPLIER_REMOVED entran en SIN_STOCK.
+      andClauses.push({
+        status: "PAUSED",
+        catalogProduct: {
+          is: { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+        },
+      });
+    } else if (filter === "SIN_STOCK") {
+      // El proveedor removió el producto, independiente del estado interno.
+      andClauses.push({
+        catalogProduct: { is: { supplierStatus: "SUPPLIER_REMOVED" } },
+      });
     } else {
       andClauses.push({ status: filter });
     }

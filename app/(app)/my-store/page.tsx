@@ -109,6 +109,7 @@ export default async function MyStorePage() {
         publicationsTotal={store._count.publications}
         unmatchedCount={unmatchedCount}
         categories={categories}
+        categoriesTotal={store._count.categories}
       />
     </div>
   );
