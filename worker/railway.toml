@@ -8,17 +8,16 @@
 # Comparte DATABASE_URL / DIRECT_URL / ENCRYPTION_KEY con pricecom-app.
 # Variables propias: WORKER_POLL_INTERVAL, WORKER_STALE_TIMEOUT_MS.
 #
+# Cuando Railway monta este servicio con Root Directory = worker/, Nixpacks
+# detecta worker/package.json y hace `npm install` allá. tsx y prisma viven
+# en este node_modules; los archivos compartidos (lib/, prisma/) se importan
+# por path relativo (../lib, ../prisma).
+#
 # Playwright consume ~500MB RAM por contexto activo: dimensionar el servicio
 # en consecuencia.
-#
-# Cuando Railway monta este servicio con Root Directory = worker/, las
-# dependencias viven en la raíz del monorepo (../node_modules con tsx,
-# prisma, playwright, etc.). El buildCommand sube un nivel, corre el
-# npm install allá, y el startCommand arranca con cwd en worker/.
 
 [build]
 builder = "NIXPACKS"
-buildCommand = "cd .. && npm install"
 
 [deploy]
 startCommand = "npx tsx src/index.ts"

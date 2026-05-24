@@ -3,5 +3,9 @@
   "version": "0.1.0",
   "scripts": {
     "start": "npx tsx src/index.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.10.0",
+    "tsx": "^4.7.1"
   }
 }
