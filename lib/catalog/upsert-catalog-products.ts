@@ -3,6 +3,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
 import { buildPublicationSku } from "./publication-sku";
+import { logWarning } from "../events/event-log";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -226,7 +227,7 @@ export async function upsertCatalogProducts(
         internalStatus: { in: ["PREPARED", "PUBLISHED"] },
         sku: { notIn: seenSkus },
       },
-      select: { id: true },
+      select: { id: true, sku: true, supplierName: true, internalStatus: true },
     });
 
     if (toAutoPause.length > 0) {
@@ -249,11 +250,30 @@ export async function upsertCatalogProducts(
         },
         data: { pendingSync: true, syncStatus: "PENDING_SYNC" },
       });
+
+      // Audit trail: un evento por producto auto-pausado.
+      for (const p of toAutoPause) {
+        await logWarning({
+          source: "SYSTEM",
+          type: "PRODUCT_AUTO_PAUSED",
+          title: `Producto pausado automáticamente — SKU ${p.sku ?? "(sin SKU)"}`,
+          description: "El proveedor removió el producto del catálogo.",
+          productId: p.id,
+          providerId,
+          jobId,
+          metadata: {
+            previousStatus: p.internalStatus,
+            sku: p.sku,
+            supplierName: p.supplierName,
+          },
+        });
+      }
     }
 
     // Caso 2: el resto (NOT_PUBLISHED, PAUSED, o cualquier estado con stockSource
     // OWN/HYBRID) → sólo marcar SUPPLIER_REMOVED. IGNORED queda excluido.
-    await prismaClient.catalogProduct.updateMany({
+    // Pre-resolvemos también acá para loguear PRODUCT_SUPPLIER_REMOVED.
+    const toMarkRemoved = await prismaClient.catalogProduct.findMany({
       where: {
         userId,
         providerId,
@@ -267,7 +287,24 @@ export async function upsertCatalogProducts(
           ],
         },
       },
-      data: { supplierStatus: "SUPPLIER_REMOVED" },
+      select: { id: true, sku: true, supplierName: true },
     });
+    if (toMarkRemoved.length > 0) {
+      await prismaClient.catalogProduct.updateMany({
+        where: { id: { in: toMarkRemoved.map((p) => p.id) } },
+        data: { supplierStatus: "SUPPLIER_REMOVED" },
+      });
+      for (const p of toMarkRemoved) {
+        await logWarning({
+          source: "WORKER",
+          type: "PRODUCT_SUPPLIER_REMOVED",
+          title: `Producto removido por proveedor — SKU ${p.sku ?? "(sin SKU)"}`,
+          productId: p.id,
+          providerId,
+          jobId,
+          metadata: { sku: p.sku, supplierName: p.supplierName },
+        });
+      }
+    }
   }
 }

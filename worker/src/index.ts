@@ -14,6 +14,7 @@ import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extr
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
+import { logInfo, logError } from "../../lib/events/event-log";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
@@ -166,19 +167,60 @@ async function processJob(jobId: string) {
     // Comparar contra la extracción COMPLETED anterior del mismo proveedor.
     // En try/catch propio: si la comparación falla, el job ya está COMPLETED
     // y no queremos romper el worker.
+    let comparisonStats: {
+      newProducts: number;
+      removedProducts: number;
+      priceUp: number;
+      priceDown: number;
+      stockChanged: number;
+    } | null = null;
     try {
       // Pasamos la instancia del worker para no abrir una segunda conexión.
       await compareWithPreviousExtraction(jobId, prisma);
       await onLog("INFO", "Comparación con extracción anterior generada.");
+      const comp = await prisma.extractionComparison.findUnique({
+        where: { jobId },
+        select: {
+          newProducts: true,
+          removedProducts: true,
+          priceUp: true,
+          priceDown: true,
+          stockChanged: true,
+        },
+      });
+      comparisonStats = comp;
     } catch (err) {
       console.error("[comparison] Error al comparar:", err);
       await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
     }
 
+    await logInfo({
+      source: "EXTRACTION",
+      type: "EXTRACTION_COMPLETED",
+      title: `Extracción completada — ${provider.name}`,
+      providerId: provider.id,
+      jobId,
+      metadata: {
+        totalProducts: products.length,
+        productsWithPrice: withPrice,
+        productsWithoutPrice: withoutPrice,
+        productsWithoutSku: withoutSku,
+        ...(comparisonStats ?? {}),
+      },
+    });
+
   } catch (err) {
     const errorMsg = (err as Error).message;
     await onLog("ERROR", `✗ Job fallido: ${errorMsg}`);
     await queue.markFailed(jobId, errorMsg);
+    await logError({
+      source: "EXTRACTION",
+      type: "EXTRACTION_FAILED",
+      title: "Extracción fallida",
+      description: errorMsg,
+      jobId,
+      metadata: { error: errorMsg },
+    });
   }
 }
 

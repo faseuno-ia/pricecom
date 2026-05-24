@@ -7,6 +7,7 @@ import {
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
+import { logInfo } from "@/lib/events/event-log";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireSession();
@@ -174,6 +175,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   if (affectsWoo) {
     await markPublicationsDrift(prisma, [params.id]);
+  }
+
+  if (parsed.data.publicationSku !== undefined) {
+    await logInfo({
+      source: "USER",
+      type: "USER_EDITED_PUBLICATION_SKU",
+      title: "SKU comercial editado",
+      userId: session.user.id,
+      productId: params.id,
+      metadata: { newSku: parsed.data.publicationSku },
+    });
   }
 
   return NextResponse.json(updated);

@@ -10,6 +10,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { syncPrimaryCategory } from "@/lib/catalog/product-categories";
+import { logInfo } from "@/lib/events/event-log";
 
 async function findOwnedProduct(productId: string, userId: string) {
   return prisma.catalogProduct.findFirst({
@@ -102,6 +103,14 @@ export async function POST(
   });
 
   await syncPrimaryCategory(prisma, product.id);
+  await logInfo({
+    source: "USER",
+    type: "USER_CHANGED_CATEGORY",
+    title: "Categoría asignada",
+    userId: session.user.id,
+    productId: product.id,
+    metadata: { categoryId, action: "add", isPrimary },
+  });
 
   return NextResponse.json({ ok: true });
 }
@@ -137,6 +146,14 @@ export async function DELETE(
   });
 
   await syncPrimaryCategory(prisma, product.id);
+  await logInfo({
+    source: "USER",
+    type: "USER_CHANGED_CATEGORY",
+    title: "Categoría removida",
+    userId: session.user.id,
+    productId: product.id,
+    metadata: { categoryId: parsed.data.categoryId, action: "remove" },
+  });
 
   return NextResponse.json({ ok: true });
 }

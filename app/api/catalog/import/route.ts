@@ -20,6 +20,7 @@ import {
   parseImportMargin,
   INVALID_SKU_RE,
 } from "@/lib/catalog/import-aliases";
+import { logInfo, logWarning } from "@/lib/events/event-log";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -602,6 +603,27 @@ export async function POST(req: NextRequest) {
       }
     });
   }
+
+  const importLog =
+    report.errors.length > 0 ? logWarning : logInfo;
+  await importLog({
+    source: "IMPORT",
+    type: report.errors.length > 0 ? "IMPORT_PARTIAL" : "IMPORT_COMPLETED",
+    title:
+      report.errors.length > 0
+        ? `Importación completada con ${report.errors.length} error(es) — ${provider.name}`
+        : `Importación completada — ${provider.name}`,
+    userId: session.user.id,
+    providerId,
+    metadata: {
+      created: report.created,
+      updated: report.updated,
+      removed: report.removed,
+      errors: report.errors.length,
+      diff: report.diff,
+      importBatchId: report.importBatchId,
+    },
+  });
 
   return NextResponse.json(report);
 }

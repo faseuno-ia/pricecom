@@ -17,6 +17,7 @@ import {
   Truck,
   ChevronLeft,
   ChevronRight,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +58,12 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/providers", label: "Proveedores", icon: Truck, highlight: false, badge: false },
       { href: "/extractions", label: "Extracciones", icon: Download, highlight: false, badge: "queue" },
       { href: "/changes", label: "Cambios", icon: TrendingUp, highlight: false, badge: false },
+    ],
+  },
+  {
+    label: "Sistema",
+    items: [
+      { href: "/activity", label: "Actividad", icon: Activity, highlight: false, badge: false },
     ],
   },
 ];

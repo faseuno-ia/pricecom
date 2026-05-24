@@ -4,6 +4,7 @@ import { providerSchema } from "@/lib/utils/schemas";
 import { encrypt } from "@/lib/utils/crypto";
 import { requireSession } from "@/lib/auth";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
+import { logInfo } from "@/lib/events/event-log";
 
 // Verifica que el provider exista Y pertenezca al usuario logueado.
 // Centralizado acá para no repetir el check en cada handler.
@@ -73,6 +74,18 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         affected.map((p) => p.id)
       );
     }
+    await logInfo({
+      source: "USER",
+      type: "PROVIDER_DISCOUNT_CHANGED",
+      title: `Descuento sobre lista modificado — ${provider.name}`,
+      userId: session.user.id,
+      providerId: params.id,
+      metadata: {
+        previous: oldDiscount,
+        new: newDiscount,
+        affectedProducts: affected.length,
+      },
+    });
   }
 
   const { encryptedPassword: _, ...safe } = provider;

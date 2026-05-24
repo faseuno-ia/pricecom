@@ -25,6 +25,7 @@ import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
+import { logInfo } from "@/lib/events/event-log";
 
 const DRIFT_TOLERANCE = 0.5;
 
@@ -140,5 +141,17 @@ export async function markPublicationsDrift(
       syncStatus: "OUTDATED",
     },
   });
+
+  await logInfo({
+    source: "SYSTEM",
+    type: "PRODUCT_MARKED_OUTDATED",
+    title: `${res.count} publicación(es) marcadas como desactualizadas`,
+    metadata: {
+      count: res.count,
+      publicationIds: driftIds,
+      catalogProductIds,
+    },
+  });
+
   return res.count;
 }

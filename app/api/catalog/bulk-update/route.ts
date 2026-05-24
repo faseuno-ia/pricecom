@@ -7,6 +7,7 @@ import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
 import { publishProductToWoo } from "@/lib/integrations/woocommerce/publication-service";
 import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
+import { logInfo } from "@/lib/events/event-log";
 
 // Acciones de usuario — NUNCA tocan supplierStatus (ese estado lo maneja
 // exclusivamente el worker / importador en base a presencia del producto en
@@ -90,9 +91,21 @@ export async function POST(req: NextRequest) {
   // A diferencia del modelo viejo, ya no se crea un CatalogProduct paralelo
   // en el provider OWN_STOCK — la marca vive sobre la misma fila.
   if (action === "copy_own_stock") {
-    const result = await prisma.catalogProduct.updateMany({
+    const owned = await prisma.catalogProduct.findMany({
       where: { id: { in: productIds }, userId: session.user.id },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
+    const result = await prisma.catalogProduct.updateMany({
+      where: { id: { in: ownedIds } },
       data: { stockSource: "OWN" },
+    });
+    await logInfo({
+      source: "USER",
+      type: "PRODUCT_MOVED_TO_OWN_STOCK",
+      title: `${result.count} producto(s) movidos a stock propio`,
+      userId: session.user.id,
+      metadata: { productIds: ownedIds, count: result.count },
     });
     return NextResponse.json({ updated: result.count });
   }
@@ -180,6 +193,22 @@ export async function POST(req: NextRequest) {
       else errors.push({ id, error: result.error ?? "Error desconocido" });
     }
 
+    if (published > 0) {
+      await logInfo({
+        source: "USER",
+        type: "USER_PUBLISHED_PRODUCT",
+        title: `${published} producto(s) publicados manualmente`,
+        userId: session.user.id,
+        storeId: store.id,
+        metadata: {
+          count: published,
+          total: ownedIds.length,
+          errors: errors.length,
+          productIds: ownedIds,
+        },
+      });
+    }
+
     return NextResponse.json({
       published,
       errors,
@@ -192,21 +221,36 @@ export async function POST(req: NextRequest) {
   // lo auto-pausamos porque sin proveedor y sin stock propio no hay manera
   // de abastecerlo.
   if (action === "remove_own_stock") {
+    const owned = await prisma.catalogProduct.findMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
     const [revert, autoPause] = await prisma.$transaction([
       prisma.catalogProduct.updateMany({
-        where: { id: { in: productIds }, userId: session.user.id },
+        where: { id: { in: ownedIds } },
         data: { stockSource: "SUPPLIER" },
       }),
       prisma.catalogProduct.updateMany({
         where: {
-          id: { in: productIds },
-          userId: session.user.id,
+          id: { in: ownedIds },
           supplierStatus: "SUPPLIER_REMOVED",
           internalStatus: { in: ["PUBLISHED", "PREPARED"] },
         },
         data: { internalStatus: "PAUSED" },
       }),
     ]);
+    await logInfo({
+      source: "USER",
+      type: "PRODUCT_REMOVED_FROM_OWN_STOCK",
+      title: `${revert.count} producto(s) removidos de stock propio`,
+      userId: session.user.id,
+      metadata: {
+        productIds: ownedIds,
+        count: revert.count,
+        autoPaused: autoPause.count,
+      },
+    });
     return NextResponse.json({
       updated: revert.count,
       autoPaused: autoPause.count,
@@ -232,6 +276,33 @@ export async function POST(req: NextRequest) {
   // no producen drift accionable.
   if (action === "pause" || action === "ignore") {
     await markPublicationsDrift(prisma, ownedIds);
+  }
+
+  // Audit trail por acción de usuario.
+  if (action === "pause" && result.count > 0) {
+    await logInfo({
+      source: "USER",
+      type: "USER_PAUSED_PRODUCT",
+      title: `${result.count} producto(s) pausados manualmente`,
+      userId: session.user.id,
+      metadata: { count: result.count, productIds: ownedIds },
+    });
+  } else if (action === "ignore" && result.count > 0) {
+    await logInfo({
+      source: "USER",
+      type: "USER_IGNORED_PRODUCT",
+      title: `${result.count} producto(s) ignorados`,
+      userId: session.user.id,
+      metadata: { count: result.count, productIds: ownedIds },
+    });
+  } else if (action === "restore" && result.count > 0) {
+    await logInfo({
+      source: "USER",
+      type: "USER_RESTORED_PRODUCT",
+      title: `${result.count} producto(s) restaurados`,
+      userId: session.user.id,
+      metadata: { count: result.count, productIds: ownedIds },
+    });
   }
 
   return NextResponse.json({ updated: result.count });

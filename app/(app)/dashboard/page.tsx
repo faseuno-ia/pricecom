@@ -43,6 +43,7 @@ async function getDashboardStats(userId: string) {
     activeJobs,
     lastJob,
     recentJobs,
+    recentEvents,
     providers,
     latestPerProvider,
     store,
@@ -134,6 +135,33 @@ async function getDashboardStats(userId: string) {
             stockChanged: true,
           },
         },
+      },
+    }),
+
+    // Últimos eventos de cualquier source/entidad del usuario.
+    prisma.eventLog.findMany({
+      where: {
+        OR: [
+          { userId },
+          { provider: { userId } },
+          { store: { userId } },
+          { product: { userId } },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+      select: {
+        id: true,
+        createdAt: true,
+        severity: true,
+        source: true,
+        type: true,
+        title: true,
+        providerId: true,
+        productId: true,
+        publicationId: true,
+        provider: { select: { name: true } },
+        product: { select: { sku: true, publicationSku: true } },
       },
     }),
 
@@ -302,6 +330,7 @@ async function getDashboardStats(userId: string) {
     activeJobs,
     lastJob,
     recentJobs,
+    recentEvents,
     providerCards,
     store,
     storeKpis,
@@ -844,29 +873,39 @@ export default async function DashboardPage() {
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Actividad reciente
             </h3>
-            <Link href="/extractions" className="text-[11px] text-primary hover:underline">
+            <Link href="/activity" className="text-[11px] text-primary hover:underline">
               Ver todas
             </Link>
           </div>
-          {stats.recentJobs.length === 0 ? (
+          {stats.recentEvents.length === 0 ? (
             <div className="px-5 py-6 text-center text-xs text-muted-foreground">
-              Sin extracciones todavía
+              Sin eventos registrados todavía
             </div>
           ) : (
             <ul className="divide-y divide-border">
-              {stats.recentJobs.map((job) => {
+              {stats.recentEvents.map((e) => {
                 const dot =
-                  job.status === "COMPLETED"
-                    ? "bg-green-400"
-                    : job.status === "FAILED"
+                  e.severity === "CRITICAL"
+                    ? "bg-red-500"
+                    : e.severity === "ERROR"
                       ? "bg-red-400"
-                      : job.status === "RUNNING"
-                        ? "bg-blue-400 animate-pulse"
-                        : "bg-amber-400";
+                      : e.severity === "WARNING"
+                        ? "bg-amber-400"
+                        : "bg-blue-400";
+                const sku =
+                  e.product?.publicationSku ?? e.product?.sku ?? null;
+                const productHref = sku
+                  ? `/catalog?search=${encodeURIComponent(sku)}`
+                  : null;
+                const providerHref = e.providerId
+                  ? `/providers/${e.providerId}`
+                  : null;
+                const contextHref =
+                  productHref ?? providerHref ?? "/activity";
                 return (
-                  <li key={job.id}>
+                  <li key={e.id}>
                     <Link
-                      href={`/extractions/${job.id}`}
+                      href={contextHref}
                       className="flex items-start justify-between gap-3 px-5 py-3 hover:bg-muted/20 transition-colors"
                     >
                       <div className="flex items-start gap-2.5 min-w-0">
@@ -878,15 +917,16 @@ export default async function DashboardPage() {
                         />
                         <div className="min-w-0">
                           <p className="text-sm font-medium truncate">
-                            {job.provider.name}
+                            {e.title}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {buildJobSummary(job)}
+                            {e.source}
+                            {e.provider?.name ? ` · ${e.provider.name}` : ""}
                           </p>
                         </div>
                       </div>
                       <span className="text-[10px] text-muted-foreground/70 whitespace-nowrap mt-0.5">
-                        {formatDistanceToNow(job.createdAt, {
+                        {formatDistanceToNow(e.createdAt, {
                           locale: es,
                           addSuffix: true,
                         })}

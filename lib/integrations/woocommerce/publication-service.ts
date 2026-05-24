@@ -10,6 +10,7 @@ import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
+import { logInfo, logError } from "@/lib/events/event-log";
 
 export interface PublishResult {
   success: boolean;
@@ -100,6 +101,15 @@ export async function publishProductToWoo(
       commercialDescriptionUserEdited: true,
     },
   });
+
+  const previousPriceInStore = existingPub?.externalProductId
+    ? (
+        await prisma.productPublication.findUnique({
+          where: { id: existingPub.id },
+          select: { priceInStore: true },
+        })
+      )?.priceInStore ?? null
+    : null;
 
   try {
     let wooId: number;
@@ -202,9 +212,51 @@ export async function publishProductToWoo(
       data: { internalStatus: "PUBLISHED" },
     });
 
+    const finalPub = await prisma.productPublication.findUnique({
+      where: { catalogProductId_storeId: { catalogProductId, storeId } },
+      select: { id: true },
+    });
+
+    if (existingPub?.externalProductId) {
+      await logInfo({
+        source: "SYNC",
+        type: "WOO_SYNC_SUCCESS",
+        title: `Precio sincronizado — SKU ${sku}`,
+        productId: catalogProductId,
+        publicationId: finalPub?.id,
+        storeId,
+        metadata: {
+          wooId,
+          sku,
+          previousPrice: previousPriceInStore,
+          newPrice: price,
+        },
+      });
+    } else {
+      await logInfo({
+        source: "WOOCOMMERCE",
+        type: "WOO_PRODUCT_CREATED",
+        title: `Producto creado en WooCommerce — SKU ${sku}`,
+        productId: catalogProductId,
+        publicationId: finalPub?.id,
+        storeId,
+        metadata: { wooId, sku, price },
+      });
+    }
+
     return { success: true, externalProductId: wooId };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    await logError({
+      source: "WOOCOMMERCE",
+      type: "WOO_SYNC_ERROR",
+      title: `Error al sincronizar SKU ${sku}`,
+      description: message,
+      productId: catalogProductId,
+      publicationId: existingPub?.id,
+      storeId,
+      metadata: { error: message },
+    });
     if (existingPub?.id) {
       await prisma.productPublication.update({
         where: { id: existingPub.id },
@@ -262,6 +314,15 @@ export async function pauseProductInWoo(
       where: { id: catalogProductId },
       data: { internalStatus: "PAUSED" },
     });
+    await logInfo({
+      source: "SYNC",
+      type: "WOO_PRODUCT_PAUSED",
+      title: "Producto pausado en WooCommerce",
+      productId: catalogProductId,
+      publicationId: pub.id,
+      storeId,
+      metadata: { externalProductId: pub.externalProductId },
+    });
     return { success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -272,6 +333,16 @@ export async function pauseProductInWoo(
         syncError: message,
         pendingSync: true,
       },
+    });
+    await logError({
+      source: "WOOCOMMERCE",
+      type: "WOO_SYNC_ERROR",
+      title: "Error al pausar en WooCommerce",
+      description: message,
+      productId: catalogProductId,
+      publicationId: pub.id,
+      storeId,
+      metadata: { error: message, externalProductId: pub.externalProductId },
     });
     return { success: false, error: message };
   }
