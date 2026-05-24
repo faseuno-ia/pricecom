@@ -1,0 +1,20 @@
+# Railway — servicio "pricecom-worker" (poll loop + extracciones Playwright)
+#
+# Servicio separado de la app web para que:
+#   - Un worker colgado no afecte la app.
+#   - Los deploys de la app no interrumpan extracciones en curso.
+#   - Se pueda reiniciar el worker independientemente.
+#
+# Comparte DATABASE_URL / DIRECT_URL / ENCRYPTION_KEY con pricecom-app.
+# Variables propias: WORKER_POLL_INTERVAL, WORKER_STALE_TIMEOUT_MS.
+#
+# Playwright consume ~500MB RAM por contexto activo: dimensionar el servicio
+# en consecuencia.
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run worker:start"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

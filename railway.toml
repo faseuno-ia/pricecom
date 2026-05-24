@@ -1,0 +1,14 @@
+# Railway — servicio "pricecom-app" (Next.js)
+#
+# El worker corre como servicio separado con su propio worker/railway.toml.
+# En desarrollo local, ambos arrancan juntos vía `npm run dev` (concurrently).
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run start"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
