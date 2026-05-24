@@ -22,6 +22,7 @@ model User {
   catalogProducts CatalogProduct[]
   pricingRules    PricingRule[]
   stores          Store[]
+  eventLogs       EventLog[]
 }
 
 enum ProviderType {
@@ -58,6 +59,7 @@ model Provider {
   scraperConfig     ProviderScraperConfig?
   extractionJobs    ExtractionJob[]
   catalogProducts   CatalogProduct[]
+  eventLogs         EventLog[]
 
   @@index([userId])
 }
@@ -138,6 +140,7 @@ model ExtractionJob {
   logs                 ExtractionLog[]
   comparison           ExtractionComparison?
   previousJobFor       ExtractionComparison[] @relation("PreviousJob")
+  eventLogs            EventLog[]
 
   @@index([status, createdAt])
   @@index([userId])
@@ -310,6 +313,7 @@ model Store {
   publications       ProductPublication[]
   categories         StoreCategory[]
   unmatchedProducts  UnmatchedStoreProduct[]
+  eventLogs          EventLog[]
 
   @@index([userId])
   @@index([userId, platform])
@@ -517,6 +521,7 @@ model CatalogProduct {
   /// N:M con Category. La primaria (isPrimary=true) se mantiene en sincro con
   /// `assignedCategoryId` para no romper pricing rules y filtros existentes.
   categories   CatalogProductCategory[]
+  eventLogs    EventLog[]
 
   @@unique([userId, providerId, sku])
   @@index([userId])
@@ -583,6 +588,8 @@ model ProductPublication {
   finalPrice        Float?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
+
+  eventLogs         EventLog[]
 
   @@unique([catalogProductId, storeId])
   @@index([catalogProductId])
@@ -691,4 +698,71 @@ model ProductCategoryMapping {
   categoryId       String
   category         Category @relation(fields: [categoryId], references: [id])
   createdAt        DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// EventLog — audit trail unificado
+// ────────────────────────────────────────────────────────────────────────────
+// Bitácora inmutable de acciones automáticas y manuales (usuario, worker,
+// sync, importer, WooCommerce). Permite responder: qué pasó, quién lo hizo,
+// qué lo disparó, cuándo, sobre qué entidad. NO usar hard delete.
+//
+// El logging nunca debe romper el flujo principal — `lib/events/event-log.ts`
+// envuelve el create() en try/catch.
+
+enum EventSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum EventSource {
+  USER
+  WORKER
+  SYSTEM
+  SYNC
+  IMPORT
+  EXTRACTION
+  WOOCOMMERCE
+}
+
+model EventLog {
+  id            String        @id @default(cuid())
+  createdAt     DateTime      @default(now())
+
+  severity      EventSeverity
+  source        EventSource
+
+  /// Identificador semántico del evento (ej: "WOO_PRODUCT_CREATED",
+  /// "PRODUCT_AUTO_PAUSED"). Catálogo en docs/event-log.md.
+  type          String
+  title         String
+  description   String?
+
+  userId        String?
+  providerId    String?
+  productId     String?
+  publicationId String?
+  storeId       String?
+  jobId         String?
+
+  /// JSON libre para contexto adicional (precios old/new, payload Woo, etc).
+  metadata      Json?
+
+  user        User?               @relation(fields: [userId], references: [id])
+  provider    Provider?           @relation(fields: [providerId], references: [id])
+  product     CatalogProduct?     @relation(fields: [productId], references: [id])
+  publication ProductPublication? @relation(fields: [publicationId], references: [id])
+  store       Store?              @relation(fields: [storeId], references: [id])
+  job         ExtractionJob?      @relation(fields: [jobId], references: [id])
+
+  @@index([createdAt])
+  @@index([severity])
+  @@index([source])
+  @@index([providerId])
+  @@index([productId])
+  @@index([publicationId])
+  @@index([storeId])
+  @@index([jobId])
 }
