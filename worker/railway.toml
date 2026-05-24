@@ -10,11 +10,17 @@
 #
 # Playwright consume ~500MB RAM por contexto activo: dimensionar el servicio
 # en consecuencia.
+#
+# Cuando Railway monta este servicio con Root Directory = worker/, las
+# dependencias viven en la raíz del monorepo (../node_modules con tsx,
+# prisma, playwright, etc.). El buildCommand sube un nivel, corre el
+# npm install allá, y el startCommand arranca con cwd en worker/.
 
 [build]
 builder = "NIXPACKS"
+buildCommand = "cd .. && npm install"
 
 [deploy]
-startCommand = "cd /app && npx tsx worker/src/index.ts"
+startCommand = "npx tsx src/index.ts"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
