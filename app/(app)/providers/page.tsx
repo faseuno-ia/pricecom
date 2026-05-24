@@ -91,12 +91,10 @@ export default async function ProvidersPage() {
       select: { id: true },
     }),
   ]);
-  const ownStockHref = ownStockProvider
-    ? `/catalog/new?providerId=${ownStockProvider.id}`
-    : "/providers/new?type=OWN_STOCK";
-  const ownStockImportHref = ownStockProvider
-    ? `/catalog/import?providerId=${ownStockProvider.id}`
-    : "/providers/new?type=OWN_STOCK";
+  // ownStockProvider se sigue cargando porque la card OWN_STOCK en la grilla
+  // de abajo usa sus botones internos de "Agregar" e "Importar Excel". El
+  // conteo cross-provider (ownStockCount) lo consume la misma card para
+  // mostrar el número total de productos OWN.
 
   return (
     <div className="space-y-6">
@@ -117,48 +115,10 @@ export default async function ProvidersPage() {
         </Link>
       </div>
 
-      {/* Card especial de stock propio — vive arriba de la grilla. La idea
-          es que el usuario lo trate como "su" stock, separado de los proveedores
-          externos. El conteo es transversal a todos los providers (cualquier
-          CatalogProduct con stockSource=OWN cuenta). */}
-      <div className="relative bg-card border border-emerald-500/30 rounded-xl p-5 hover:border-emerald-400/60 transition-colors">
-        <Link
-          href="/catalog?stockSource=OWN"
-          className="absolute inset-0 rounded-xl"
-          aria-label="Ver productos en stock propio"
-        />
-        <div className="relative flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="w-12 h-12 rounded-lg bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
-              <Boxes className="w-6 h-6 text-emerald-300" />
-            </div>
-            <div className="min-w-0">
-              <p className="font-semibold text-sm">Stock propio</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Productos que abastecés vos — independientes de la disponibilidad
-                del proveedor.
-              </p>
-              <p className="text-2xl font-semibold mt-2 font-mono leading-none">
-                {ownStockCount.toLocaleString("es-AR")}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Link
-              href={ownStockHref}
-              className="flex items-center gap-1.5 text-xs bg-emerald-500/15 text-emerald-200 border border-emerald-500/30 hover:bg-emerald-500/25 rounded-md px-3 py-1.5 transition-colors font-medium"
-            >
-              <PlusCircle className="w-3.5 h-3.5" /> Agregar
-            </Link>
-            <Link
-              href={ownStockImportHref}
-              className="flex items-center gap-1.5 text-xs border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md px-3 py-1.5 transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5" /> Importar Excel
-            </Link>
-          </div>
-        </div>
-      </div>
+      {/* Barra "Stock propio" eliminada: el punto de entrada unificado es
+          la card del provider OWN_STOCK ("Mi stock") en la grilla, que ahora
+          linkea directo a /catalog?stockSource=OWN y muestra los productos
+          cross-provider con stockSource=OWN. */}
 
       {providers.length === 0 ? (
         <div className="bg-card border border-border rounded-xl flex flex-col items-center py-16 text-muted-foreground">
@@ -190,7 +150,11 @@ export default async function ProvidersPage() {
                 className="relative bg-card border border-border rounded-xl p-5 flex flex-col gap-4 hover:border-primary/40 transition-colors"
               >
                 <Link
-                  href={`/providers/${p.id}`}
+                  href={
+                    p.providerType === "OWN_STOCK"
+                      ? "/catalog?stockSource=OWN"
+                      : `/providers/${p.id}`
+                  }
                   className="absolute inset-0 rounded-xl"
                   aria-label={`Ver ${p.name}`}
                 />

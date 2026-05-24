@@ -94,21 +94,36 @@ export default async function ProviderDashboardPage({
     provider.providerType === "SCRAPER" ||
     provider.providerType === "IMPORTED";
 
-  // Where común para queries del catálogo. Excluye ignorados y removidos del
-  // proveedor cuando dependen del proveedor (los OWN/HYBRID sobreviven).
-  const catalogWhere = {
-    providerId: provider.id,
-    userId: session.user.id,
-    NOT: [
-      { internalStatus: "IGNORED" as const },
-      {
-        AND: [
-          { supplierStatus: "SUPPLIER_REMOVED" as const },
-          { stockSource: "SUPPLIER" as const },
+  // Where común para queries del catálogo.
+  //
+  // Caso especial OWN_STOCK ("Mi stock"): el provider con providerType=OWN_STOCK
+  // es el punto de entrada virtual al stock propio del usuario. No filtramos
+  // por providerId — mostramos TODOS los CatalogProduct con stockSource=OWN
+  // del usuario (que pueden estar bajo otros providers). Sólo excluimos los
+  // explícitamente ignorados.
+  //
+  // Resto de proveedores: excluye ignorados y excluye removidos por proveedor
+  // **solo** cuando dependen del proveedor (los OWN/HYBRID sobreviven).
+  const isOwnStock = provider.providerType === "OWN_STOCK";
+  const catalogWhere = isOwnStock
+    ? {
+        userId: session.user.id,
+        stockSource: "OWN" as const,
+        NOT: [{ internalStatus: "IGNORED" as const }],
+      }
+    : {
+        providerId: provider.id,
+        userId: session.user.id,
+        NOT: [
+          { internalStatus: "IGNORED" as const },
+          {
+            AND: [
+              { supplierStatus: "SUPPLIER_REMOVED" as const },
+              { stockSource: "SUPPLIER" as const },
+            ],
+          },
         ],
-      },
-    ],
-  };
+      };
 
   const [
     catalogProducts,
@@ -161,13 +176,19 @@ export default async function ProviderDashboardPage({
     }),
     // Publications ACTIVE de este provider: cuenta cuántos productos del
     // proveedor están publicados en alguna tienda (status=ACTIVE en la
-    // ProductPublication). Multi-store-safe (cuenta cada publication).
+    // ProductPublication). Para OWN_STOCK (Mi stock), incluye todos los
+    // productos con stockSource=OWN del usuario, no filtramos por providerId.
     prisma.productPublication.count({
       where: {
-        catalogProduct: {
-          providerId: provider.id,
-          userId: session.user.id,
-        },
+        catalogProduct: isOwnStock
+          ? {
+              userId: session.user.id,
+              stockSource: "OWN",
+            }
+          : {
+              providerId: provider.id,
+              userId: session.user.id,
+            },
         status: "ACTIVE",
       },
     }),
