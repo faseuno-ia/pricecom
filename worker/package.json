@@ -1,0 +1,7 @@
+{
+  "name": "pricecom-worker",
+  "version": "0.1.0",
+  "scripts": {
+    "start": "npx tsx src/index.ts"
+  }
+}
