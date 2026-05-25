@@ -2,8 +2,17 @@
 // WooCommerce sin match a un CatalogProduct existente.
 //
 // Body: { catalogProductId: string }
-// Crea ProductPublication con syncStatus=READY (el sync engine después decide
-// si hay drift y la marca como PENDING_SYNC). Marca el unmatched como ignored.
+//
+// Refleja el estado real del producto en Woo al momento del link:
+//   - Si externalStatus = "publish" → ProductPublication.status = ACTIVE +
+//     CatalogProduct.internalStatus = PUBLISHED.
+//   - Otro caso → DRAFT + PREPARED.
+// syncStatus = SYNCED en ambos casos: el priceInStore acaba de leerse del
+// último sync con la tienda, así que no hay drift conocido.
+//
+// Seed de commercialTitle desde woo.name con userEdited=false (la edición
+// del drawer flipea el flag y bloquea futuros pulls). Marca el unmatched
+// como ignored.
 
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -36,7 +45,6 @@ export async function POST(
   // usuario logueado (vía store y userId respectivamente).
   const unmatched = await prisma.unmatchedStoreProduct.findFirst({
     where: { id: params.id, store: { userId: session.user.id } },
-    include: { store: { select: { id: true } } },
   });
   if (!unmatched) {
     return NextResponse.json({ error: "No encontrado" }, { status: 404 });
@@ -56,6 +64,12 @@ export async function POST(
     );
   }
 
+  // Derivamos el estado de la publicación a partir del externalStatus
+  // capturado en el último sync. Por defecto DRAFT/PREPARED si no sabemos.
+  const isPublished = unmatched.externalStatus === "publish";
+  const pubStatus = isPublished ? "ACTIVE" : "DRAFT";
+  const nextInternal = isPublished ? "PUBLISHED" : "PREPARED";
+
   // Si ya hay una publication para ese par (catalogProduct, store), la
   // refrescamos en vez de duplicar.
   const publication = await prisma.productPublication.upsert({
@@ -70,20 +84,41 @@ export async function POST(
       storeId: unmatched.storeId,
       externalProductId: unmatched.externalProductId,
       externalSku: unmatched.externalSku,
+      externalStatus: unmatched.externalStatus,
       externalUrl: unmatched.permalink,
       priceInStore: unmatched.price,
       stockInStore: unmatched.stockQuantity,
-      status: "DRAFT",
-      syncStatus: "READY",
+      status: pubStatus,
+      syncStatus: "SYNCED",
       pendingSync: false,
+      lastSyncedAt: new Date(),
+      lastSyncAt: new Date(),
+      commercialTitle: unmatched.name,
+      commercialTitleUserEdited: false,
     },
     update: {
       externalProductId: unmatched.externalProductId,
       externalSku: unmatched.externalSku,
+      externalStatus: unmatched.externalStatus,
       externalUrl: unmatched.permalink,
       priceInStore: unmatched.price,
       stockInStore: unmatched.stockQuantity,
-      syncStatus: "READY",
+      status: pubStatus,
+      syncStatus: "SYNCED",
+      pendingSync: false,
+      lastSyncedAt: new Date(),
+      lastSyncAt: new Date(),
+    },
+  });
+
+  // Propagar al CatalogProduct el estado interno y un seed del título
+  // comercial. Si el usuario ya editó commercialTitle, este update lo
+  // pisa — aceptable como acción explícita del usuario al vincular.
+  await prisma.catalogProduct.update({
+    where: { id: catalogProduct.id },
+    data: {
+      internalStatus: nextInternal,
+      commercialTitle: unmatched.name,
     },
   });
 
@@ -95,5 +130,7 @@ export async function POST(
   return NextResponse.json({
     publicationId: publication.id,
     catalogProductId: catalogProduct.id,
+    status: pubStatus,
+    internalStatus: nextInternal,
   });
 }

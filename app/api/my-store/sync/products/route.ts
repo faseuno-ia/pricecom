@@ -135,6 +135,7 @@ export async function POST() {
           imageUrl: woo.images?.[0]?.src ?? null,
           categories: wooCats,
           permalink: woo.permalink,
+          externalStatus: woo.status ?? null,
         },
         update: {
           externalSku: skuRaw || null,
@@ -144,6 +145,7 @@ export async function POST() {
           imageUrl: woo.images?.[0]?.src ?? null,
           categories: wooCats,
           permalink: woo.permalink,
+          externalStatus: woo.status ?? null,
         },
       });
       unmatchedCount++;

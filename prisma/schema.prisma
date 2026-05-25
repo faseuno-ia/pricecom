@@ -382,6 +382,11 @@ model UnmatchedStoreProduct {
   /// JSON array de nombres de categoría que viene de la tienda.
   categories        String?
   permalink         String?
+  /// Estado del producto en la tienda externa al momento del último sync
+  /// ("publish" | "draft" | "private" | "pending" | "trash" en WooCommerce).
+  /// Lo usa el endpoint de link para crear la ProductPublication con el
+  /// status correcto (ACTIVE si era "publish", DRAFT si no).
+  externalStatus    String?
   /// El usuario marcó "Ignorar"; no aparece más en la tabla por defecto.
   /// Si el producto reaparece en un sync se resetea a false.
   ignored           Boolean  @default(false)
