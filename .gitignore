@@ -48,5 +48,3 @@ Thumbs.db
 /playwright-report/
 /playwright/.cache/
 
-# Prisma
-prisma/migrations/
