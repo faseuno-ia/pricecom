@@ -1,25 +1,16 @@
 # Railway — servicio "pricecom-worker" (poll loop + extracciones Playwright)
 #
-# Servicio separado de la app web para que:
-#   - Un worker colgado no afecte la app.
-#   - Los deploys de la app no interrumpan extracciones en curso.
-#   - Se pueda reiniciar el worker independientemente.
+# Build via Dockerfile en lugar de Nixpacks para tener control explícito de
+# la instalación de Chromium para Playwright (~500MB de deps de sistema).
 #
-# Comparte DATABASE_URL / DIRECT_URL / ENCRYPTION_KEY con pricecom-app.
-# Variables propias: WORKER_POLL_INTERVAL, WORKER_STALE_TIMEOUT_MS.
-#
-# Cuando Railway monta este servicio con Root Directory = worker/, Nixpacks
-# detecta worker/package.json y hace `npm install` allá. tsx y prisma viven
-# en este node_modules; los archivos compartidos (lib/, prisma/) se importan
-# por path relativo (../lib, ../prisma).
-#
-# Playwright consume ~500MB RAM por contexto activo: dimensionar el servicio
-# en consecuencia.
+# IMPORTANTE: el Root Directory del servicio en Railway debe estar vacío
+# (la raíz del repo). El Dockerfile referencia paths desde la raíz del
+# monorepo (COPY . . trae todo, incluyendo lib/, prisma/, worker/, etc.).
 
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
+dockerfilePath = "worker/Dockerfile"
 
 [deploy]
-startCommand = "npx tsx src/index.ts"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
