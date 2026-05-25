@@ -220,6 +220,22 @@ export class WooCommerceClient {
     return this.updateProduct(productId, { status });
   }
 
+  // force=true salta la papelera y elimina definitivamente. Sin force el
+  // producto va a "trash" y reaparece si el cliente lo restaura.
+  async deleteProduct(productId: number, force = true): Promise<WooProduct> {
+    const res = await this.fetchWoo(
+      `${this.baseUrl}/products/${productId}?force=${force}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `WooCommerce delete error: HTTP ${res.status} ${text.slice(0, 200)}`
+      );
+    }
+    return res.json();
+  }
+
   async updateProductPrice(productId: number, price: number): Promise<WooProduct> {
     return this.updateProduct(productId, { regular_price: price.toFixed(2) });
   }
