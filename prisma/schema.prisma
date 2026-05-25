@@ -387,15 +387,19 @@ model UnmatchedStoreProduct {
   /// Lo usa el endpoint de link para crear la ProductPublication con el
   /// status correcto (ACTIVE si era "publish", DRAFT si no).
   externalStatus    String?
-  /// El usuario marcó "Ignorar"; no aparece más en la tabla por defecto.
-  /// Si el producto reaparece en un sync se resetea a false.
-  ignored           Boolean  @default(false)
+  /// El producto ya fue procesado por el usuario o por el sistema: se
+  /// vinculó (link), se creó en Mi stock (create-catalog), o se descartó
+  /// manualmente (resolve). Cubre todos los caminos por los que un
+  /// unmatched sale de la pestaña por defecto. La distinción
+  /// "vinculado vs descartado manual" se hace mirando si existe una
+  /// ProductPublication con el mismo externalProductId.
+  resolved          Boolean  @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   @@unique([storeId, externalProductId])
   @@index([storeId])
-  @@index([storeId, ignored])
+  @@index([storeId, resolved])
 }
 
 // ─── Catálogo persistente + publicaciones ────────────────────────────────────

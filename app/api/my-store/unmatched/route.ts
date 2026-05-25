@@ -2,7 +2,11 @@
 // con scoring de match sugerido contra CatalogProduct.
 //
 // Query params:
-//   includeIgnored=true → incluye los que fueron marcados como ignorados.
+//   includeDiscarded=true → en lugar de los pendientes, muestra los que el
+//     usuario descartó manualmente (resolved=true SIN ProductPublication).
+//     Los vinculados/creados en Mi stock (resolved=true CON publication)
+//     no aparecen en ninguno de los dos modos: ya están en la tabla de
+//     publicaciones.
 //
 // Performance: en lugar de hacer una query de scoring por cada unmatched
 // (N+1 con 500 items = 500+ round-trips a la DB), pre-cargamos todos los
@@ -23,7 +27,7 @@ interface SuggestionPlain {
 export async function GET(req: NextRequest) {
   const session = await requireSession();
   const url = new URL(req.url);
-  const includeIgnored = url.searchParams.get("includeIgnored") === "true";
+  const includeDiscarded = url.searchParams.get("includeDiscarded") === "true";
 
   const store = await prisma.store.findFirst({
     where: { userId: session.user.id },
@@ -31,13 +35,38 @@ export async function GET(req: NextRequest) {
   });
   if (!store) return NextResponse.json({ unmatched: [] });
 
+  // Si el usuario pide descartados, necesitamos excluir los unmatched cuyo
+  // externalProductId ya tenga ProductPublication — esos son los que
+  // resolvieron por link/create-catalog, no por descarte manual.
+  let externalIdsWithPublication: Set<string> | null = null;
+  if (includeDiscarded) {
+    const pubs = await prisma.productPublication.findMany({
+      where: { storeId: store.id, externalProductId: { not: null } },
+      select: { externalProductId: true },
+    });
+    externalIdsWithPublication = new Set(
+      pubs
+        .map((p) => p.externalProductId)
+        .filter((x): x is string => !!x)
+    );
+  }
+
   // 1. Lista unmatched + 2. Pre-fetch de todos los CatalogProduct del usuario.
   // Las dos queries se disparan en paralelo.
   const [items, catalogProducts] = await Promise.all([
     prisma.unmatchedStoreProduct.findMany({
       where: {
         storeId: store.id,
-        ...(includeIgnored ? {} : { ignored: false }),
+        resolved: includeDiscarded ? true : false,
+        ...(includeDiscarded && externalIdsWithPublication
+          ? {
+              NOT: {
+                externalProductId: {
+                  in: Array.from(externalIdsWithPublication),
+                },
+              },
+            }
+          : {}),
       },
       orderBy: { updatedAt: "desc" },
       take: 500,
@@ -125,7 +154,7 @@ export async function GET(req: NextRequest) {
       imageUrl: it.imageUrl,
       categories: it.categories ? safeJsonArray(it.categories) : [],
       permalink: it.permalink,
-      ignored: it.ignored,
+      resolved: it.resolved,
       suggestedMatch: scoreFor(it),
     })),
   });

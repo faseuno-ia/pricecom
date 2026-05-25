@@ -277,7 +277,7 @@ async function getDashboardStats(userId: string) {
                 where: { storeId, syncStatus: "ERROR" },
               }),
               prisma.unmatchedStoreProduct.count({
-                where: { storeId, ignored: false },
+                where: { storeId, resolved: false },
               }),
             ]);
           return { active, draft, paused, errorPub, pendingSync, syncErrors, unmatched };

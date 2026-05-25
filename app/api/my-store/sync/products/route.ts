@@ -112,8 +112,8 @@ export async function POST() {
       : null;
 
     if (!catalogProduct) {
-      // Persistir en UnmatchedStoreProduct. NO reseteamos `ignored`: si el
-      // usuario lo marcó como ignorado, esa decisión sobrevive a las
+      // Persistir en UnmatchedStoreProduct. NO reseteamos `resolved`: si el
+      // usuario lo marcó como descartado, esa decisión sobrevive a las
       // re-importaciones. Solo refrescamos los datos visibles.
       const wooCats = JSON.stringify(
         (woo.categories ?? []).map((c) => c.name)
@@ -263,19 +263,20 @@ export async function POST() {
   }
 
   // Cleanup de fantasmas: cualquier UnmatchedStoreProduct cuyo externalProductId
-  // matcheó en este sync deja de ser "no vinculado". Lo marcamos ignored=true
+  // matcheó en este sync deja de ser "no vinculado". Lo marcamos resolved=true
   // para que desaparezca de la vista por defecto sin perder el registro
-  // histórico (si el usuario desvincula manualmente en el futuro, lo vuelve a
-  // ver con "Incluir ignorados").
+  // histórico (la pestaña de descartados manuales lo filtra excluyendo los
+  // que tienen ProductPublication, así que estos cierran tampoco aparecen
+  // como descarte).
   let unmatchedClearedCount = 0;
   if (matchedExternalIds.length > 0) {
     const cleared = await prisma.unmatchedStoreProduct.updateMany({
       where: {
         storeId: store.id,
-        ignored: false,
+        resolved: false,
         externalProductId: { in: matchedExternalIds },
       },
-      data: { ignored: true },
+      data: { resolved: true },
     });
     unmatchedClearedCount = cleared.count;
   }

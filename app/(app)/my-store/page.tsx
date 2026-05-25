@@ -77,7 +77,7 @@ export default async function MyStorePage() {
         where: { storeId: store.id, pendingSync: true },
       }),
       prisma.unmatchedStoreProduct.count({
-        where: { storeId: store.id, ignored: false },
+        where: { storeId: store.id, resolved: false },
       }),
       prisma.category.findMany({
         orderBy: { name: "asc" },

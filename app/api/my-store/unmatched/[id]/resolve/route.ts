@@ -1,5 +1,10 @@
-// POST /api/my-store/unmatched/[id]/ignore — marca el unmatched como ignorado.
-// El siguiente sync de productos lo va a designorar si vuelve a aparecer.
+// POST /api/my-store/unmatched/[id]/resolve — marca el unmatched como
+// resuelto por descarte manual (el usuario eligió "No vincular").
+//
+// resolved=true se usa también cuando link/create-catalog procesan el
+// unmatched. La diferencia entre descarte manual y resolución por
+// link/create-catalog se infiere desde fuera mirando si existe una
+// ProductPublication con el mismo externalProductId.
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
@@ -21,7 +26,7 @@ export async function POST(
 
   await prisma.unmatchedStoreProduct.update({
     where: { id: unmatched.id },
-    data: { ignored: true },
+    data: { resolved: true },
   });
 
   return NextResponse.json({ ok: true });

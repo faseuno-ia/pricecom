@@ -31,7 +31,7 @@ interface UnmatchedRow {
   imageUrl: string | null;
   categories: string[];
   permalink: string | null;
-  ignored: boolean;
+  resolved: boolean;
   suggestedMatch: SuggestedMatch | null;
 }
 
@@ -63,7 +63,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
   const router = useRouter();
   const [items, setItems] = useState<UnmatchedRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [includeIgnored, setIncludeIgnored] = useState(false);
+  const [includeDiscarded, setIncludeDiscarded] = useState(false);
   const [linkModalFor, setLinkModalFor] = useState<UnmatchedRow | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   // Preview modal del flujo "vincular al sugerido": el usuario confirma antes
@@ -74,7 +74,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (includeIgnored) params.set("includeIgnored", "true");
+      if (includeDiscarded) params.set("includeDiscarded", "true");
       const res = await fetch(`/api/my-store/unmatched?${params.toString()}`);
       if (!res.ok) throw new Error("Error al cargar");
       const json = (await res.json()) as { unmatched: UnmatchedRow[] };
@@ -90,7 +90,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeIgnored]);
+  }, [includeDiscarded]);
 
   async function linkTo(unmatchedId: string, catalogProductId: string) {
     setPendingId(unmatchedId);
@@ -142,14 +142,14 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
     }
   }
 
-  async function ignore(unmatchedId: string) {
+  async function discard(unmatchedId: string) {
     setPendingId(unmatchedId);
     try {
-      const res = await fetch(`/api/my-store/unmatched/${unmatchedId}/ignore`, {
+      const res = await fetch(`/api/my-store/unmatched/${unmatchedId}/resolve`, {
         method: "POST",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      toast.success("Ignorado");
+      toast.success("Descartado");
       load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -163,20 +163,23 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
       <p className="text-xs text-muted-foreground bg-muted/20 border border-border rounded-lg px-3 py-2">
         Estos productos existen en WooCommerce pero no están vinculados a
         ningún producto de tu catálogo en PricEcom. Vinculalos para poder
-        gestionar su precio y estado desde PricEcom.
+        gestionar su precio y estado desde PricEcom. Si elegís
+        &ldquo;No vincular&rdquo;, se mueven al listado de descartados
+        manualmente (accesible con el checkbox de abajo).
       </p>
       <div className="flex items-center gap-2 flex-wrap">
         <label className="text-xs flex items-center gap-2 text-muted-foreground">
           <input
             type="checkbox"
-            checked={includeIgnored}
-            onChange={(e) => setIncludeIgnored(e.target.checked)}
+            checked={includeDiscarded}
+            onChange={(e) => setIncludeDiscarded(e.target.checked)}
             className="accent-primary"
           />
-          Incluir ignorados
+          Ver descartados manualmente
         </label>
         <span className="text-xs text-muted-foreground ml-auto">
-          {items.length} sin vincular
+          {items.length}{" "}
+          {includeDiscarded ? "descartado(s)" : "sin vincular"}
         </span>
       </div>
 
@@ -223,8 +226,8 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
               {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">
-                    {includeIgnored
-                      ? "Sin productos para mostrar"
+                    {includeDiscarded
+                      ? "Sin productos descartados"
                       : "No hay productos sin vincular 🎉"}
                   </td>
                 </tr>
@@ -235,7 +238,7 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                   return (
                     <tr
                       key={it.id}
-                      className={`border-b border-border hover:bg-muted/10 transition-colors ${it.ignored ? "opacity-50" : ""}`}
+                      className={`border-b border-border hover:bg-muted/10 transition-colors ${it.resolved ? "opacity-50" : ""}`}
                     >
                       <td className="px-3 py-2">
                         {it.imageUrl ? (
@@ -343,10 +346,10 @@ export function UnmatchedTable({ onCountLoaded }: UnmatchedTableProps = {}) {
                           >
                             <PlusCircle className="w-3 h-3" /> Crear en Mi stock
                           </button>
-                          {!it.ignored && (
+                          {!it.resolved && (
                             <button
                               type="button"
-                              onClick={() => ignore(it.id)}
+                              onClick={() => discard(it.id)}
                               disabled={isPending}
                               title="No vincular"
                               className="text-xs flex items-center gap-1 border border-border px-2 py-1 rounded-md hover:bg-muted/40 text-muted-foreground disabled:opacity-60"

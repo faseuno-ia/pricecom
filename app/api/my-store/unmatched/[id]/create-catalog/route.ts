@@ -105,7 +105,7 @@ export async function POST(
 
   await prisma.unmatchedStoreProduct.update({
     where: { id: unmatched.id },
-    data: { ignored: true },
+    data: { resolved: true },
   });
 
   return NextResponse.json({
