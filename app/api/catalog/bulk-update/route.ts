@@ -270,7 +270,13 @@ export async function POST(req: NextRequest) {
 
   const result = await prisma.catalogProduct.updateMany({
     where: { id: { in: ownedIds } },
-    data: { internalStatus },
+    data: {
+      internalStatus,
+      // Cualquier cambio de estado manual borra la marca de pausa automática:
+      // si el worker la había puesto y el usuario actúa (pausa/restaura/etc.),
+      // pasa a ser una decisión humana y el worker ya no debe reactivar solo.
+      pausedBySystem: false,
+    },
   });
 
   // PAUSE / IGNORE: push inmediato a WooCommerce — bajamos a draft en la

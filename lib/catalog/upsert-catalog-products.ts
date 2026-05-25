@@ -3,9 +3,13 @@
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
 import { buildPublicationSku } from "./publication-sku";
-import { logWarning } from "../events/event-log";
+import { logInfo, logWarning } from "../events/event-log";
 import { WooCommerceClient } from "../integrations/woocommerce/client";
-import { pauseProductInWoo } from "../integrations/woocommerce/publication-service";
+import {
+  pauseProductInWoo,
+  publishProductToWoo,
+} from "../integrations/woocommerce/publication-service";
+import type { PricingRuleForCalc } from "../pricing/pricing-engine";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -39,8 +43,14 @@ function identityKey(p: IdentityInputs): IdentityKey {
  *    pricingRule, notes) NUNCA se tocan en updates.
  *  - Productos del proveedor que ya estaban en el catálogo pero no aparecieron
  *    en esta extracción se marcan como `SUPPLIER_REMOVED`.
- *  - Si un producto aparece de nuevo tras haber estado SUPPLIER_REMOVED, vuelve
- *    a ACTIVE; NO tocamos `internalStatus` (esa decisión comercial es del usuario).
+*  - Si un producto reaparece tras estar SUPPLIER_REMOVED:
+ *      · `supplierStatus` vuelve a ACTIVE siempre.
+ *      · Si estaba PAUSED por el sistema (pausedBySystem=true) → reactiva
+ *        automáticamente: internalStatus=PUBLISHED, pausedBySystem=false,
+ *        push inmediato a Woo y log PRODUCT_REACTIVATED.
+ *      · Si la pausa era manual del usuario (pausedBySystem=false) → no toca
+ *        internalStatus; solo loguea PRODUCT_REAPPEARED para que el usuario
+ *        decida si reactivar.
  */
 export async function upsertCatalogProducts(
   jobId: string,
@@ -64,6 +74,125 @@ export async function upsertCatalogProducts(
     select: { imageFilenamePrefix: true },
   });
   const publicationPrefix = scraperConfig?.imageFilenamePrefix ?? null;
+
+  // Las pricing rules se cargan una vez por job: las necesita
+  // publishProductToWoo cuando reactivamos automáticamente un producto que
+  // volvió del SUPPLIER_REMOVED. Si no hay reactivaciones en este job, la
+  // carga es barata (lista corta).
+  const pricingRules = (await prismaClient.pricingRule.findMany({
+    where: { userId, isActive: true },
+    select: {
+      id: true,
+      name: true,
+      scope: true,
+      scopeId: true,
+      marginPercent: true,
+      roundingMode: true,
+      isActive: true,
+      priority: true,
+    },
+  })) as PricingRuleForCalc[];
+
+  // Cache de WooCommerceClient por storeId. Lazy: solo construimos clientes
+  // cuando una reactivación nos obliga a pushear. Si las credenciales fallan,
+  // guardamos `null` para no reintentar instanciar en cada iteración.
+  const clientByStore = new Map<string, WooCommerceClient | null>();
+  async function getWooClient(
+    storeId: string
+  ): Promise<WooCommerceClient | null> {
+    if (clientByStore.has(storeId)) return clientByStore.get(storeId) ?? null;
+    const store = await prismaClient.store.findFirst({
+      where: { id: storeId, userId },
+      include: { integrations: { orderBy: { createdAt: "desc" }, take: 1 } },
+    });
+    const integration = store?.integrations[0];
+    if (!store || !integration) {
+      clientByStore.set(storeId, null);
+      return null;
+    }
+    try {
+      const client = WooCommerceClient.fromIntegration({
+        storeUrl: store.url,
+        consumerKeyEncrypted: integration.consumerKeyEncrypted,
+        consumerSecretEncrypted: integration.consumerSecretEncrypted,
+      });
+      clientByStore.set(storeId, client);
+      return client;
+    } catch {
+      clientByStore.set(storeId, null);
+      return null;
+    }
+  }
+
+  // Handler de reactivación / reaparición. Lo llamamos justo después del
+  // update del CatalogProduct, cuando detectamos que venía de SUPPLIER_REMOVED.
+  // wholesalePrice ya fue actualizado por supplierDataBase, así que el motor
+  // de pricing tiene el precio fresco antes del push.
+  async function handleReappeared(pre: {
+    id: string;
+    sku: string | null;
+    supplierName: string;
+    internalStatus: string;
+    pausedBySystem: boolean;
+  }): Promise<void> {
+    if (pre.internalStatus !== "PAUSED") return;
+
+    if (pre.pausedBySystem) {
+      // Reactivación automática.
+      await prismaClient.catalogProduct.update({
+        where: { id: pre.id },
+        data: { internalStatus: "PUBLISHED", pausedBySystem: false },
+      });
+
+      const pubs = await prismaClient.productPublication.findMany({
+        where: { catalogProductId: pre.id },
+        select: { storeId: true },
+      });
+      for (const pub of pubs) {
+        const client = await getWooClient(pub.storeId);
+        if (!client) continue;
+        // publishProductToWoo loguea WOO_SYNC_ERROR internamente si falla.
+        // No revertimos internalStatus: el producto queda PUBLISHED en
+        // PricEcom y la próxima detección de drift lo marca OUTDATED para
+        // que el usuario lo resync manualmente desde Mi Tienda.
+        await publishProductToWoo(
+          prismaClient,
+          client,
+          pub.storeId,
+          pre.id,
+          pricingRules
+        );
+      }
+
+      await logInfo({
+        source: "WORKER",
+        type: "PRODUCT_REACTIVATED",
+        title: `Producto reactivado automáticamente — SKU ${pre.sku ?? "(sin SKU)"}`,
+        description: "El proveedor volvió a tener el producto disponible.",
+        productId: pre.id,
+        providerId,
+        jobId,
+        metadata: {
+          sku: pre.sku,
+          supplierName: pre.supplierName,
+          previousStatus: "PAUSED",
+        },
+      });
+    } else {
+      // Pausa manual del usuario — no tocamos internalStatus, solo notificamos.
+      await logInfo({
+        source: "WORKER",
+        type: "PRODUCT_REAPPEARED",
+        title: `Producto volvió a estar disponible — SKU ${pre.sku ?? "(sin SKU)"}`,
+        description:
+          "El proveedor tiene el producto nuevamente. Revisá si querés reactivarlo.",
+        productId: pre.id,
+        providerId,
+        jobId,
+        metadata: { sku: pre.sku, supplierName: pre.supplierName },
+      });
+    }
+  }
 
   for (const product of job.products) {
     const identity = identityKey({
@@ -116,10 +245,20 @@ export async function upsertCatalogProducts(
             sku: identity.sku,
           },
         },
-        select: { id: true, publicationSku: true },
+        select: {
+          id: true,
+          sku: true,
+          supplierName: true,
+          publicationSku: true,
+          supplierStatus: true,
+          internalStatus: true,
+          pausedBySystem: true,
+        },
       });
 
       if (existing) {
+        const cameBackFromRemoved =
+          existing.supplierStatus === "SUPPLIER_REMOVED";
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
           data: {
@@ -130,6 +269,15 @@ export async function upsertCatalogProducts(
           },
         });
         upsertedId = existing.id;
+        if (cameBackFromRemoved) {
+          await handleReappeared({
+            id: existing.id,
+            sku: existing.sku,
+            supplierName: existing.supplierName,
+            internalStatus: existing.internalStatus,
+            pausedBySystem: existing.pausedBySystem,
+          });
+        }
       } else {
         const created = await prismaClient.catalogProduct.create({
           data: {
@@ -157,10 +305,20 @@ export async function upsertCatalogProducts(
 
       const existing = await prismaClient.catalogProduct.findFirst({
         where: { userId, providerId, OR: orClauses },
-        select: { id: true, publicationSku: true },
+        select: {
+          id: true,
+          sku: true,
+          supplierName: true,
+          publicationSku: true,
+          supplierStatus: true,
+          internalStatus: true,
+          pausedBySystem: true,
+        },
       });
 
       if (existing) {
+        const cameBackFromRemoved =
+          existing.supplierStatus === "SUPPLIER_REMOVED";
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
           data: {
@@ -171,6 +329,15 @@ export async function upsertCatalogProducts(
           },
         });
         upsertedId = existing.id;
+        if (cameBackFromRemoved) {
+          await handleReappeared({
+            id: existing.id,
+            sku: existing.sku,
+            supplierName: existing.supplierName,
+            internalStatus: existing.internalStatus,
+            pausedBySystem: existing.pausedBySystem,
+          });
+        }
       } else {
         const created = await prismaClient.catalogProduct.create({
           data: {
@@ -239,6 +406,9 @@ export async function upsertCatalogProducts(
         data: {
           supplierStatus: "SUPPLIER_REMOVED",
           internalStatus: "PAUSED",
+          // Marca de pausa automática: si el proveedor vuelve a traer el
+          // producto, el upsert lo reactivará solo.
+          pausedBySystem: true,
         },
       });
       // Las publications que estaban ACTIVE quedan desincronizadas: marcamos

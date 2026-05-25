@@ -504,6 +504,11 @@ model CatalogProduct {
   lastSeenAt          DateTime
   supplierStatus      CatalogProductStatus      @default(ACTIVE)
   internalStatus      InternalPublicationStatus @default(NOT_PUBLISHED)
+  /// true cuando la pausa fue disparada automáticamente por el sistema (worker
+  /// detectó SUPPLIER_REMOVED). false cuando el usuario pausó manualmente.
+  /// Se usa para decidir si reactivar automáticamente cuando el proveedor
+  /// vuelve a traer el producto.
+  pausedBySystem      Boolean                   @default(false)
 
   // Referencia al último snapshot extraído (linea de tiempo)
   latestExtractedProductId String?
