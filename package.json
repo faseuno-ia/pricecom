@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:app\" \"npm run worker\"",
     "dev:app": "next dev",
-    "build": "next build",
+    "build": "prisma migrate deploy && next build",
     "start": "next start",
     "worker": "tsx watch worker/src/index.ts",
     "worker:start": "tsx worker/src/index.ts",
