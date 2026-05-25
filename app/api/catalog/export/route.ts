@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
-import {
-  Prisma,
-  CatalogProductStatus,
-  InternalPublicationStatus,
-} from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import ExcelJS from "exceljs";
 import { format } from "date-fns";
 import { z } from "zod";
@@ -13,31 +9,30 @@ import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
+import { buildCatalogListWhere } from "@/lib/catalog/list-filters";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const MAX_EXPORT = 10_000;
 
-const VALID_SUPPLIER: CatalogProductStatus[] = ["ACTIVE", "SUPPLIER_REMOVED"];
-const VALID_INTERNAL: InternalPublicationStatus[] = [
-  "NOT_PUBLISHED",
-  "PREPARED",
-  "PUBLISHED",
-  "PAUSED",
-  "IGNORED",
-];
-
+// Schema laxo: aceptamos todos los filtros del listado como strings/booleans
+// opcionales. La validación fina (qué valores son válidos para cada enum)
+// vive en buildCatalogListWhere — esa es nuestra fuente única de verdad para
+// los filtros del catálogo.
 const filtersSchema = z
   .object({
+    search: z.string().optional(),
     providerId: z.string().optional(),
-    supplierStatus: z.enum(VALID_SUPPLIER as [CatalogProductStatus]).optional(),
-    internalStatus: z
-      .enum(VALID_INTERNAL as [InternalPublicationStatus])
-      .optional(),
+    supplierStatus: z.string().optional(),
+    internalStatus: z.string().optional(),
+    visualStatus: z.string().optional(),
+    publicationStatus: z.string().optional(),
+    stockSource: z.string().optional(),
+    sourceType: z.string().optional(),
     noImage: z.boolean().optional(),
     noCategory: z.boolean().optional(),
-    search: z.string().optional(),
+    showRemovedIgnored: z.boolean().optional(),
   })
   .optional();
 
@@ -51,32 +46,28 @@ const bodySchema = z
     { message: "Se requiere catalogProductIds o filters" }
   );
 
-function buildWhere(
-  userId: string,
+// Convierte el objeto de filtros (JSON) a URLSearchParams para reusar el
+// builder de list-filters.ts sin duplicar lógica.
+function filtersToSearchParams(
   filters: z.infer<typeof filtersSchema>
-): Prisma.CatalogProductWhereInput {
-  const where: Prisma.CatalogProductWhereInput = { userId };
-  if (!filters) return where;
-  if (filters.providerId) where.providerId = filters.providerId;
-  if (filters.supplierStatus) where.supplierStatus = filters.supplierStatus;
-  if (filters.internalStatus) where.internalStatus = filters.internalStatus;
-  if (filters.noImage) {
-    where.AND = [
-      { OR: [{ imageUrl: null }, { imageUrl: "" }] },
-      { images: { none: {} } },
-    ];
-  }
-  if (filters.noCategory) where.assignedCategoryId = null;
-  if (filters.search?.trim()) {
-    const s = filters.search.trim();
-    where.OR = [
-      { supplierName: { contains: s, mode: "insensitive" } },
-      { commercialTitle: { contains: s, mode: "insensitive" } },
-      { commercialName: { contains: s, mode: "insensitive" } },
-      { sku: { contains: s, mode: "insensitive" } },
-    ];
-  }
-  return where;
+): URLSearchParams {
+  const params = new URLSearchParams();
+  if (!filters) return params;
+  if (filters.search?.trim()) params.set("search", filters.search.trim());
+  if (filters.providerId) params.set("providerId", filters.providerId);
+  if (filters.supplierStatus)
+    params.set("supplierStatus", filters.supplierStatus);
+  if (filters.internalStatus)
+    params.set("internalStatus", filters.internalStatus);
+  if (filters.visualStatus) params.set("visualStatus", filters.visualStatus);
+  if (filters.publicationStatus)
+    params.set("publicationStatus", filters.publicationStatus);
+  if (filters.stockSource) params.set("stockSource", filters.stockSource);
+  if (filters.sourceType) params.set("sourceType", filters.sourceType);
+  if (filters.noImage) params.set("noImage", "true");
+  if (filters.noCategory) params.set("noCategory", "true");
+  if (filters.showRemovedIgnored) params.set("showRemovedIgnored", "true");
+  return params;
 }
 
 export async function POST(req: NextRequest) {
@@ -96,9 +87,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const where = parsed.data.catalogProductIds?.length
+  const where: Prisma.CatalogProductWhereInput = parsed.data.catalogProductIds
+    ?.length
     ? { id: { in: parsed.data.catalogProductIds }, userId: session.user.id }
-    : buildWhere(session.user.id, parsed.data.filters);
+    : buildCatalogListWhere(
+        session.user.id,
+        filtersToSearchParams(parsed.data.filters)
+      );
 
   const total = await prisma.catalogProduct.count({ where });
   if (total === 0) {
