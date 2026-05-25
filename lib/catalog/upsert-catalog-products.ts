@@ -4,6 +4,8 @@ import type { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
 import { buildPublicationSku } from "./publication-sku";
 import { logWarning } from "../events/event-log";
+import { WooCommerceClient } from "../integrations/woocommerce/client";
+import { pauseProductInWoo } from "../integrations/woocommerce/publication-service";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -239,10 +241,11 @@ export async function upsertCatalogProducts(
           internalStatus: "PAUSED",
         },
       });
-      // Las publications que estaban ACTIVE quedan desincronizadas: la app
-      // dice PAUSED pero WooCommerce las sigue mostrando como publish. Las
-      // marcamos pendingSync=true para que el próximo /sync/publications
-      // las baje a draft en la tienda.
+      // Las publications que estaban ACTIVE quedan desincronizadas: marcamos
+      // pendingSync=true como red de seguridad, pero a continuación
+      // intentamos pushear inmediatamente a Woo. Si el push tiene éxito,
+      // pauseProductInWoo resetea pendingSync=false y status=PAUSED en la
+      // misma publication.
       await prismaClient.productPublication.updateMany({
         where: {
           catalogProductId: { in: pauseIds },
@@ -267,6 +270,63 @@ export async function upsertCatalogProducts(
             supplierName: p.supplierName,
           },
         });
+      }
+
+      // Push inmediato a WooCommerce. Loadeamos las publications ACTIVE
+      // (después del updateMany ya pasaron a PAUSED en DB, pero el
+      // externalStatus sigue siendo "publish" en Woo). Construimos un
+      // WooCommerceClient por cada store afectado y disparamos pauseProductInWoo.
+      // Si Woo falla, pauseProductInWoo loguea WOO_SYNC_ERROR y deja la
+      // publication con syncStatus=ERROR + pendingSync=true para retry.
+      const pubsToPause = await prismaClient.productPublication.findMany({
+        where: {
+          catalogProductId: { in: pauseIds },
+          externalProductId: { not: null },
+        },
+        select: { id: true, catalogProductId: true, storeId: true },
+      });
+
+      if (pubsToPause.length > 0) {
+        const clientByStore = new Map<string, WooCommerceClient>();
+        const distinctStoreIds = Array.from(
+          new Set(pubsToPause.map((p) => p.storeId))
+        );
+        for (const sid of distinctStoreIds) {
+          const store = await prismaClient.store.findFirst({
+            where: { id: sid, userId },
+            include: {
+              integrations: { orderBy: { createdAt: "desc" }, take: 1 },
+            },
+          });
+          const integration = store?.integrations[0];
+          if (!store || !integration) continue;
+          try {
+            clientByStore.set(
+              sid,
+              WooCommerceClient.fromIntegration({
+                storeUrl: store.url,
+                consumerKeyEncrypted: integration.consumerKeyEncrypted,
+                consumerSecretEncrypted: integration.consumerSecretEncrypted,
+              })
+            );
+          } catch {
+            // sin credenciales válidas — la publication queda PENDING_SYNC
+            // y el usuario puede reintentar desde Mi Tienda.
+          }
+        }
+
+        for (const pub of pubsToPause) {
+          const client = clientByStore.get(pub.storeId);
+          if (!client) continue;
+          // pauseProductInWoo maneja su propio try/catch + logging — si Woo
+          // falla, no rompe el worker.
+          await pauseProductInWoo(
+            prismaClient,
+            client,
+            pub.storeId,
+            pub.catalogProductId
+          );
+        }
       }
     }
 
