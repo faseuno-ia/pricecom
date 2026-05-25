@@ -195,6 +195,9 @@ export function CatalogTable({
   const [downloading, setDownloading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [contextMenuFor, setContextMenuFor] = useState<string | null>(null);
+  // Si la fila está cerca del bottom del viewport, abrimos el menú hacia
+  // arriba para que no quede cortado por el borde inferior.
+  const [contextMenuDir, setContextMenuDir] = useState<"down" | "up">("down");
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -1414,9 +1417,20 @@ export function CatalogTable({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setContextMenuFor(
-                                contextMenuFor === p.id ? null : p.id
-                              );
+                              if (contextMenuFor === p.id) {
+                                setContextMenuFor(null);
+                                return;
+                              }
+                              // Medimos espacio hacia abajo desde el botón.
+                              // El menú renderiza ~9-11 ítems; estimamos 320px
+                              // como tope. Si no entra abajo, abrimos arriba.
+                              const rect = (
+                                e.currentTarget as HTMLButtonElement
+                              ).getBoundingClientRect();
+                              const spaceBelow =
+                                window.innerHeight - rect.bottom;
+                              setContextMenuDir(spaceBelow < 320 ? "up" : "down");
+                              setContextMenuFor(p.id);
                             }}
                             title="Más"
                             className="text-muted-foreground hover:text-foreground"
@@ -1426,7 +1440,11 @@ export function CatalogTable({
                         </div>
                         {contextMenuFor === p.id && (
                           <div
-                            className="absolute right-2 top-full mt-1 z-40 bg-card border border-border rounded-lg shadow-2xl shadow-black/40 py-1 min-w-[200px]"
+                            className={`absolute right-2 ${
+                              contextMenuDir === "up"
+                                ? "bottom-full mb-1"
+                                : "top-full mt-1"
+                            } z-40 bg-card border border-border rounded-lg shadow-2xl shadow-black/40 py-1 min-w-[200px] max-h-[60vh] overflow-y-auto`}
                             onClick={(e) => e.stopPropagation()}
                           >
                             <button
