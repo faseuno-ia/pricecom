@@ -157,14 +157,15 @@ export async function POST() {
 
     const externalStatus = woo.status;
     // Status de la publication (no confundir con internalStatus del catálogo).
+    // Mapeo externalStatus (Woo) → status (PricEcom). "draft" en Woo es un
+    // producto no visible, equivalente a nuestra noción de PAUSED — no
+    // distinguimos DRAFT de PAUSED en lógica de negocio.
     const pubStatus =
       externalStatus === "publish"
         ? "ACTIVE"
-        : externalStatus === "draft"
-          ? "DRAFT"
-          : externalStatus === "trash"
-            ? "REMOVED"
-            : "PAUSED";
+        : externalStatus === "trash"
+          ? "REMOVED"
+          : "PAUSED";
     const priceInStore = parsePrice(woo.regular_price ?? woo.price);
     const categoryInStore = woo.categories?.[0]?.name ?? null;
 
@@ -185,12 +186,7 @@ export async function POST() {
     const wooDescription = woo.description?.trim() ? woo.description : null;
 
     const baseData = {
-      status: pubStatus as
-        | "ACTIVE"
-        | "DRAFT"
-        | "PAUSED"
-        | "REMOVED"
-        | "ERROR",
+      status: pubStatus as "ACTIVE" | "PAUSED" | "REMOVED",
       externalProductId: String(woo.id),
       externalSku: skuRaw,
       externalStatus,
