@@ -15,11 +15,16 @@ import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 import { logInfo, logError } from "../../lib/events/event-log";
+import { runConsistencyCheck } from "./consistency-check";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
 const STALE_JOB_TIMEOUT  = parseInt(process.env.WORKER_STALE_TIMEOUT_MS ?? String(10 * 60 * 1000));
 const STALE_CHECK_EVERY  = 12; // cada 12 polls (~1 min) revisar stale jobs
+// Cada 60 polls (~5 min a 5s/poll) chequea consistencia. Con módulo 1 se
+// dispara también en el primer ciclo, para limpiar lo que quedó de períodos
+// donde el worker estuvo caído.
+const CONSISTENCY_CHECK_EVERY = 60;
 
 // ─── Instancias ───────────────────────────────────────────────────────────────
 const prisma = new PrismaClient();
@@ -245,6 +250,21 @@ async function pollLoop() {
         const released = await queue.releaseStaleJobs(STALE_JOB_TIMEOUT);
         if (released > 0) {
           console.log(`[INFO] Se liberaron ${released} job(s) stale → vuelven a PENDING`);
+        }
+      }
+
+      // Job de consistencia: arregla combinaciones inválidas entre
+      // ProductPublication y CatalogProduct (DRAFT residuales, ACTIVE con
+      // proveedor removido, ACTIVE con producto pausado). El % 60 === 1
+      // dispara en el ciclo 1, 61, 121... = arranque + cada 60 polls.
+      if (pollCount % CONSISTENCY_CHECK_EVERY === 1) {
+        try {
+          await runConsistencyCheck(prisma);
+        } catch (err) {
+          // runConsistencyCheck ya tiene try/catch por caso, pero defensa
+          // en profundidad: si algo dispara antes de los try internos, no
+          // queremos matar el worker.
+          console.error("[ERROR] Consistency check falló:", err);
         }
       }
 
