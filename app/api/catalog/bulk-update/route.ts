@@ -23,11 +23,15 @@ const ACTIONS = [
   "copy_own_stock",
   "remove_own_stock",
   "publish",
+  "mark_no_stock",
+  "set_cost",
 ] as const;
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).min(1).max(1000),
   action: z.enum(ACTIONS),
+  // Solo se lee para action=set_cost. Precio mayorista positivo.
+  wholesalePrice: z.number().positive().optional(),
 });
 
 const actionMap: Record<
@@ -217,6 +221,161 @@ export async function POST(req: NextRequest) {
       errors,
       total: ownedIds.length,
     });
+  }
+
+  // mark_no_stock: equivalente "manual" del auto-pause del worker, pero
+  // disparado por el usuario. Solo aplica a productos de proveedores
+  // no-SCRAPER (MANUAL / IMPORTED / OWN_STOCK) donde el worker nunca va a
+  // detectar la baja por sí solo. Marca supplierStatus=SUPPLIER_REMOVED y
+  // pausedBySystem=true para que el visual status muestre "Sin stock" y se
+  // empuje a draft en Woo en el mismo request.
+  if (action === "mark_no_stock") {
+    const products = await prisma.catalogProduct.findMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      select: {
+        id: true,
+        provider: { select: { providerType: true } },
+      },
+    });
+    const eligibleIds = products
+      .filter((p) => p.provider.providerType !== "SCRAPER")
+      .map((p) => p.id);
+    const skipped = products.length - eligibleIds.length;
+
+    if (eligibleIds.length === 0) {
+      return NextResponse.json({ updated: 0, skipped, wooPaused: 0, wooErrors: 0 });
+    }
+
+    await prisma.catalogProduct.updateMany({
+      where: { id: { in: eligibleIds } },
+      data: {
+        supplierStatus: "SUPPLIER_REMOVED",
+        pausedBySystem: true,
+      },
+    });
+
+    // Push inmediato a Woo: misma lógica que pause/ignore. Cargamos
+    // publications ACTIVE y cacheamos un client por store.
+    const publications = await prisma.productPublication.findMany({
+      where: { catalogProductId: { in: eligibleIds }, status: "ACTIVE" },
+      select: { id: true, catalogProductId: true, storeId: true },
+    });
+
+    let wooPaused = 0;
+    let wooErrors = 0;
+    if (publications.length > 0) {
+      const clientByStore = new Map<string, WooCommerceClient>();
+      const distinctStoreIds = Array.from(
+        new Set(publications.map((p) => p.storeId))
+      );
+      for (const sid of distinctStoreIds) {
+        const store = await prisma.store.findFirst({
+          where: { id: sid, userId: session.user.id },
+          include: {
+            integrations: { orderBy: { createdAt: "desc" }, take: 1 },
+          },
+        });
+        const integration = store?.integrations[0];
+        if (!store || !integration) continue;
+        try {
+          clientByStore.set(
+            sid,
+            WooCommerceClient.fromIntegration({
+              storeUrl: store.url,
+              consumerKeyEncrypted: integration.consumerKeyEncrypted,
+              consumerSecretEncrypted: integration.consumerSecretEncrypted,
+            })
+          );
+        } catch {
+          // Sin credenciales válidas: la publication queda PENDING_SYNC y
+          // reaparecerá en el próximo retry desde Mi Tienda.
+        }
+      }
+      for (const pub of publications) {
+        const client = clientByStore.get(pub.storeId);
+        if (!client) continue;
+        const res = await pauseProductInWoo(
+          prisma,
+          client,
+          pub.storeId,
+          pub.catalogProductId
+        );
+        if (res.success) wooPaused++;
+        else wooErrors++;
+      }
+    }
+
+    await logInfo({
+      source: "USER",
+      type: "PRODUCT_MARKED_NO_STOCK",
+      title: `${eligibleIds.length} producto(s) marcados sin stock`,
+      userId: session.user.id,
+      metadata: {
+        count: eligibleIds.length,
+        skipped,
+        productIds: eligibleIds,
+      },
+    });
+
+    return NextResponse.json({
+      updated: eligibleIds.length,
+      skipped,
+      wooPaused,
+      wooErrors,
+    });
+  }
+
+  // set_cost: setea wholesalePrice en bulk. Solo aplica a productos de
+  // proveedores no-SCRAPER — el costo de los scrapeados lo maneja el worker.
+  // El precio de venta calculado puede cambiar → markPublicationsDrift se
+  // encarga (solo marca OUTDATED si efectivamente cambió respecto al precio
+  // en la tienda).
+  if (action === "set_cost") {
+    const wholesalePrice = parsed.data.wholesalePrice;
+    if (wholesalePrice === undefined) {
+      return NextResponse.json(
+        { error: "set_cost requiere wholesalePrice > 0" },
+        { status: 400 }
+      );
+    }
+
+    const products = await prisma.catalogProduct.findMany({
+      where: { id: { in: productIds }, userId: session.user.id },
+      select: {
+        id: true,
+        provider: { select: { providerType: true } },
+      },
+    });
+    const eligibleIds = products
+      .filter((p) => p.provider.providerType !== "SCRAPER")
+      .map((p) => p.id);
+    const skipped = products.length - eligibleIds.length;
+
+    if (eligibleIds.length === 0) {
+      return NextResponse.json({ updated: 0, skipped });
+    }
+
+    const updateResult = await prisma.catalogProduct.updateMany({
+      where: { id: { in: eligibleIds } },
+      data: { wholesalePrice },
+    });
+
+    await markPublicationsDrift(prisma, eligibleIds);
+
+    await logInfo({
+      source: "USER",
+      type: "PRODUCT_COST_UPDATED",
+      title: `Costo actualizado en ${updateResult.count} producto(s)`,
+      userId: session.user.id,
+      metadata: {
+        count: updateResult.count,
+        skipped,
+        wholesalePrice,
+        productIds: eligibleIds,
+      },
+    });
+
+    return NextResponse.json({ updated: updateResult.count, skipped });
   }
 
   // remove_own_stock: revierte a stockSource=SUPPLIER. Si el producto está

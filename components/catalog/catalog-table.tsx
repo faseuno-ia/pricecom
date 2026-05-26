@@ -29,11 +29,14 @@ import {
   FolderMinus,
   PackagePlus,
   PackageMinus,
+  PackageX,
+  DollarSign,
   Globe,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 import { ApplyMarginModal } from "./apply-margin-modal";
+import { ApplyCostModal } from "./apply-cost-modal";
 import { CategoryBulkModal } from "./category-bulk-modal";
 import { usePinnedActions } from "@/lib/hooks/use-pinned-actions";
 import {
@@ -189,6 +192,7 @@ export function CatalogTable({
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [marginModalOpen, setMarginModalOpen] = useState(false);
+  const [costModalOpen, setCostModalOpen] = useState(false);
   const [categoryModalMode, setCategoryModalMode] = useState<
     "assign" | "remove" | null
   >(null);
@@ -357,6 +361,18 @@ export function CatalogTable({
     () =>
       data.products.some(
         (p) => selectedIds.has(p.id) && p.internalStatus === "IGNORED"
+      ),
+    [data.products, selectedIds]
+  );
+
+  // mark_no_stock y set_cost solo aplican a productos no-SCRAPER. La acción
+  // queda visible apenas hay al menos uno elegible en la selección visible
+  // (el backend de bulk-update se encarga del resto en caso de mezcla).
+  const hasNonScraperInSelection = useMemo(
+    () =>
+      data.products.some(
+        (p) =>
+          selectedIds.has(p.id) && p.provider.providerType !== "SCRAPER"
       ),
     [data.products, selectedIds]
   );
@@ -771,6 +787,49 @@ export function CatalogTable({
     }
   }
 
+  async function handleMarkNoStock(ids: string[]) {
+    if (ids.length === 0) return;
+    if (
+      ids.length > 1 &&
+      !window.confirm(
+        `¿Marcar sin stock ${ids.length} productos? Solo aplica a proveedores manuales / importados / stock propio. Los SCRAPER se saltean.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/catalog/bulk-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, action: "mark_no_stock" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const { updated, skipped, wooErrors } = (await res.json()) as {
+        updated: number;
+        skipped: number;
+        wooErrors: number;
+      };
+      const skippedNote = skipped > 0 ? ` · ${skipped} salteado(s) (SCRAPER)` : "";
+      const wooNote = wooErrors > 0 ? ` · ${wooErrors} error(es) en Woo` : "";
+      if (updated === 0) {
+        toast.warning("Sin productos elegibles (todos SCRAPER)");
+      } else {
+        toast.success(
+          ids.length === 1
+            ? `Marcado sin stock${wooNote}`
+            : `${updated} sin stock${skippedNote}${wooNote}`
+        );
+      }
+      if (ids.length > 1) deselectAll();
+      refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   async function handleClearMargin(ids: string[]) {
     if (ids.length === 0) return;
     if (
@@ -823,6 +882,14 @@ export function CatalogTable({
       label: "Aplicar margen",
       icon: Tag,
       onClick: () => setMarginModalOpen(true),
+    },
+    apply_cost: {
+      id: "apply_cost",
+      label: "Aplicar costo",
+      icon: DollarSign,
+      onClick: () => setCostModalOpen(true),
+      hidden: !hasNonScraperInSelection,
+      title: "Solo aplica a proveedores no-scraper",
     },
     clear_margin: {
       id: "clear_margin",
@@ -880,6 +947,15 @@ export function CatalogTable({
       icon: PackageMinus,
       onClick: () => handleRemoveFromOwnStock(idsArr),
     },
+    mark_no_stock: {
+      id: "mark_no_stock",
+      label: "Marcar sin stock",
+      icon: PackageX,
+      onClick: () => handleMarkNoStock(idsArr),
+      hidden: !hasNonScraperInSelection,
+      title:
+        "Solo aplica a proveedores no-scraper. Marca el producto como sin stock y baja la publicación en la tienda.",
+    },
     assign_category: {
       id: "assign_category",
       label: "Asignar categoría",
@@ -899,6 +975,7 @@ export function CatalogTable({
       label: "Comercial",
       ids: [
         "apply_margin",
+        "apply_cost",
         "clear_margin",
         "clear_price",
         "assign_category",
@@ -908,7 +985,13 @@ export function CatalogTable({
     { label: "Publicación", ids: ["prepare", "publish", "pause"] },
     {
       label: "Catálogo",
-      ids: ["ignore", "restore", "copy_own_stock", "remove_own_stock"],
+      ids: [
+        "ignore",
+        "restore",
+        "copy_own_stock",
+        "remove_own_stock",
+        "mark_no_stock",
+      ],
     },
   ];
 
@@ -1488,6 +1571,20 @@ export function CatalogTable({
                             >
                               <PauseCircle className="w-3 h-3" /> Pausar
                             </button>
+                            {p.provider.providerType !== "SCRAPER" &&
+                              p.supplierStatus !== "SUPPLIER_REMOVED" && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleMarkNoStock([p.id]);
+                                    setContextMenuFor(null);
+                                  }}
+                                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/40 flex items-center gap-2"
+                                >
+                                  <PackageX className="w-3 h-3" /> Marcar sin
+                                  stock
+                                </button>
+                              )}
                             {p.manualMargin != null && (
                               <button
                                 type="button"
@@ -1824,6 +1921,18 @@ export function CatalogTable({
           onClose={() => setMarginModalOpen(false)}
           onApplied={() => {
             setMarginModalOpen(false);
+            deselectAll();
+            refresh();
+          }}
+        />
+      )}
+
+      {costModalOpen && (
+        <ApplyCostModal
+          selectedIds={Array.from(selectedIds)}
+          onClose={() => setCostModalOpen(false)}
+          onApplied={() => {
+            setCostModalOpen(false);
             deselectAll();
             refresh();
           }}

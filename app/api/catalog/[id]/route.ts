@@ -21,6 +21,7 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
             id: true,
             name: true,
             baseUrl: true,
+            providerType: true,
             requiresLogin: true,
             listDiscountPercent: true,
           },
@@ -90,6 +91,10 @@ const patchSchema = z
     finalPrice: z.number().nullable().optional(),
     manualMargin: z.number().nullable().optional(),
     manualPrice: z.number().nullable().optional(),
+    /// Costo mayorista. Solo editable para productos de proveedores
+    /// no-SCRAPER (MANUAL / IMPORTED / OWN_STOCK). En SCRAPER lo maneja el
+    /// worker en cada extracción.
+    wholesalePrice: z.number().positive().optional(),
     assignedCategoryId: z.string().nullable().optional(),
     pricingRuleId: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
@@ -101,7 +106,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const owned = await prisma.catalogProduct.findFirst({
     where: { id: params.id, userId: session.user.id },
-    select: { id: true },
+    select: { id: true, provider: { select: { providerType: true } } },
   });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -116,6 +121,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Validación falló", details: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  // wholesalePrice solo es editable por el usuario en productos no-SCRAPER.
+  // Bloqueamos a nivel API por si el cliente lo mete a mano (la UI ya oculta
+  // el campo, pero defensa en profundidad).
+  if (
+    parsed.data.wholesalePrice !== undefined &&
+    owned.provider.providerType === "SCRAPER"
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "El precio de costo de productos scraper solo lo actualiza el worker",
+      },
       { status: 400 }
     );
   }
@@ -169,6 +190,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     parsed.data.finalPrice !== undefined ||
     parsed.data.manualMargin !== undefined ||
     parsed.data.manualPrice !== undefined ||
+    parsed.data.wholesalePrice !== undefined ||
     parsed.data.pricingRuleId !== undefined ||
     parsed.data.commercialTitle !== undefined ||
     parsed.data.commercialDescription !== undefined;

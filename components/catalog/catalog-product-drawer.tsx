@@ -45,7 +45,12 @@ export interface CatalogProductDetail {
   manualPrice: number | null;
   notes: string | null;
   assignedCategoryId: string | null;
-  provider: { id: string; name: string; baseUrl: string };
+  provider: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    providerType: "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+  };
   images: { id: string; url: string; isPrimary: boolean; source: string }[];
   assignedCategory: { id: string; name: string } | null;
   publications: {
@@ -172,6 +177,9 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
   const [publicationSku, setPublicationSku] = useState("");
   const [finalPrice, setFinalPrice] = useState<string>("");
   const [manualMargin, setManualMargin] = useState<string>("");
+  // Costo mayorista — solo editable para productos de proveedores no-SCRAPER.
+  // En SCRAPER lo maneja el worker.
+  const [wholesalePrice, setWholesalePrice] = useState<string>("");
   const [notes, setNotes] = useState("");
 
   // Categorías asignadas al producto (M2M). Fuente de verdad para el render
@@ -337,6 +345,9 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         setPublicationSku(data.publicationSku ?? "");
         setFinalPrice(data.finalPrice != null ? String(data.finalPrice) : "");
         setManualMargin(data.manualMargin != null ? String(data.manualMargin) : "");
+        setWholesalePrice(
+          data.wholesalePrice != null ? String(data.wholesalePrice) : ""
+        );
         setNotes(data.notes ?? "");
         // Cargar categorías asignadas en paralelo (best-effort).
         // productId no puede ser null acá: el guard al inicio del efecto lo
@@ -358,6 +369,15 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
     if (!product) return;
     setSaving(true);
     try {
+      // wholesalePrice solo se manda si el proveedor es no-SCRAPER y el usuario
+      // ingresó un valor numérico > 0. El backend rechaza el campo en SCRAPER.
+      const isScraper = product.provider.providerType === "SCRAPER";
+      const wholesalePriceNum = !isScraper
+        ? parseFloat(wholesalePrice)
+        : NaN;
+      const includeWholesale =
+        !isScraper && Number.isFinite(wholesalePriceNum) && wholesalePriceNum > 0;
+
       const res = await fetch(`/api/catalog/${product.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -367,6 +387,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
           publicationSku: publicationSku.trim() || null,
           finalPrice: finalPrice ? parseFloat(finalPrice) : null,
           manualMargin: manualMargin ? parseFloat(manualMargin) : null,
+          ...(includeWholesale ? { wholesalePrice: wholesalePriceNum } : {}),
           notes: notes.trim() || null,
         }),
       });
@@ -669,10 +690,37 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                   discount > 0 &&
                   product.wholesalePrice != null &&
                   effCost != null;
+                const isScraperProvider =
+                  product.provider.providerType === "SCRAPER";
                 return (
                   <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-2 text-xs">
-                    {/* Costo — con desglose si el proveedor da descuento sobre lista */}
-                    {hasDiscount ? (
+                    {/* Costo — editable en proveedores no-SCRAPER, read-only en
+                        SCRAPER (con desglose si tiene listDiscountPercent). */}
+                    {!isScraperProvider ? (
+                      <div className="space-y-1">
+                        <label className="block text-muted-foreground">
+                          Precio de costo (mayorista)
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-muted-foreground">
+                            $
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={wholesalePrice}
+                            onChange={(e) => setWholesalePrice(e.target.value)}
+                            placeholder="0.00"
+                            className="flex-1 font-mono text-xs bg-background border border-border rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary/60"
+                          />
+                        </div>
+                        <p className="text-[10px] text-muted-foreground/80">
+                          Al modificar el costo, el precio de venta sugerido se
+                          recalcula automáticamente.
+                        </p>
+                      </div>
+                    ) : hasDiscount ? (
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">
