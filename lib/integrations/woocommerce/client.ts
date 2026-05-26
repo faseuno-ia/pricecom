@@ -136,6 +136,20 @@ export class WooCommerceClient {
     }
   }
 
+  // Devuelve null si el producto no existe (404). Cualquier otro error no-OK
+  // se propaga — así diferenciamos "no está" de "Woo respondió mal".
+  async getProduct(productId: number): Promise<WooProduct | null> {
+    const res = await this.fetchWoo(`${this.baseUrl}/products/${productId}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `WooCommerce get error: HTTP ${res.status} ${text.slice(0, 200)}`
+      );
+    }
+    return res.json();
+  }
+
   async getProducts(page = 1, perPage = 100): Promise<WooProduct[]> {
     const res = await this.fetchWoo(
       `${this.baseUrl}/products?page=${page}&per_page=${perPage}&status=any`
