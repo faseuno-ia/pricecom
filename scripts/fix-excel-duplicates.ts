@@ -177,7 +177,7 @@ async function main() {
     const cps = await prisma.catalogProduct.findMany({
       where: {
         userId: user.id,
-        OR: [{ sku: { in: skus } }, { publicationSku: { in: skus } }],
+        OR: [{ sku: { in: [...skus] } }, { publicationSku: { in: [...skus] } }],
       },
       include: {
         provider: { select: { name: true, providerType: true } },
