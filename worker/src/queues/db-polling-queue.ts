@@ -83,6 +83,8 @@ export class DbPollingQueue implements IJobQueue {
         productsWithoutSku: result.productsWithoutSku,
         excelFilePath: result.excelFilePath,
         excelFileUrl: result.excelFileUrl,
+        excelData: result.excelData,
+        excelName: result.excelName,
         workerLockedAt: null,
         updatedAt: new Date(),
       },

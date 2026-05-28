@@ -139,17 +139,22 @@ async function processJob(jobId: string) {
     const withoutPrice = products.length - withPrice;
     const withoutSku   = products.filter((p) => !p.sku).length;
 
-    // Generar Excel
-    let excelFilePath: string | null = null;
-    let excelFileUrl:  string | null = null;
+    // Generar Excel y persistirlo en DB (no en filesystem — Railway es efímero).
+    let excelFileUrl: string | null = null;
+    let excelName: string | null = null;
+    let excelData: Buffer | null = null;
 
     if (products.length > 0) {
       await onLog("INFO", "Generando archivo Excel...");
       const fullProducts = await prisma.extractedProduct.findMany({ where: { jobId } });
       const result = await generateExcel(fullProducts, provider, jobId);
-      excelFilePath = result.filePath;
-      excelFileUrl  = result.fileUrl;
-      await onLog("INFO", `Excel guardado en: ${excelFilePath}`);
+      excelFileUrl = result.fileUrl;
+      excelName = result.filename;
+      excelData = result.buffer;
+      await onLog(
+        "INFO",
+        `Excel generado (${(result.buffer.byteLength / 1024).toFixed(0)} KB) — ${result.filename}`
+      );
     }
 
     // Actualizar timestamp del proveedor
@@ -163,8 +168,12 @@ async function processJob(jobId: string) {
       productsWithPrice:   withPrice,
       productsWithoutPrice: withoutPrice,
       productsWithoutSku:  withoutSku,
-      excelFilePath,
+      // excelFilePath queda null para los nuevos jobs — el Excel vive en
+      // excelData (DB) y la UI lo descarga por excelFileUrl.
+      excelFilePath:       null,
       excelFileUrl,
+      excelData,
+      excelName,
     });
 
     await onLog("INFO", `✓ Completado — ${products.length} productos procesados.`);

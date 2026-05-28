@@ -1,6 +1,4 @@
 import ExcelJS from "exceljs";
-import path from "path";
-import fs from "fs/promises";
 import { ExtractedProduct, Provider } from "@prisma/client";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -10,15 +8,18 @@ interface ExcelProduct extends ExtractedProduct {
 }
 
 export interface ExcelResult {
-  /** Ruta absoluta en disco: /proyecto/exports/archivo.xlsx */
-  filePath: string;
-  /** URL relativa para descarga pública: /exports/archivo.xlsx */
+  /** Binario del Excel listo para persistir en DB (campo excelData). */
+  buffer: Buffer;
+  /** Nombre del archivo (usado como excelName y en la URL de descarga). */
+  filename: string;
+  /** URL relativa para descarga: /api/extractions/download/<filename>. */
   fileUrl: string;
 }
 
 /**
- * Genera el archivo Excel y lo guarda en /exports (carpeta local, no public/).
- * Si la carpeta no existe la crea automáticamente.
+ * Genera el archivo Excel y devuelve el binario. El worker lo persiste en
+ * ExtractionJob.excelData. NO se escribe a disco (el filesystem de Railway
+ * es efímero y los archivos se perdían en cada redeploy).
  */
 export async function generateExcel(
   products: ExcelProduct[],
@@ -162,19 +163,17 @@ export async function generateExcel(
   summary.getColumn(1).width = 25;
   summary.getColumn(2).width = 35;
 
-  // ── Save file ────────────────────────────────────────────────────
-  // Guardar en /exports (carpeta local en raíz del proyecto, no en public/)
-  // Esto permite servir el archivo via /api/extractions/:id/download
-  // sin exponerlo directamente como asset estático.
-  const outputDir = path.join(process.cwd(), "exports");
-  await fs.mkdir(outputDir, { recursive: true });
+  // ── Serializar a buffer en memoria ───────────────────────────────
+  // writeBuffer devuelve ArrayBuffer; Buffer.from lo adapta al tipo Bytes
+  // que Prisma espera para columnas BYTEA en Postgres.
+  const ab = await workbook.xlsx.writeBuffer();
+  const buffer = Buffer.from(ab as ArrayBuffer);
 
   const filename = `extraccion_${slugify(provider.name)}_${jobId}_${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;
-  const filePath = path.join(outputDir, filename);
-  await workbook.xlsx.writeFile(filePath);
 
   return {
-    filePath,
+    buffer,
+    filename,
     fileUrl: `/api/extractions/download/${filename}`,
   };
 }

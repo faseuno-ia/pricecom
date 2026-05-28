@@ -61,6 +61,12 @@ export interface JobResult {
   productsWithPrice: number;
   productsWithoutPrice: number;
   productsWithoutSku: number;
+  /// Path en disco — legacy, los jobs nuevos lo dejan null porque el Excel
+  /// vive en la columna excelData de la DB.
   excelFilePath: string | null;
   excelFileUrl: string | null;
+  /// Binario del Excel para persistir en ExtractionJob.excelData.
+  excelData: Buffer | null;
+  /// Nombre del archivo (clave por la que busca el endpoint de descarga).
+  excelName: string | null;
 }

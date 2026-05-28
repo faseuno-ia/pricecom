@@ -118,10 +118,19 @@ model ExtractionJob {
   productsWithPrice    Int                    @default(0)
   productsWithoutPrice Int                    @default(0)
   productsWithoutSku   Int                    @default(0)
-  /// Ruta local del archivo Excel generado (relativa a /public)
+  /// Ruta local del archivo Excel — legacy. Se mantiene por compatibilidad con
+  /// jobs históricos; los nuevos jobs persisten el binario en excelData.
   excelFilePath        String?
-  /// URL pública para descarga desde el navegador
+  /// URL pública para descarga desde el navegador. Se sigue seteando para que
+  /// la UI use el mismo link tanto para jobs legacy como para los nuevos.
   excelFileUrl         String?
+  /// Binario del Excel generado al finalizar la extracción. Reemplaza el
+  /// almacenamiento en filesystem (el contenedor de Railway es efímero y los
+  /// archivos se perdían en cada redeploy).
+  excelData            Bytes?
+  /// Nombre del archivo (ej: "extraccion_toys_palace_<jobId>_<ts>.xlsx").
+  /// Es la clave por la que el endpoint de descarga busca el binario.
+  excelName            String?
   errorMessage         String?
   /// Timestamp del momento en que un worker tomó el job (para detección de locks muertos)
   workerLockedAt       DateTime?
