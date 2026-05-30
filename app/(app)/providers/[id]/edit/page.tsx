@@ -10,6 +10,19 @@ export default async function EditProviderPage({ params }: { params: { id: strin
   });
   if (!provider) notFound();
 
+  // Sample supplierSku para el preview del prefijo. Buscamos el primer producto
+  // del proveedor con sku no vacío. Si no hay productos cargados todavía, el
+  // ProviderForm usa un placeholder.
+  const sampleProduct = await prisma.catalogProduct.findFirst({
+    where: {
+      providerId: provider.id,
+      userId: session.user.id,
+      sku: { not: null },
+    },
+    select: { sku: true },
+    orderBy: { createdAt: "asc" },
+  });
+
   return (
     <div className="space-y-6">
       <div>
@@ -30,7 +43,9 @@ export default async function EditProviderPage({ params }: { params: { id: strin
             listDiscountPercent: provider.listDiscountPercent
               ? Number(provider.listDiscountPercent)
               : 0,
+            skuPrefix: provider.skuPrefix ?? "",
           }}
+          sampleSupplierSku={sampleProduct?.sku ?? null}
         />
       </div>
     </div>

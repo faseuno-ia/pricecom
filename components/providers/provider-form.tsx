@@ -17,8 +17,15 @@ interface ProviderFormProps {
     isActive: boolean;
     notes: string | null;
     listDiscountPercent?: number;
+    skuPrefix?: string;
   };
+  /** SKU del primer producto del proveedor — usado para el preview en vivo
+   *  del prefijo SKU comercial. null si no hay productos cargados aún. */
+  sampleSupplierSku?: string | null;
 }
+
+const SKU_PREFIX_REGEX = /^[A-Z0-9-]{0,10}$/;
+const SAMPLE_SKU_FALLBACK = "00123";
 
 const TYPE_OPTIONS: { value: ProviderType; label: string; hint: string }[] = [
   {
@@ -43,7 +50,7 @@ const TYPE_OPTIONS: { value: ProviderType; label: string; hint: string }[] = [
   },
 ];
 
-export function ProviderForm({ provider }: ProviderFormProps) {
+export function ProviderForm({ provider, sampleSupplierSku }: ProviderFormProps) {
   const router = useRouter();
   const isEdit = !!provider;
 
@@ -57,7 +64,14 @@ export function ProviderForm({ provider }: ProviderFormProps) {
     isActive: provider?.isActive ?? true,
     notes: provider?.notes ?? "",
     listDiscountPercent: provider?.listDiscountPercent ?? 0,
+    skuPrefix: provider?.skuPrefix ?? "",
   });
+
+  // El input se forza a mayúsculas al escribir, pero validamos también el
+  // patrón completo para mostrar el error en el cliente y bloquear el submit.
+  const skuPrefixValid = SKU_PREFIX_REGEX.test(form.skuPrefix);
+  const skuSampleBase = sampleSupplierSku?.trim() || SAMPLE_SKU_FALLBACK;
+  const skuPreview = `${form.skuPrefix}${skuSampleBase}`;
 
   const [loading, setLoading] = useState(false);
 
@@ -226,6 +240,36 @@ export function ProviderForm({ provider }: ProviderFormProps) {
             No modifica el precio original de la lista.
           </p>
         </div>
+
+        <div>
+          <label className={labelCls}>Prefijo SKU comercial</label>
+          <input
+            className={`${inputCls} max-w-[200px] font-mono uppercase ${
+              !skuPrefixValid ? "border-red-500 focus:ring-red-500/40" : ""
+            }`}
+            type="text"
+            maxLength={10}
+            value={form.skuPrefix}
+            onChange={(e) => set("skuPrefix", e.target.value.toUpperCase())}
+            placeholder="TEK-"
+          />
+          {!skuPrefixValid ? (
+            <p className="text-[11px] text-red-600 mt-1.5">
+              Solo mayúsculas, números y guiones (máximo 10 caracteres).
+            </p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              Se concatena al SKU del proveedor al asignar el SKU comercial.
+              {" "}
+              <span className="text-foreground/80">
+                Ej: <span className="font-mono">{skuPreview || "—"}</span>
+              </span>
+              {sampleSupplierSku
+                ? ""
+                : " (sin productos cargados aún — usando ejemplo)"}
+            </p>
+          )}
+        </div>
       </div>
 
       <div>
@@ -264,7 +308,7 @@ export function ProviderForm({ provider }: ProviderFormProps) {
         <button
           type="submit"
           className="px-5 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-60"
-          disabled={loading}
+          disabled={loading || !skuPrefixValid}
         >
           {loading
             ? "Guardando..."

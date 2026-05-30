@@ -15,6 +15,17 @@ export const providerSchema = z
     isActive: z.boolean().default(true),
     notes: z.string().optional().nullable(),
     listDiscountPercent: z.number().min(0).max(100).default(0),
+    /// Prefijo SKU comercial. Solo mayúsculas, dígitos y guiones; hasta 10 chars.
+    /// Vacío permitido (default). Si llega null o undefined desde el form, lo
+    /// normalizamos a "" en el transform.
+    skuPrefix: z
+      .string()
+      .regex(
+        /^[A-Z0-9-]{0,10}$/,
+        "Solo mayúsculas, números y guiones (hasta 10 chars)"
+      )
+      .optional()
+      .nullable(),
   })
   .superRefine((data, ctx) => {
     const url = data.baseUrl?.trim() ?? "";
@@ -55,6 +66,9 @@ export const providerSchema = z
     baseUrl: data.baseUrl?.trim() || "",
     // requiresLogin solo aplica para SCRAPER
     requiresLogin: data.providerType === "SCRAPER" ? data.requiresLogin : false,
+    // Normalizamos null/undefined a "" para que el campo de la DB siempre
+    // tenga un string (NOT NULL en el schema).
+    skuPrefix: (data.skuPrefix ?? "").trim().toUpperCase(),
   }));
 
 export const scraperConfigSchema = z.object({

@@ -51,6 +51,11 @@ model Provider {
   /// Se descuenta del wholesalePrice antes de calcular el precio de venta.
   /// 0 = sin descuento. Ejemplo: 12 = 12% off list.
   listDiscountPercent Decimal              @default(0) @db.Decimal(5, 2)
+  /// Prefijo del SKU comercial para productos de este proveedor (ej: "TEK-").
+  /// Se concatena al supplierSku cuando se asigna SKU comercial a una
+  /// publication (feature lazy SKU — paso siguiente). Validado en API:
+  /// /^[A-Z0-9-]{0,10}$/.
+  skuPrefix         String                 @default("")
   lastExtractionAt  DateTime?
   userId            String?
   user              User?                  @relation(fields: [userId], references: [id])
