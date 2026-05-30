@@ -579,6 +579,12 @@ model ProductPublication {
   /// SKU tal como está cargado en la tienda externa. Puede diferir de
   /// CatalogProduct.publicationSku si el cliente lo editó del lado tienda.
   externalSku       String?
+  /// SKU comercial canónico (feature lazy SKU — Fase 1). Null hasta que la
+  /// publication se publica por primera vez en Woo. En ese momento se
+  /// genera como Provider.skuPrefix + CatalogProduct.sku (lógica de Fase 3)
+  /// y se persiste inmutable. Reemplaza progresivamente a
+  /// CatalogProduct.publicationSku (que se elimina en Fase 5).
+  sku               String?
   /// Estado en la tienda externa: "publish" | "draft" | "trash" en WooCommerce,
   /// análogos en Shopify/Tienda Nube. Diferenciado de `status` interno.
   externalStatus    String?
