@@ -145,7 +145,8 @@ export async function POST(req: NextRequest) {
   });
 
   sheet.columns = [
-    { header: "SKU", key: "publicationSku", width: 18 },
+    { header: "SKU comercial", key: "publicationSku", width: 18 },
+    { header: "SKU Proveedor", key: "sku", width: 14 },
     { header: "Descripción", key: "title", width: 50 },
     { header: "Precio", key: "price", width: 15 },
     { header: "Categoría", key: "category", width: 25 },
@@ -181,7 +182,11 @@ export async function POST(req: NextRequest) {
     const price = p.finalPrice ?? pricing.calculatedPrice ?? "";
 
     sheet.addRow({
-      publicationSku: p.publicationSku ?? p.sku ?? "",
+      // Read-only: vuelca lo que hay en DB. publicationSku vacío si no tiene
+      // SKU comercial asignado (coherente con el "—" del catálogo). El sku
+      // raw del proveedor se exporta aparte en su propia columna.
+      publicationSku: p.publicationSku ?? "",
+      sku: p.sku ?? "",
       title: p.commercialTitle ?? p.supplierName ?? "",
       price,
       category: p.assignedCategory?.name ?? p.supplierCategory ?? "",
@@ -191,7 +196,7 @@ export async function POST(req: NextRequest) {
 
   sheet.getColumn("price").numFmt = '"$"#,##0.00';
 
-  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 5 } };
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 6 } };
 
   const buffer = await wb.xlsx.writeBuffer();
   const filename = `catalogo-comercial-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;

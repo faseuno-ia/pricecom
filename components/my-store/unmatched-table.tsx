@@ -599,7 +599,7 @@ function LinkSearchModal({
                         {r.commercialTitle ?? r.supplierName}
                       </p>
                       <p className="text-[10px] text-muted-foreground font-mono">
-                        {r.publicationSku ?? r.sku ?? "—"}
+                        {r.publicationSku ?? "—"}
                       </p>
                     </div>
                   </button>

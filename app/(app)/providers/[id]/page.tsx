@@ -608,7 +608,7 @@ export default async function ProviderDashboardPage({
                     </p>
                     <p className="text-[11px] text-muted-foreground truncate">
                       <span className="font-mono">
-                        {p.publicationSku ?? p.sku ?? "—"}
+                        {p.publicationSku ?? "—"}
                       </span>
                       {p.assignedCategory?.name
                         ? ` · ${p.assignedCategory.name}`

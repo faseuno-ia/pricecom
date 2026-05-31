@@ -1342,7 +1342,7 @@ export function CatalogTable({
                   const enginePct = p.pricing?.marginPercent ?? null;
                   const displayName =
                     p.commercialTitle?.trim() || p.supplierName;
-                  const skuComercial = p.publicationSku ?? p.sku ?? "—";
+                  const skuComercial = p.publicationSku ?? "—";
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);
