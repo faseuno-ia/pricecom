@@ -32,6 +32,7 @@ import {
   PackageX,
   DollarSign,
   Globe,
+  AlertTriangle,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
@@ -46,6 +47,10 @@ import {
   VISUAL_STATUS_ORDER,
   type VisualStatus,
 } from "@/lib/catalog/visual-status";
+import {
+  getAnomalousSkuReason,
+  getAnomalousSkuTooltip,
+} from "@/lib/catalog/anomalous-sku";
 import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 type SupplierStatus = "ACTIVE" | "SUPPLIER_REMOVED";
@@ -1350,6 +1355,7 @@ export function CatalogTable({
                   // del CatalogProduct ya no se lee como display. Si no hay
                   // publication, "—" (producto sin Woo).
                   const skuComercial = p.publications[0]?.sku ?? "—";
+                  const anomalousReason = getAnomalousSkuReason(p.sku);
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);
@@ -1419,8 +1425,19 @@ export function CatalogTable({
                         className="sticky z-20 bg-card group-hover:bg-muted/20 px-3 py-2"
                         style={{ left: sticky.sku.left, minWidth: sticky.sku.width }}
                       >
-                        <span className="font-mono text-sm font-semibold">
-                          {skuComercial}
+                        <span className="inline-flex items-center gap-1">
+                          <span className="font-mono text-sm font-semibold">
+                            {skuComercial}
+                          </span>
+                          {anomalousReason && (
+                            <span
+                              title={getAnomalousSkuTooltip(anomalousReason)}
+                              aria-label="SKU del proveedor inusual"
+                              className="inline-flex shrink-0"
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-500/80" />
+                            </span>
+                          )}
                         </span>
                       </td>
                       <td

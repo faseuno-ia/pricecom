@@ -12,6 +12,7 @@ import {
   Star,
   PackagePlus,
   PackageMinus,
+  AlertTriangle,
 } from "lucide-react";
 import { formatPrice, normalizeImageUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -21,6 +22,10 @@ import {
   visualStatusConfig,
   visualStatusDescriptions,
 } from "@/lib/catalog/visual-status";
+import {
+  getAnomalousSkuReason,
+  getAnomalousSkuTooltip,
+} from "@/lib/catalog/anomalous-sku";
 import { StatusHelpModal } from "@/components/ui/status-help-modal";
 
 export interface CatalogProductDetail {
@@ -918,6 +923,17 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                 />
                 <p className="text-[10px] text-muted-foreground mt-1">
                   SKU proveedor: {product.sku ?? "—"}
+                  {(() => {
+                    const anomalousReason = getAnomalousSkuReason(product.sku);
+                    return anomalousReason ? (
+                      <span className="inline-flex items-center gap-1 ml-1.5 text-amber-500/90">
+                        <AlertTriangle className="w-3 h-3" />
+                        <span title={getAnomalousSkuTooltip(anomalousReason)}>
+                          SKU inusual
+                        </span>
+                      </span>
+                    ) : null;
+                  })()}
                   {!product.publications[0] && (
                     <span className="block mt-0.5">
                       Sin publicación todavía. El SKU comercial se genera
