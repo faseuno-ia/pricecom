@@ -2,7 +2,6 @@
 // worker (tsx) además de Next.js, y el alias `@` puede no resolver en tsx.
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
-import { buildPublicationSku } from "./publication-sku";
 import { logInfo, logWarning } from "../events/event-log";
 import { WooCommerceClient } from "../integrations/woocommerce/client";
 import {
@@ -66,14 +65,12 @@ export async function upsertCatalogProducts(
   const providerId = job.providerId;
   const lastSeenAt = new Date();
 
-  // Prefijo comercial del proveedor (vive en scraperConfig.imageFilenamePrefix
-  // — el mismo valor se usa para nombres de archivo de imágenes y para el
-  // publicationSku). Si no está configurado, publicationSku === sku.
-  const scraperConfig = await prismaClient.providerScraperConfig.findUnique({
-    where: { providerId },
-    select: { imageFilenamePrefix: true },
-  });
-  const publicationPrefix = scraperConfig?.imageFilenamePrefix ?? null;
+  // Fase 3 lazy SKU: el worker NO genera publicationSku ni asigna SKU
+  // comercial. El SKU se asigna lazy al publicar en publishProductToWoo,
+  // como provider.skuPrefix + cp.sku. La columna CatalogProduct.publicationSku
+  // queda para compatibilidad hasta Fase 5; el scraperConfig.imageFilenamePrefix
+  // sigue existiendo (para nombres de archivos de imágenes), pero ya no se
+  // lee acá.
 
   // Las pricing rules se cargan una vez por job: las necesita
   // publishProductToWoo cuando reactivamos automáticamente un producto que
@@ -203,9 +200,8 @@ export async function upsertCatalogProducts(
     });
 
     // Datos que el worker puede actualizar (siempre supplier*, nunca comerciales).
-    // publicationSku NO va acá: lo decidimos abajo según si el valor existente
-    // sigue siendo el default del proveedor (= nunca editado) o si el usuario
-    // ya lo personalizó (en ese caso lo respetamos y no lo pisamos).
+    // publicationSku ya NO se setea acá (Fase 3 lazy): el SKU comercial se
+    // asigna lazy al publicar en publishProductToWoo, vía ProductPublication.sku.
     const supplierDataBase = {
       supplierName: product.name,
       supplierDescription: product.description ?? null,
@@ -219,21 +215,6 @@ export async function upsertCatalogProducts(
       supplierStatus: "ACTIVE" as const,
       latestExtractedProductId: product.id,
     };
-
-    const defaultPublicationSku = buildPublicationSku(
-      publicationPrefix,
-      identity.sku
-    );
-
-    // Decide si el publicationSku debe escribirse en un update existente:
-    //   - Siempre que el valor actual sea null/vacío (todavía no se asignó).
-    //   - O cuando coincide exactamente con el default del proveedor
-    //     (= prefix + sku, el patrón que el worker hubiera generado).
-    // Si no coincide es porque el usuario lo editó manualmente — respetar.
-    function shouldUpdatePubSku(current: string | null | undefined): boolean {
-      if (!current) return true;
-      return current === defaultPublicationSku;
-    }
 
     let upsertedId: string | null = null;
     if (identity.sku) {
@@ -249,7 +230,6 @@ export async function upsertCatalogProducts(
           id: true,
           sku: true,
           supplierName: true,
-          publicationSku: true,
           supplierStatus: true,
           internalStatus: true,
           pausedBySystem: true,
@@ -261,12 +241,7 @@ export async function upsertCatalogProducts(
           existing.supplierStatus === "SUPPLIER_REMOVED";
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
-          data: {
-            ...supplierDataBase,
-            ...(shouldUpdatePubSku(existing.publicationSku)
-              ? { publicationSku: defaultPublicationSku }
-              : {}),
-          },
+          data: supplierDataBase,
         });
         upsertedId = existing.id;
         if (cameBackFromRemoved) {
@@ -285,7 +260,6 @@ export async function upsertCatalogProducts(
             providerId,
             sku: identity.sku,
             ...supplierDataBase,
-            publicationSku: defaultPublicationSku,
           },
           select: { id: true },
         });
@@ -309,7 +283,6 @@ export async function upsertCatalogProducts(
           id: true,
           sku: true,
           supplierName: true,
-          publicationSku: true,
           supplierStatus: true,
           internalStatus: true,
           pausedBySystem: true,
@@ -321,12 +294,7 @@ export async function upsertCatalogProducts(
           existing.supplierStatus === "SUPPLIER_REMOVED";
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
-          data: {
-            ...supplierDataBase,
-            ...(shouldUpdatePubSku(existing.publicationSku)
-              ? { publicationSku: defaultPublicationSku }
-              : {}),
-          },
+          data: supplierDataBase,
         });
         upsertedId = existing.id;
         if (cameBackFromRemoved) {
@@ -346,7 +314,6 @@ export async function upsertCatalogProducts(
             ...(identity.productUrl ? { productUrl: identity.productUrl } : {}),
             ...(identity.identityHash ? { identityHash: identity.identityHash } : {}),
             ...supplierDataBase,
-            publicationSku: defaultPublicationSku,
           },
           select: { id: true },
         });

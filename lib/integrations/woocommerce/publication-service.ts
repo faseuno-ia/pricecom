@@ -10,7 +10,8 @@ import {
   resolvePricing,
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
-import { logInfo, logError } from "@/lib/events/event-log";
+import { logInfo, logWarning, logError } from "@/lib/events/event-log";
+import { buildPublicationSku } from "@/lib/catalog/publication-sku";
 
 export interface PublishResult {
   success: boolean;
@@ -54,7 +55,7 @@ export async function publishProductToWoo(
     where: { id: catalogProductId },
     include: {
       categories: { select: { categoryId: true } },
-      provider: { select: { listDiscountPercent: true } },
+      provider: { select: { listDiscountPercent: true, skuPrefix: true } },
     },
   });
   if (!product) return { success: false, error: "Producto no encontrado" };
@@ -78,11 +79,6 @@ export async function publishProductToWoo(
     return { success: false, error: "Sin precio calculado" };
   }
 
-  const sku = product.publicationSku ?? product.sku;
-  if (!sku) {
-    return { success: false, error: "Producto sin SKU" };
-  }
-
   const stockQty = parseStockQuantity(product.stock);
   const wooCategories = await resolveWooCategories(
     prisma,
@@ -94,6 +90,7 @@ export async function publishProductToWoo(
     where: { catalogProductId_storeId: { catalogProductId, storeId } },
     select: {
       id: true,
+      sku: true,
       externalProductId: true,
       commercialTitle: true,
       commercialTitleUserEdited: true,
@@ -101,6 +98,101 @@ export async function publishProductToWoo(
       commercialDescriptionUserEdited: true,
     },
   });
+
+  // ─── Lazy SKU (Fase 3) ──────────────────────────────────────────────────
+  // Si la publication ya tiene sku asignado → usarlo (inmutable). Si no,
+  // generamos provider.skuPrefix + cp.sku determinístico y lo persistimos.
+  // La sanitización del sku raw NO se aplica acá: los skus anómalos (ej
+  // "-0305") se preservan literal para no colisionar con sus "gemelos" sin
+  // guion ("0305" = producto distinto del proveedor).
+  //
+  // SKU_ASSIGNED se loguea SOLO cuando el sku ya está efectivamente en DB:
+  //   - UPDATE path (existingPub): log justo después del UPDATE.
+  //   - CREATE path (sin existingPub): el sku se persiste en el upsert.create
+  //     al final; el log se difiere y se dispara después de ese create
+  //     exitoso (si el push o el create fallan, no se loguea — coherente
+  //     con la realidad de DB).
+  let sku: string | null = existingPub?.sku ?? null;
+  let skuJustAssignedDeferred = false;
+
+  if (!sku) {
+    const generated = buildPublicationSku(
+      product.provider.skuPrefix,
+      product.sku
+    );
+    if (!generated) {
+      return {
+        success: false,
+        error:
+          "No se puede asignar SKU comercial: el producto no tiene sku del proveedor",
+      };
+    }
+    sku = generated;
+
+    // Colisión: warning-only en generación automática. El guard bloqueante
+    // va en Fase 4 (edición manual del SKU desde la UI). Chequeamos pp.sku
+    // (canónico post-Fase 2) Y cp.publicationSku (legacy que se elimina en
+    // Fase 5). Mientras coexistan ambos campos, hay que mirar los dos para
+    // no perder casos durante la ventana de migración.
+    const collisionPp = await prisma.productPublication.findFirst({
+      where: { sku, catalogProductId: { not: catalogProductId } },
+      select: { id: true, catalogProductId: true },
+    });
+    const collisionCp = !collisionPp
+      ? await prisma.catalogProduct.findFirst({
+          where: {
+            publicationSku: sku,
+            id: { not: catalogProductId },
+            userId: product.userId,
+          },
+          select: { id: true },
+        })
+      : null;
+    if (collisionPp || collisionCp) {
+      await logWarning({
+        source: "SYNC",
+        type: "SKU_COLLISION",
+        title: `Colisión de SKU al generar lazy: ${sku}`,
+        productId: catalogProductId,
+        publicationId: existingPub?.id,
+        storeId,
+        metadata: {
+          sku,
+          conflictingPublicationId: collisionPp?.id ?? null,
+          conflictingCatalogProductId:
+            collisionPp?.catalogProductId ?? collisionCp?.id ?? null,
+        },
+      });
+    }
+
+    if (existingPub) {
+      // UPDATE path: persistir el sku ANTES del push (atomicidad para retry).
+      // Si después el push falla, el sku ya está en DB → log es coherente.
+      await prisma.productPublication.update({
+        where: { id: existingPub.id },
+        data: { sku },
+      });
+      await logInfo({
+        source: "SYNC",
+        type: "SKU_ASSIGNED",
+        title: `SKU comercial asignado: ${sku}`,
+        productId: catalogProductId,
+        publicationId: existingPub.id,
+        storeId,
+        metadata: {
+          sku,
+          providerId: product.providerId,
+          catalogProductId,
+        },
+      });
+    } else {
+      // CREATE path: no hay publication donde persistir. El sku se va a
+      // guardar en el upsert.create al final, después del push exitoso.
+      // Difer­imos el log para que solo dispare si efectivamente queda en DB.
+      // Si el push o el create fallan, nada se loguea — coherente.
+      skuJustAssignedDeferred = true;
+    }
+  }
 
   const previousPriceInStore = existingPub?.externalProductId
     ? (
@@ -174,6 +266,10 @@ export async function publishProductToWoo(
       create: {
         catalogProductId,
         storeId,
+        // SKU comercial generado lazy (o reusado si ya existía en updates).
+        // En create se persiste con el resto; en update no se toca (es
+        // inmutable una vez asignado).
+        sku,
         externalProductId: String(wooId),
         externalSku: wooSku,
         externalStatus: "publish",
@@ -216,6 +312,25 @@ export async function publishProductToWoo(
       where: { catalogProductId_storeId: { catalogProductId, storeId } },
       select: { id: true },
     });
+
+    // Log diferido del SKU_ASSIGNED para el CREATE path: el sku recién quedó
+    // persistido en el upsert.create de arriba. Si el push hubiera fallado no
+    // llegaríamos acá (catch absorbe), así que el log refleja realidad.
+    if (skuJustAssignedDeferred) {
+      await logInfo({
+        source: "SYNC",
+        type: "SKU_ASSIGNED",
+        title: `SKU comercial asignado: ${sku}`,
+        productId: catalogProductId,
+        publicationId: finalPub?.id,
+        storeId,
+        metadata: {
+          sku,
+          providerId: product.providerId,
+          catalogProductId,
+        },
+      });
+    }
 
     if (existingPub?.externalProductId) {
       await logInfo({
