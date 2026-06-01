@@ -212,6 +212,10 @@ export class WooCommerceClient {
       name?: string;
       description?: string;
       categories?: { id: number }[];
+      /** SKU comercial. Solo se usa al renombrar el SKU desde PricEcom
+       *  (endpoint PUT /api/catalog/publications/[id]/sku). En sync normal
+       *  el SKU es propiedad de Woo y no se manda. */
+      sku?: string;
     }
   ): Promise<WooProduct> {
     const res = await this.fetchWoo(`${this.baseUrl}/products/${productId}`, {

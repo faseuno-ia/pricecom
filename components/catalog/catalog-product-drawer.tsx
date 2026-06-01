@@ -54,8 +54,11 @@ export interface CatalogProductDetail {
   images: { id: string; url: string; isPrimary: boolean; source: string }[];
   assignedCategory: { id: string; name: string } | null;
   publications: {
+    id: string;
+    sku: string | null;
     status: string;
     storeId: string;
+    externalProductId: string | null;
     pendingSync?: boolean;
     syncStatus?: string | null;
   }[];
@@ -342,7 +345,10 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         setProduct(data);
         setCommercialTitle(data.commercialTitle ?? "");
         setCommercialDescription(data.commercialDescription ?? "");
-        setPublicationSku(data.publicationSku ?? "");
+        // SKU comercial post-Fase 4A/4B: leemos pp.sku (canónico) desde la
+        // primera publication. El campo legacy data.publicationSku queda en
+        // el response pero ya no se usa como fuente.
+        setPublicationSku(data.publications[0]?.sku ?? "");
         setFinalPrice(data.finalPrice != null ? String(data.finalPrice) : "");
         setManualMargin(data.manualMargin != null ? String(data.manualMargin) : "");
         setWholesalePrice(
@@ -365,16 +371,77 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
     };
   }, [productId]);
 
+  // Fase 4B: el SKU comercial se edita por un endpoint separado con guard de
+  // colisión bloqueante. Devuelve "ok"/"cancelled"/"error" para que handleSave
+  // pueda decidir si abortar.
+  async function saveSkuIfChanged(): Promise<"ok" | "cancelled" | "error" | "noop"> {
+    if (!product) return "noop";
+    const currentSku = product.publications[0]?.sku ?? null;
+    const trimmed = publicationSku.trim();
+    const newSku = trimmed || null;
+    if (newSku === currentSku) return "noop";
+
+    // Sin publication no hay endpoint que llamar. El SKU se asigna lazy al
+    // publicar (Fase 3). Si el usuario quiso editarlo igual, lo avisamos.
+    const pubId = product.publications[0]?.id;
+    if (!pubId) {
+      toast.error(
+        "Este producto no tiene publicación todavía. El SKU se asigna al publicar en la tienda."
+      );
+      return "error";
+    }
+    if (!newSku) {
+      toast.error("El SKU comercial no puede ser vacío.");
+      return "error";
+    }
+
+    async function attempt(confirmPublishedChange: boolean): Promise<"ok" | "cancelled" | "error"> {
+      const res = await fetch(`/api/catalog/publications/${pubId}/sku`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sku: newSku,
+          ...(confirmPublishedChange ? { confirmPublishedChange: true } : {}),
+        }),
+      });
+      if (res.ok) return "ok";
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 422 && err.requiresConfirmation) {
+        const ok = window.confirm(
+          `Este producto está publicado en WooCommerce con SKU ${
+            err.previousSku ?? "—"
+          }.\n\nCambiarlo a "${
+            err.newSku
+          }" lo va a modificar en la tienda real.\n\n¿Confirmás?`
+        );
+        if (!ok) return "cancelled";
+        return await attempt(true);
+      }
+      if (res.status === 409) {
+        toast.error(err.error ?? "El SKU ya pertenece a otro producto");
+        return "error";
+      }
+      toast.error(err.error ?? "Error al guardar el SKU");
+      return "error";
+    }
+    return await attempt(false);
+  }
+
   async function handleSave() {
     if (!product) return;
     setSaving(true);
     try {
+      // ── 1. SKU comercial (endpoint separado con guard de colisión) ──
+      const skuResult = await saveSkuIfChanged();
+      if (skuResult === "cancelled" || skuResult === "error") {
+        return; // no avanzar al PATCH del resto si el SKU falló o se canceló
+      }
+
+      // ── 2. PATCH del resto de campos comerciales ──
       // wholesalePrice solo se manda si el proveedor es no-SCRAPER y el usuario
       // ingresó un valor numérico > 0. El backend rechaza el campo en SCRAPER.
       const isScraper = product.provider.providerType === "SCRAPER";
-      const wholesalePriceNum = !isScraper
-        ? parseFloat(wholesalePrice)
-        : NaN;
+      const wholesalePriceNum = !isScraper ? parseFloat(wholesalePrice) : NaN;
       const includeWholesale =
         !isScraper && Number.isFinite(wholesalePriceNum) && wholesalePriceNum > 0;
 
@@ -384,7 +451,8 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         body: JSON.stringify({
           commercialTitle: commercialTitle.trim() || null,
           commercialDescription: commercialDescription.trim() || null,
-          publicationSku: publicationSku.trim() || null,
+          // publicationSku NO se envía acá — Fase 4B redirigió a
+          // PUT /api/catalog/publications/<id>/sku con guard de colisión.
           finalPrice: finalPrice ? parseFloat(finalPrice) : null,
           manualMargin: manualMargin ? parseFloat(manualMargin) : null,
           ...(includeWholesale ? { wholesalePrice: wholesalePriceNum } : {}),
@@ -841,11 +909,28 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                   type="text"
                   value={publicationSku}
                   onChange={(e) => setPublicationSku(e.target.value)}
-                  placeholder="SKU usado en la tienda (ej. JOR123)"
+                  placeholder={
+                    product.publications[0]
+                      ? "SKU usado en la tienda (ej. TP-00658)"
+                      : "Se asignará automáticamente al publicar"
+                  }
                   className="w-full text-sm bg-background border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60 font-mono"
                 />
                 <p className="text-[10px] text-muted-foreground mt-1">
                   SKU proveedor: {product.sku ?? "—"}
+                  {!product.publications[0] && (
+                    <span className="block mt-0.5">
+                      Sin publicación todavía. El SKU comercial se genera
+                      automáticamente al publicar usando el prefijo del
+                      proveedor.
+                    </span>
+                  )}
+                  {product.publications[0]?.externalProductId && (
+                    <span className="block mt-0.5 text-amber-400">
+                      Este producto está publicado en la tienda. Cambiar el
+                      SKU lo modificará también en Woo.
+                    </span>
+                  )}
                 </p>
               </div>
 

@@ -7,7 +7,6 @@ import {
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
-import { logInfo } from "@/lib/events/event-log";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireSession();
@@ -30,6 +29,9 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
         assignedCategory: { select: { id: true, name: true } },
         publications: {
           include: { store: { select: { id: true, name: true, platform: true } } },
+          // El sku de la publication (canónico post-Fase 3 lazy) lo usa el
+          // drawer para el campo editable "SKU comercial". También venía
+          // implícito en `include`, pero acá lo dejamos explícito por claridad.
         },
         latestExtractedProduct: {
           select: {
@@ -141,6 +143,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     );
   }
 
+  // publicationSku (legacy) ya NO se edita por este endpoint (Fase 4B).
+  // El SKU comercial vive en ProductPublication.sku y se edita por
+  // PUT /api/catalog/publications/[id]/sku, que tiene guard de colisión
+  // bloqueante (lo que evita la contaminación que vimos con TP-00658).
+  // Rechazamos 410 con redirección clara para tapar el agujero del campo
+  // legacy hasta que Fase 5 lo elimine del schema.
+  if (parsed.data.publicationSku !== undefined) {
+    return NextResponse.json(
+      {
+        error:
+          "publicationSku ya no se edita por este endpoint. Usar PUT /api/catalog/publications/<id>/sku.",
+      },
+      { status: 410 }
+    );
+  }
+
   const updated = await prisma.catalogProduct.update({
     where: { id: params.id },
     data: parsed.data,
@@ -199,16 +217,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     await markPublicationsDrift(prisma, [params.id]);
   }
 
-  if (parsed.data.publicationSku !== undefined) {
-    await logInfo({
-      source: "USER",
-      type: "USER_EDITED_PUBLICATION_SKU",
-      title: "SKU comercial editado",
-      userId: session.user.id,
-      productId: params.id,
-      metadata: { newSku: parsed.data.publicationSku },
-    });
-  }
+  // (El log USER_EDITED_PUBLICATION_SKU se removió de acá en Fase 4B.
+  // Ahora vive en PUT /api/catalog/publications/[id]/sku y solo se emite
+  // si oldSku !== newSku — sin más logs fantasma.)
 
   return NextResponse.json(updated);
 }
