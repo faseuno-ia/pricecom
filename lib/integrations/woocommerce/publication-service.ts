@@ -12,6 +12,7 @@ import {
 } from "@/lib/pricing/pricing-engine";
 import { logInfo, logWarning, logError } from "@/lib/events/event-log";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
+import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
 
 export interface PublishResult {
   success: boolean;
@@ -91,6 +92,12 @@ export async function publishProductToWoo(
     select: {
       id: true,
       sku: true,
+      // externalSku es el snapshot del SKU como está en Woo. Lo usamos para
+      // detectar drift entre pp.sku (PricEcom) y el SKU real en la tienda:
+      // si difieren, el sync re-empuja el SKU como parte del updatePayload
+      // (necesario para que el endpoint de renombre con error transitorio
+      // se cierre vía pendingSync + reintento).
+      externalSku: true,
       externalProductId: true,
       commercialTitle: true,
       commercialTitleUserEdited: true,
@@ -211,13 +218,17 @@ export async function publishProductToWoo(
     if (existingPub?.externalProductId) {
       // PricEcom es fuente de verdad para precio y estado siempre. Nombre y
       // descripción solo se mandan si el usuario los editó desde PricEcom
-      // (override per-publication con flag userEdited). El resto de campos
-      // (SKU, stock, categorías, imágenes) son propiedad de WooCommerce.
+      // (override per-publication con flag userEdited). Stock/categorías/
+      // imágenes son propiedad de WooCommerce. El SKU era inmutable
+      // históricamente, pero Fase 4B permite renombrarlo desde PricEcom:
+      // si pp.sku divirgió de pp.externalSku, lo incluimos en el payload
+      // para que el sync de reintento cierre el drift.
       const updatePayload: {
         regular_price: string;
         status: string;
         name?: string;
         description?: string;
+        sku?: string;
       } = {
         regular_price: price.toFixed(2),
         status: "publish",
@@ -234,6 +245,40 @@ export async function publishProductToWoo(
       ) {
         updatePayload.description = existingPub.commercialDescription;
       }
+      // Drift de SKU: pp.sku es el canónico de PricEcom, externalSku es el
+      // snapshot de la tienda. Si difieren, hubo un renombre que aún no se
+      // aplicó (típicamente porque el endpoint de Fase 4B tuvo error
+      // transitorio y marcó pendingSync). Empujamos el sku nuevo.
+      if (
+        existingPub.sku &&
+        existingPub.externalSku &&
+        existingPub.sku !== existingPub.externalSku
+      ) {
+        // Guard 3 (Fase 4B): antes de pushear el sku renombrado, verificar
+        // que no exista en Woo con OTRO producto. Si existe, sacar de la cola
+        // (no es transitorio) y devolver error específico. excludeWooProductId
+        // es el wooId de ESTA publication — no contar al propio producto.
+        const wooGuard = await assertSkuNotInWoo(
+          client,
+          existingPub.sku,
+          parseInt(existingPub.externalProductId, 10)
+        );
+        if (!wooGuard.ok) {
+          await prisma.productPublication.update({
+            where: { id: existingPub.id },
+            data: {
+              syncStatus: "ERROR_SKU_CONFLICT",
+              pendingSync: false,
+              syncError: `El SKU "${existingPub.sku}" ya existe en WooCommerce con otro producto (${wooGuard.conflict.name}, wooId=${wooGuard.conflict.id}).`,
+            },
+          });
+          return {
+            success: false,
+            error: `SKU conflict in Woo: "${existingPub.sku}" ya existe con otro producto (wooId=${wooGuard.conflict.id}, "${wooGuard.conflict.name}").`,
+          };
+        }
+        updatePayload.sku = existingPub.sku;
+      }
       const updated = await client.updateProduct(
         parseInt(existingPub.externalProductId, 10),
         updatePayload
@@ -245,6 +290,31 @@ export async function publishProductToWoo(
       // CREATE: primera publicación, sí mandamos todo para sembrar la ficha
       // en la tienda. Una vez creada, los updates posteriores son sólo
       // precio + estado.
+      //
+      // Guard 3 (Fase 4B): el SKU lazy generado podría existir en Woo si el
+      // cliente cargó manualmente un producto con ese SKU. Bloqueamos el
+      // create con un syncStatus distinguible para sacar la pub de la cola
+      // (existingPub puede ser null en CREATE: si lo es, no hay pub donde
+      // grabar el conflicto — caso "Publicar por primera vez desde el
+      // catálogo", solo devolvemos error).
+      const wooGuard = await assertSkuNotInWoo(client, sku, null);
+      if (!wooGuard.ok) {
+        if (existingPub?.id) {
+          await prisma.productPublication.update({
+            where: { id: existingPub.id },
+            data: {
+              syncStatus: "ERROR_SKU_CONFLICT",
+              pendingSync: false,
+              syncError: `El SKU "${sku}" ya existe en WooCommerce con otro producto (${wooGuard.conflict.name}, wooId=${wooGuard.conflict.id}).`,
+            },
+          });
+        }
+        return {
+          success: false,
+          error: `SKU conflict in Woo: "${sku}" ya existe con otro producto (wooId=${wooGuard.conflict.id}, "${wooGuard.conflict.name}"). Asignale otro SKU comercial desde el drawer o resolvé el duplicado en Woo.`,
+        };
+      }
+
       const created = await client.createProduct({
         name: product.commercialTitle ?? product.supplierName,
         sku,

@@ -31,6 +31,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
+import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
 import { logInfo } from "@/lib/events/event-log";
 
 export const dynamic = "force-dynamic";
@@ -143,15 +144,11 @@ export async function PUT(
     return NextResponse.json({ unchanged: true, sku: oldSku });
   }
 
-  // ── Persistir ANTES del push (atomicidad / retry-safety) ────────────────
-  await prisma.productPublication.update({
-    where: { id: pub.id },
-    data: { sku: newSku },
-  });
-
-  // ── Push a Woo si la pub está en la tienda ──────────────────────────────
-  let wooPushOk = true;
-  let wooError: string | null = null;
+  // ── Guard 3: colisión en WooCommerce (solo si la pub está en Woo) ───────
+  // Antes de persistir nada, verificamos contra la tienda real para evitar
+  // un push que sabemos que va a fallar con product_invalid_sku.
+  // Cargamos el client una sola vez y lo reusamos para el push posterior.
+  let wooClient: WooCommerceClient | null = null;
   if (isInWoo) {
     const store = await prisma.store.findFirst({
       where: { id: pub.storeId, userId: session.user.id },
@@ -159,22 +156,100 @@ export async function PUT(
     });
     const integration = store?.integrations[0];
     if (!store || !integration) {
+      return NextResponse.json(
+        {
+          error:
+            "Sin credenciales de WooCommerce configuradas. No se puede verificar colisión ni pushear el SKU.",
+        },
+        { status: 400 }
+      );
+    }
+    try {
+      wooClient = WooCommerceClient.fromIntegration({
+        storeUrl: store.url,
+        consumerKeyEncrypted: integration.consumerKeyEncrypted,
+        consumerSecretEncrypted: integration.consumerSecretEncrypted,
+      });
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error: `Credenciales WooCommerce inválidas: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        },
+        { status: 400 }
+      );
+    }
+
+    // excludeWooProductId = el wooId DE ESTA publication. Renombrarla "al
+    // mismo SKU que ya tiene en Woo" no debe contarse como colisión consigo.
+    const guard = await assertSkuNotInWoo(
+      wooClient,
+      newSku,
+      parseInt(pub.externalProductId!, 10)
+    );
+    if (!guard.ok) {
+      return NextResponse.json(
+        {
+          error: `El SKU "${newSku}" ya existe en tu tienda WooCommerce con otro producto (${guard.conflict.name}, wooId=${guard.conflict.id}). Asignale otro SKU desde el drawer, o resolvé el duplicado en Woo si corresponde.`,
+          conflictingWooId: guard.conflict.id,
+          conflictingWooName: guard.conflict.name,
+          conflictingWooSku: guard.conflict.sku,
+          conflictingWooPermalink: guard.conflict.permalink,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
+  // ── Persistir ANTES del push (atomicidad / retry-safety) ────────────────
+  await prisma.productPublication.update({
+    where: { id: pub.id },
+    data: { sku: newSku },
+  });
+
+  // ── Push a Woo si la pub está en la tienda ──────────────────────────────
+  // Acá llegamos solo si pasó el guard 3 (no hay otro producto Woo con
+  // este SKU). Si Woo responde OK → actualizamos externalSku para que pp.sku
+  // y externalSku queden alineados (sin drift). Si falla por error
+  // transitorio (timeout/5xx/red) → pendingSync=true + syncStatus=ERROR
+  // + syncError. El sync de reintento (publishProductToWoo con cambio A)
+  // detecta drift sku!=externalSku y re-empuja, cerrando el gap.
+  let wooPushOk = true;
+  let wooError: string | null = null;
+  if (isInWoo && wooClient) {
+    try {
+      const updated = await wooClient.updateProduct(
+        parseInt(pub.externalProductId!, 10),
+        { sku: newSku }
+      );
+      // Push OK: cerramos el snapshot con el sku real que devuelve Woo.
+      await prisma.productPublication.update({
+        where: { id: pub.id },
+        data: {
+          externalSku: updated.sku,
+          pendingSync: false,
+          syncStatus: "SYNCED",
+          syncError: null,
+          lastSyncedAt: new Date(),
+          lastSyncAt: new Date(),
+        },
+      });
+    } catch (err) {
       wooPushOk = false;
-      wooError = "Sin credenciales de WooCommerce";
-    } else {
-      try {
-        const client = WooCommerceClient.fromIntegration({
-          storeUrl: store.url,
-          consumerKeyEncrypted: integration.consumerKeyEncrypted,
-          consumerSecretEncrypted: integration.consumerSecretEncrypted,
-        });
-        await client.updateProduct(parseInt(pub.externalProductId!, 10), {
-          sku: newSku,
-        });
-      } catch (err) {
-        wooPushOk = false;
-        wooError = err instanceof Error ? err.message : String(err);
-      }
+      wooError = err instanceof Error ? err.message : String(err);
+      // Acá llegamos solo con errores TRANSITORIOS (timeout/5xx/red): el
+      // guard 3 arriba ya descartó el caso de colisión Woo bloqueante. El
+      // sync de reintento (publishProductToWoo) detecta drift sku!=externalSku
+      // y re-empuja el sku, así que pendingSync=true cierra el gap.
+      await prisma.productPublication.update({
+        where: { id: pub.id },
+        data: {
+          pendingSync: true,
+          syncStatus: "ERROR",
+          syncError: wooError,
+        },
+      });
     }
   }
 

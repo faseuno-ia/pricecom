@@ -308,6 +308,12 @@ enum PublicationSyncStatus {
   OUTDATED
   ERROR
   PAUSED
+  /// El SKU canónico (pp.sku) colisiona con otro producto YA EXISTENTE en
+  /// la tienda externa. NO es transitorio — reintentar no resuelve nada.
+  /// El usuario tiene que renombrar el SKU desde el drawer o limpiar el
+  /// duplicado en la tienda. Cuando esta publication tiene este status,
+  /// se la saca de la cola de reintento (pendingSync=false).
+  ERROR_SKU_CONFLICT
 }
 
 model Store {

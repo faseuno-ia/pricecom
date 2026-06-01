@@ -150,6 +150,21 @@ export class WooCommerceClient {
     return res.json();
   }
 
+  /** Devuelve los productos Woo que tienen ese SKU. Si el array es vacío, no
+   *  hay duplicados. Usado para el guard pre-push de Fase 4B (Colisión 2). */
+  async findProductsBySku(sku: string): Promise<WooProduct[]> {
+    const res = await this.fetchWoo(
+      `${this.baseUrl}/products?sku=${encodeURIComponent(sku)}`
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `WooCommerce findProductsBySku error: HTTP ${res.status} ${text.slice(0, 200)}`
+      );
+    }
+    return res.json();
+  }
+
   async getProducts(page = 1, perPage = 100): Promise<WooProduct[]> {
     const res = await this.fetchWoo(
       `${this.baseUrl}/products?page=${page}&per_page=${perPage}&status=any`
