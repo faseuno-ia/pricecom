@@ -1,0 +1,4 @@
+# Normalizar line endings a LF en el repo. Evita los warnings "LF will be
+# replaced by CRLF" en cada commit desde Windows y mantiene los diffs
+# consistentes entre dev en Windows y workers en Linux (Railway).
+* text=auto eol=lf

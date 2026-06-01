@@ -48,3 +48,9 @@ Thumbs.db
 /playwright-report/
 /playwright/.cache/
 
+# Scripts efímeros: diagnostico/verificación inline durante sesiones de trabajo.
+# Los one-off "definitivos" (que documentan una migración aplicada) van sin
+# el prefijo "_temp" y sí se versionan.
+scripts/_temp-*.ts
+scripts/_snapshot-*.json
+
