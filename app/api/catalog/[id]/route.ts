@@ -108,7 +108,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const owned = await prisma.catalogProduct.findFirst({
     where: { id: params.id, userId: session.user.id },
-    select: { id: true, provider: { select: { providerType: true } } },
+    select: {
+      id: true,
+      // supplierName + commercialTitle: necesarios para resolver el delta real
+      // del título comercial (4D-title). Sin esto, no podemos distinguir
+      // "el usuario editó" de "guardó con el supplierName precargado intacto".
+      supplierName: true,
+      commercialTitle: true,
+      provider: { select: { providerType: true } },
+    },
   });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -159,9 +167,58 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     );
   }
 
+  // ── Resolver delta real del commercialTitle (4D-title) ──────────────────
+  // El frontend ahora precarga el input con commercialTitle ?? supplierName
+  // (en vez de "") y siempre lo manda en el PATCH. Sin esta lógica, el caller
+  // que guarda "sin tocar" persistiría commercialTitle=supplierName y marcaría
+  // pub.commercialTitleUserEdited=true, congelando el título: el scraper
+  // seguiría actualizando supplierName, pero el display y Woo quedarían con el
+  // viejo. La regla es "delta real": setear/marcar solo si el valor entrante
+  // es realmente distinto del estado actual Y distinto del supplierName
+  // precargado.
+  //
+  // Casos:
+  //   incoming === prev          → no-op (no re-marcar, no tocar pub)
+  //   incoming vacío/null        → volver a dinámico (cp.cT=null, userEdited=false)
+  //   incoming === supplierName  → no editó (precargado intacto)  →   ídem ↑
+  //   resto                       → edición real (cp.cT=incoming, userEdited=true)
+  type TitleDecision =
+    | { kind: "noop" }
+    | { kind: "set"; value: string | null; userEdited: boolean };
+
+  let titleDecision: TitleDecision = { kind: "noop" };
+  if (parsed.data.commercialTitle !== undefined) {
+    const incomingRaw = parsed.data.commercialTitle?.trim() ?? "";
+    const incoming = incomingRaw === "" ? null : incomingRaw;
+    const supplierTrimmed = owned.supplierName.trim();
+    const prev = owned.commercialTitle?.trim() ?? null;
+
+    if (incoming === prev) {
+      titleDecision = { kind: "noop" };
+    } else if (incoming === null) {
+      titleDecision = { kind: "set", value: null, userEdited: false };
+    } else if (incoming === supplierTrimmed) {
+      titleDecision = { kind: "set", value: null, userEdited: false };
+    } else {
+      titleDecision = { kind: "set", value: incoming, userEdited: true };
+    }
+  }
+
+  // commercialDescription: SIN delta real por ahora (decisión aparte, espera
+  // a que se defina si la descripción también se precarga). Mantiene el
+  // comportamiento legacy: "vino en el body → persistir + userEdited=true".
+
+  const cpData = { ...parsed.data };
+  if (titleDecision.kind === "noop") {
+    // No tocar cp.commercialTitle: el campo ya está como debe.
+    delete cpData.commercialTitle;
+  } else {
+    cpData.commercialTitle = titleDecision.value;
+  }
+
   const updated = await prisma.catalogProduct.update({
     where: { id: params.id },
-    data: parsed.data,
+    data: cpData,
     include: {
       provider: { select: { id: true, name: true, baseUrl: true } },
       images: { orderBy: { position: "asc" } },
@@ -177,16 +234,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     },
   });
 
-  // Si el usuario tocó título o descripción desde PricEcom, mirroreamos el
-  // valor a la ProductPublication ACTIVE marcando el flag userEdited=true.
-  // Eso bloquea futuras pisadas desde Woo→PricEcom y permite que el push
-  // PricEcom→Woo mande estos campos en updateProduct.
-  if (parsed.data.commercialTitle !== undefined) {
+  // Sincronizar el override per-publication SOLO si hubo decisión real. En el
+  // caso noop, no tocamos nada para no marcar userEdited de balde.
+  if (titleDecision.kind === "set") {
     await prisma.productPublication.updateMany({
       where: { catalogProductId: params.id, status: "ACTIVE" },
       data: {
-        commercialTitle: parsed.data.commercialTitle,
-        commercialTitleUserEdited: true,
+        commercialTitle: titleDecision.value,
+        commercialTitleUserEdited: titleDecision.userEdited,
       },
     });
   }
@@ -204,13 +259,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // y nombre/descripción solo si el flag userEdited está activo en la
   // publication. Por eso cualquier cambio en estos campos dispara drift.
   // publicationSku, categorías y notes no llegan a Woo → no marcan drift.
+  // Para commercialTitle, ahora usamos la decisión del delta real — si fue
+  // noop, no marcamos drift (sería un ciclo de worker que no produce nada).
   const affectsWoo =
     parsed.data.finalPrice !== undefined ||
     parsed.data.manualMargin !== undefined ||
     parsed.data.manualPrice !== undefined ||
     parsed.data.wholesalePrice !== undefined ||
     parsed.data.pricingRuleId !== undefined ||
-    parsed.data.commercialTitle !== undefined ||
+    titleDecision.kind === "set" ||
     parsed.data.commercialDescription !== undefined;
 
   if (affectsWoo) {

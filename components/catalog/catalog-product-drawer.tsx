@@ -348,7 +348,13 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
         const data: CatalogProductDetail = await res.json();
         if (cancelled) return;
         setProduct(data);
-        setCommercialTitle(data.commercialTitle ?? "");
+        // Precargar el input con commercialTitle si existe; si no, con
+        // supplierName (en vez de "") para que el usuario vea el nombre actual
+        // del proveedor y pueda editarlo en vez de escribir desde cero. El
+        // backend resuelve el delta real al guardar: si el valor entrante
+        // coincide con supplierName, NO se marca como override (queda
+        // commercialTitle=null + userEdited=false → display dinámico).
+        setCommercialTitle(data.commercialTitle ?? data.supplierName ?? "");
         setCommercialDescription(data.commercialDescription ?? "");
         // SKU comercial post-Fase 4A/4B: leemos pp.sku (canónico) desde la
         // primera publication. El campo legacy data.publicationSku queda en
