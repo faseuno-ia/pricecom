@@ -155,9 +155,13 @@ export default async function ProviderDashboardPage({
           take: 1,
         },
         publications: {
-          where: { status: "ACTIVE" },
-          select: { pendingSync: true, syncStatus: true },
-          take: 1,
+          // Quitamos el filter de status="ACTIVE" — necesitamos también la
+          // publication PAUSED para leer pp.sku (el SKU comercial existe
+          // independiente del status). El take:1 también sale: para 1 store
+          // hay 0-1 publications igual, pero sin take un CP con publication
+          // PAUSED y otra ACTIVE histórica (caso raro) trae ambas y el JSX
+          // elige la correcta para cada propósito.
+          select: { sku: true, status: true, pendingSync: true, syncStatus: true },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -578,11 +582,16 @@ export default async function ProviderDashboardPage({
           <div className="divide-y divide-border">
             {catalogProducts.map((p) => {
               const img = normalizeImageUrl(p.images[0]?.url ?? p.imageUrl);
+              // pendingSync/syncStatus para deriveVisualStatus se toman solo
+              // de la publication ACTIVE (consistente con la lógica previa).
+              // El SKU comercial (pub.sku) se toma de cualquier publication
+              // existente porque es canónico independiente del status.
+              const activePub = p.publications.find((pp) => pp.status === "ACTIVE");
               const visualStatus = deriveVisualStatus({
                 internalStatus: p.internalStatus,
                 supplierStatus: p.supplierStatus,
-                pendingSync: p.publications[0]?.pendingSync,
-                syncStatus: p.publications[0]?.syncStatus,
+                pendingSync: activePub?.pendingSync,
+                syncStatus: activePub?.syncStatus,
               });
               const badge = visualStatusConfig[visualStatus];
               return (
@@ -608,7 +617,7 @@ export default async function ProviderDashboardPage({
                     </p>
                     <p className="text-[11px] text-muted-foreground truncate">
                       <span className="font-mono">
-                        {p.publicationSku ?? "—"}
+                        {p.publications[0]?.sku ?? "—"}
                       </span>
                       {p.assignedCategory?.name
                         ? ` · ${p.assignedCategory.name}`

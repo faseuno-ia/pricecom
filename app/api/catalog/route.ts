@@ -48,6 +48,7 @@ export async function GET(req: NextRequest) {
         assignedCategory: { select: { id: true, name: true } },
         publications: {
           select: {
+            sku: true,
             status: true,
             storeId: true,
             externalProductId: true,

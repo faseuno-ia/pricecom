@@ -87,6 +87,10 @@ interface CatalogRow {
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;
   publications: {
+    // SKU comercial canónico (Fase 3 lazy). Fuente del display post-Fase 4A.
+    // Reemplaza progresivamente a CatalogProduct.publicationSku (eliminado
+    // en Fase 5).
+    sku: string | null;
     status: string;
     storeId: string;
     externalProductId: string | null;
@@ -1342,7 +1346,10 @@ export function CatalogTable({
                   const enginePct = p.pricing?.marginPercent ?? null;
                   const displayName =
                     p.commercialTitle?.trim() || p.supplierName;
-                  const skuComercial = p.publicationSku ?? "—";
+                  // Fase 4A: SKU comercial = pp.sku (canónico). publicationSku
+                  // del CatalogProduct ya no se lee como display. Si no hay
+                  // publication, "—" (producto sin Woo).
+                  const skuComercial = p.publications[0]?.sku ?? "—";
                   const rawImage = p.images[0]?.url ?? p.imageUrl ?? null;
                   const normalizedImage = normalizeImageUrl(rawImage);
                   const imageFailed = failedImages.has(p.id);

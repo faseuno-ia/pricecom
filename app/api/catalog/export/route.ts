@@ -118,6 +118,13 @@ export async function POST(req: NextRequest) {
           take: 1,
           select: { url: true },
         },
+        // Fase 4A: SKU comercial canónico desde pp.sku (en lugar de
+        // CatalogProduct.publicationSku). Para 1 store por user hay 0-1
+        // publications; tomamos la primera.
+        publications: {
+          select: { sku: true },
+          take: 1,
+        },
       },
     }),
     prisma.pricingRule.findMany({
@@ -182,10 +189,11 @@ export async function POST(req: NextRequest) {
     const price = p.finalPrice ?? pricing.calculatedPrice ?? "";
 
     sheet.addRow({
-      // Read-only: vuelca lo que hay en DB. publicationSku vacío si no tiene
-      // SKU comercial asignado (coherente con el "—" del catálogo). El sku
-      // raw del proveedor se exporta aparte en su propia columna.
-      publicationSku: p.publicationSku ?? "",
+      // Read-only: vuelca lo que hay en DB. SKU comercial = pp.sku (canónico
+      // post-Fase 3 lazy). Vacío si no tiene publication o pub.sku=null
+      // (coherente con el "—" del catálogo). El sku raw del proveedor se
+      // exporta aparte en su propia columna.
+      publicationSku: p.publications[0]?.sku ?? "",
       sku: p.sku ?? "",
       title: p.commercialTitle ?? p.supplierName ?? "",
       price,

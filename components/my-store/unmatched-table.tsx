@@ -38,10 +38,12 @@ interface UnmatchedRow {
 interface CatalogSearchItem {
   id: string;
   sku: string | null;
-  publicationSku: string | null;
   supplierName: string;
   commercialTitle: string | null;
   imageUrl: string | null;
+  // Fase 4A: SKU comercial canónico desde ProductPublication.sku (pp[0]).
+  // Reemplaza el viejo CatalogProduct.publicationSku como fuente de display.
+  publications: { sku: string | null }[];
 }
 
 function formatPrice(p: number | null): string {
@@ -599,7 +601,7 @@ function LinkSearchModal({
                         {r.commercialTitle ?? r.supplierName}
                       </p>
                       <p className="text-[10px] text-muted-foreground font-mono">
-                        {r.publicationSku ?? "—"}
+                        {r.publications[0]?.sku ?? "—"}
                       </p>
                     </div>
                   </button>
