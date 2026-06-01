@@ -12,6 +12,7 @@ import {
 } from "@/lib/pricing/pricing-engine";
 import { logInfo, logWarning, logError } from "@/lib/events/event-log";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
+import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
 
 export interface PublishResult {
@@ -136,26 +137,17 @@ export async function publishProductToWoo(
     }
     sku = generated;
 
-    // Colisión: warning-only en generación automática. El guard bloqueante
-    // va en Fase 4 (edición manual del SKU desde la UI). Chequeamos pp.sku
-    // (canónico post-Fase 2) Y cp.publicationSku (legacy que se elimina en
-    // Fase 5). Mientras coexistan ambos campos, hay que mirar los dos para
-    // no perder casos durante la ventana de migración.
-    const collisionPp = await prisma.productPublication.findFirst({
-      where: { sku, catalogProductId: { not: catalogProductId } },
-      select: { id: true, catalogProductId: true },
-    });
-    const collisionCp = !collisionPp
-      ? await prisma.catalogProduct.findFirst({
-          where: {
-            publicationSku: sku,
-            id: { not: catalogProductId },
-            userId: product.userId,
-          },
-          select: { id: true },
-        })
-      : null;
-    if (collisionPp || collisionCp) {
+    // Colisión: warning-only en generación automática. El guard BLOQUEANTE
+    // está en Fase 4B (edición manual y guard 3 contra Woo). Acá solo
+    // logueamos para que el operador lo vea en el activity log. Reusamos
+    // el helper compartido findCollidingSkuInPricEcom.
+    const collision = await findCollidingSkuInPricEcom(
+      prisma,
+      product.userId,
+      sku,
+      { catalogProductId }
+    );
+    if (collision) {
       await logWarning({
         source: "SYNC",
         type: "SKU_COLLISION",
@@ -165,9 +157,9 @@ export async function publishProductToWoo(
         storeId,
         metadata: {
           sku,
-          conflictingPublicationId: collisionPp?.id ?? null,
-          conflictingCatalogProductId:
-            collisionPp?.catalogProductId ?? collisionCp?.id ?? null,
+          conflictingPublicationId:
+            collision.source === "publication" ? collision.id : null,
+          conflictingCatalogProductId: collision.catalogProductId,
         },
       });
     }

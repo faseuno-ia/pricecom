@@ -7,6 +7,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
+import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 
 const bodySchema = z.object({
   providerId: z.string().min(1),
@@ -59,7 +60,8 @@ export async function POST(req: NextRequest) {
     data.publicationSku?.trim() ||
     buildPublicationSku(provider.scraperConfig?.imageFilenamePrefix, data.sku);
 
-  // Verificar duplicado por (userId, providerId, sku).
+  // Verificar duplicado por (userId, providerId, sku) — clave de identidad del
+  // producto en el proveedor (no del SKU comercial).
   const existing = await prisma.catalogProduct.findFirst({
     where: {
       userId: session.user.id,
@@ -73,6 +75,26 @@ export async function POST(req: NextRequest) {
       { error: "Ya existe un producto con ese SKU para este proveedor" },
       { status: 409 }
     );
+  }
+
+  // Fase 4F guard: colisión del SKU comercial (publicationSku) contra el resto
+  // del catálogo. Si lo dejamos pasar, terminamos con dos CPs distintos
+  // apuntando al mismo SKU comercial — el patrón TP-00658 original.
+  if (publicationSku) {
+    const collision = await findCollidingSkuInPricEcom(
+      prisma,
+      session.user.id,
+      publicationSku
+    );
+    if (collision) {
+      return NextResponse.json(
+        {
+          error: `El SKU comercial "${publicationSku}" ya pertenece a otro producto (${collision.supplierName.slice(0, 60)}). Asignale otro SKU comercial o dejá el campo vacío para derivarlo del proveedor.`,
+          conflictingCatalogProductId: collision.catalogProductId,
+        },
+        { status: 409 }
+      );
+    }
   }
 
   const imageUrl = data.imageUrl?.trim() || null;

@@ -14,6 +14,7 @@ import * as XLSX from "xlsx";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
+import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 import {
   pickField,
   parseImportNumber,
@@ -151,6 +152,12 @@ export async function POST(req: NextRequest) {
 
   const categoryCache = new Map<string, string>();
 
+  // Fase 4F guard: tracking de publicationSku dentro del mismo Excel. Si dos
+  // filas traen el mismo SKU comercial (con sku raw distinto, o ambos sin sku
+  // raw), la segunda es colisión intra-batch — se reporta y se saltea.
+  // Map clave = publicationSku, valor = rowNum donde apareció primero.
+  const seenPubSkuInExcel = new Map<string, number>();
+
   // Acumuladores de diff para emitir ProductChange al final.
   const diffNew: DiffChange[] = [];
   const diffPriceUp: DiffChange[] = [];
@@ -224,6 +231,40 @@ export async function POST(req: NextRequest) {
       }
 
       const existing = existingBySku.get(sku);
+
+      // Fase 4F guard: colisión del publicationSku (1) entre filas del mismo
+      // Excel, (2) contra el resto del catálogo en DB. Cuando es UPDATE de
+      // un cp existente (matchea por sku raw), excluimos su propio cp.id
+      // para que no se cuente como conflicto consigo mismo.
+      if (publicationSku) {
+        const firstSeenRow = seenPubSkuInExcel.get(publicationSku);
+        if (firstSeenRow !== undefined && firstSeenRow !== rowNum) {
+          report.errors.push({
+            row: rowNum,
+            sku,
+            message: `SKU comercial "${publicationSku}" duplicado en el Excel (también aparece en la fila ${firstSeenRow}).`,
+          });
+          report.skipped++;
+          continue;
+        }
+        seenPubSkuInExcel.set(publicationSku, rowNum);
+
+        const collision = await findCollidingSkuInPricEcom(
+          prisma,
+          session.user.id,
+          publicationSku,
+          existing ? { catalogProductId: existing.id } : undefined
+        );
+        if (collision) {
+          report.errors.push({
+            row: rowNum,
+            sku,
+            message: `SKU comercial "${publicationSku}" ya pertenece a otro producto del catálogo (${collision.supplierName.slice(0, 60)}).`,
+          });
+          report.skipped++;
+          continue;
+        }
+      }
 
       if (existing) {
         // REGLA: solo asignar la categoría del Excel si el producto NO tiene

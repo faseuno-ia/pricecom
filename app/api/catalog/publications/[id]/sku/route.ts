@@ -32,6 +32,7 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
 import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
+import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 import { logInfo } from "@/lib/events/event-log";
 
 export const dynamic = "force-dynamic";
@@ -85,41 +86,21 @@ export async function PUT(
 
   const oldSku = pub.sku ?? null;
 
-  // ── Guard 1: colisión bloqueante ─────────────────────────────────────────
-  // pp.sku igual en otra publication del mismo user
-  const collisionPp = await prisma.productPublication.findFirst({
-    where: {
-      sku: newSku,
-      id: { not: pub.id },
-      catalogProduct: { is: { userId: session.user.id } },
-    },
-    select: {
-      id: true,
-      catalogProductId: true,
-      catalogProduct: { select: { supplierName: true } },
-    },
-  });
-  // cp.publicationSku igual en otro CatalogProduct (legacy hasta Fase 5)
-  const collisionCp = !collisionPp
-    ? await prisma.catalogProduct.findFirst({
-        where: {
-          publicationSku: newSku,
-          id: { not: pub.catalogProductId },
-          userId: session.user.id,
-        },
-        select: { id: true, supplierName: true },
-      })
-    : null;
-  if (collisionPp || collisionCp) {
-    const conflictName = collisionPp
-      ? collisionPp.catalogProduct.supplierName
-      : collisionCp!.supplierName;
+  // ── Guard 1: colisión bloqueante en PricEcom ─────────────────────────────
+  // Helper compartido: chequea pp.sku Y cp.publicationSku (legacy hasta Fase 5).
+  const collision = await findCollidingSkuInPricEcom(
+    prisma,
+    session.user.id,
+    newSku,
+    { publicationId: pub.id, catalogProductId: pub.catalogProductId }
+  );
+  if (collision) {
     return NextResponse.json(
       {
-        error: `El SKU "${newSku}" ya pertenece a otro producto (${conflictName.slice(0, 60)})`,
-        conflictingCatalogProductId:
-          collisionPp?.catalogProductId ?? collisionCp?.id ?? null,
-        conflictingPublicationId: collisionPp?.id ?? null,
+        error: `El SKU "${newSku}" ya pertenece a otro producto (${collision.supplierName.slice(0, 60)})`,
+        conflictingCatalogProductId: collision.catalogProductId,
+        conflictingPublicationId:
+          collision.source === "publication" ? collision.id : null,
       },
       { status: 409 }
     );
