@@ -525,6 +525,14 @@ export async function POST(req: NextRequest) {
       userId: session.user.id,
       metadata: { count: result.count, productIds: ownedIds },
     });
+  } else if (action === "prepare" && result.count > 0) {
+    await logInfo({
+      source: "USER",
+      type: "USER_PREPARED_PRODUCT",
+      title: `${result.count} producto(s) marcados como preparados`,
+      userId: session.user.id,
+      metadata: { count: result.count, productIds: ownedIds },
+    });
   }
 
   return NextResponse.json({

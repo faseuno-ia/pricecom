@@ -519,6 +519,26 @@ export async function POST(req: NextRequest) {
         },
         data: { pendingSync: true, syncStatus: "PENDING_SYNC" },
       });
+
+      // Trace per-batch del auto-pause: hasta acá el import solo emitía el
+      // report agregado al cerrar. Ese rastro no alcanza para "qué pasó con
+      // este producto" en el activity log.
+      if (removedPausedCount > 0) {
+        await logInfo({
+          source: "SYNC",
+          type: "PRODUCT_AUTO_PAUSED",
+          title: `${removedPausedCount} producto(s) auto-pausados durante import (supplier removed)`,
+          userId: session.user.id,
+          providerId,
+          metadata: {
+            productIds: pauseIds,
+            count: removedPausedCount,
+            reason: "supplier_removed_during_import",
+            newStatus: "PAUSED",
+            importBatchId,
+          },
+        });
+      }
     }
 
     // Caso 2: el resto (excepto IGNORED y el caso 1) → solo SUPPLIER_REMOVED

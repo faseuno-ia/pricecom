@@ -462,10 +462,28 @@ export async function pauseProductInWoo(
 
   // Si no está publicado en WooCommerce, solo actualizamos el estado interno.
   if (!pub?.externalProductId) {
+    const prev = await prisma.catalogProduct.findUnique({
+      where: { id: catalogProductId },
+      select: { internalStatus: true },
+    });
     await prisma.catalogProduct.update({
       where: { id: catalogProductId },
       data: { internalStatus: "PAUSED" },
     });
+    if (prev && prev.internalStatus !== "PAUSED") {
+      await logInfo({
+        source: "SYNC",
+        type: "PRODUCT_PAUSED_WITHOUT_WOO",
+        title: "Producto pausado (sin presencia en WooCommerce)",
+        productId: catalogProductId,
+        storeId,
+        metadata: {
+          previousStatus: prev.internalStatus,
+          newStatus: "PAUSED",
+          reason: pub ? "no_external_product_id" : "no_publication",
+        },
+      });
+    }
     return { success: true };
   }
 

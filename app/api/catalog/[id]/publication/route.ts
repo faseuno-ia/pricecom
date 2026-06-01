@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { InternalPublicationStatus, PublicationStatus } from "@prisma/client";
 import { z } from "zod";
+import { logInfo } from "@/lib/events/event-log";
 
 // ACTIVE/PAUSED/DRAFT → ProductPublication.status (requiere Store)
 // IGNORED → CatalogProduct.internalStatus (acción del usuario, no del proveedor)
@@ -41,10 +42,36 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (status === "IGNORED" || status === "RESTORE") {
     const next: InternalPublicationStatus =
       status === "IGNORED" ? "IGNORED" : "NOT_PUBLISHED";
+
+    // Leer estado previo para el log (sin esto, "qué pasó con DURAVIT?" no
+    // tiene respuesta: era exactamente esta ruta y no dejaba rastro).
+    const prev = await prisma.catalogProduct.findUnique({
+      where: { id: params.id },
+      select: { internalStatus: true, supplierName: true },
+    });
+
     const updated = await prisma.catalogProduct.update({
       where: { id: params.id },
       data: { internalStatus: next },
     });
+
+    if (prev && prev.internalStatus !== next) {
+      const isIgnore = status === "IGNORED";
+      await logInfo({
+        source: "USER",
+        type: isIgnore ? "USER_IGNORED_PRODUCT" : "USER_RESTORED_PRODUCT",
+        title: isIgnore
+          ? `Producto ignorado: ${prev.supplierName?.slice(0, 80) ?? params.id}`
+          : `Producto restaurado: ${prev.supplierName?.slice(0, 80) ?? params.id}`,
+        userId: session.user.id,
+        productId: params.id,
+        metadata: {
+          previousStatus: prev.internalStatus,
+          newStatus: next,
+        },
+      });
+    }
+
     return NextResponse.json(updated);
   }
 
