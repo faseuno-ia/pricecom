@@ -20,6 +20,13 @@
     "catalog:backfill-categories": "npx tsx scripts/backfill-product-categories.ts",
     "fix:prepared-removed": "tsx scripts/fix-prepared-supplier-removed.ts",
     "fix:outdated-residual": "tsx scripts/fix-outdated-residual.ts",
+    "test": "npm run test:unit && npm run test:int",
+    "test:unit": "vitest run --dir tests/unit",
+    "test:int": "vitest run --dir tests/integration",
+    "test:watch:unit": "vitest --dir tests/unit",
+    "test:watch:int": "vitest --dir tests/integration",
+    "db:test:migrate": "tsx scripts/db-test-migrate.ts",
+    "db:test:reset": "tsx scripts/db-test-reset.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -59,10 +66,13 @@
     "@types/react-dom": "^18",
     "autoprefixer": "^10.0.1",
     "concurrently": "^8.2.2",
+    "dotenv": "^17.4.2",
     "postcss": "^8",
     "prisma": "^5.10.0",
     "tailwindcss": "^3.3.0",
     "tsx": "^4.7.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.8"
   }
 }

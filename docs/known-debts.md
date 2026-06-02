@@ -165,3 +165,102 @@ extensión del `report`), componente del importador
 (`components/catalog/catalog-import-form.tsx`) para mostrar el warning.
 
 ---
+
+## Migration history no reconstruye el schema de prod (riesgo de continuidad)
+
+**Prioridad:** Alta — atacar ANTES de montar CI, ANTES de Fase 5 (que toca
+schema), o ante cualquier necesidad de un entorno nuevo (staging, disaster
+recovery, onboarding). Lo que pase primero. NO es una deuda menor: es un
+riesgo de continuidad del negocio.
+
+**Contexto y origen.** Descubierta durante el setup de testing (sprint P0
+de tests). Al intentar `prisma migrate deploy` contra una branch limpia de
+Neon, falla en la migración 2 (`add_extraction_job_source`) con
+"relation 'ProductChange' does not exist". Investigación: el init
+(`20260508025918`) solo crea 6 tablas (User, Provider,
+ProviderScraperConfig, ExtractionJob, ExtractedProduct, ExtractionLog) y 2
+enums (JobStatus, LogLevel). Las 11 migraciones posteriores son casi
+todas `ALTER TABLE` que asumen ~15 tablas más sin que ninguna las cree:
+CatalogProduct, ProductPublication, ProductChange, ExtractionComparison,
+UnmatchedStoreProduct, Store, StoreIntegration, PricingRule,
+CatalogProductImage, CategoryAssignment, entre otras. Casi todos los
+enums tampoco están: ProductChangeType, ChangeReviewStatus,
+PublicationStatus, PublicationSyncStatus, InternalPublicationStatus,
+CatalogProductStatus, StockSource, CatalogSourceType, StorePlatform,
+PricingScope, etc.
+
+**Hipótesis confirmada por evidencia.** El proyecto se construyó
+originalmente con `prisma db push` masivo (sin migraciones formales). En
+algún momento se empezó a usar `prisma migrate dev` para cambios
+incrementales, pero el init quedó como un esqueleto histórico que nunca
+representó el schema real. Hoy las migraciones funcionan en prod **solo
+porque prod ya tiene las tablas que faltan**, no porque las generen.
+
+**Impacto / riesgo (NO cosmético).**
+- **Continuidad de negocio.** Si prod se cae y hay que recrear desde
+  backups + migraciones, el schema no es reproducible: el código asume
+  tablas que ninguna migración crea. La única fuente del schema real es
+  la propia DB de prod.
+- **Imposible CI con DB efímera.** Cualquier pipeline de CI que monte una
+  DB limpia y aplique migraciones falla. El sprint actual lo bypassea
+  con `db push` desde `schema.prisma` (ver `scripts/db-test-reset.ts`),
+  pero eso oculta drift y no aplica a CI sin trabajo extra.
+- **Imposible staging / disaster recovery / onboarding.** Cualquier
+  entorno nuevo que necesite el schema desde migraciones no se puede
+  bootstrappear.
+- **Fase 5 (eliminar `cp.publicationSku`) tiene riesgo aumentado.** La
+  migración nueva se va a generar contra el estado actual, pero hay
+  drift potencial entre `schema.prisma` y prod (ver hallazgo paralelo
+  abajo). Si `schema.prisma` divergió de prod, una migración nueva podría
+  generar SQL inválido.
+
+**Bypass actual.** `scripts/db-test-reset.ts` usa `prisma db push
+--force-reset --skip-generate`, que aplica `schema.prisma` directo sin
+pasar por el historial de migraciones. Es suficiente para el sprint de
+tests porque el código importa el Prisma Client generado de
+`schema.prisma`, así que testear contra ese schema es testear contra el
+schema que el código asume. La deuda con CI y con prod sigue abierta.
+
+**Solución recomendada: D (rebaseline desde prod real).**
+
+1. **`prisma db pull`** contra la DATABASE_URL de prod → introspección
+   directa del schema actual de prod.
+2. **Comparar** el resultado contra `schema.prisma` actual del repo. Si
+   divergen, es un segundo hallazgo: el código asume un schema distinto
+   al que prod tiene. **Esta comparación es obligatoria como parte de la
+   solución** — no atacarla cuando se encare D sería volver a tener
+   drift no detectado.
+3. **Reconciliar** `schema.prisma` con la realidad de prod
+   (probablemente algunas inconsistencias menores: índices, constraints,
+   defaults). Decidir caso por caso qué lado tiene razón.
+4. **Generar nueva migración baseline** con
+   `prisma migrate diff --from-empty --to-schema-datasource <prod-url>
+   --script > prisma/migrations/<timestamp>_baseline/migration.sql`. Esto
+   produce el SQL exacto que va de "DB vacía" a "schema de prod real".
+5. **Archivar las migraciones viejas** (mover a
+   `prisma/migrations-archive/` o eliminar). Documentar en
+   `prisma/migrations/README.md` que el baseline reemplaza a las
+   anteriores.
+6. **En prod**: `prisma migrate resolve --applied <nuevo-baseline>`. Esto
+   marca el baseline como aplicado sin re-ejecutar el DDL — prod sigue
+   intacto pero su `_prisma_migrations` ahora refleja el baseline en vez
+   del historial roto.
+
+**Por qué D sobre C (rebaseline desde `schema.prisma`).** D parte del
+schema **real** de prod (vía introspección), no de `schema.prisma`. El
+drift descubierto en este sprint sugiere que `schema.prisma` puede haber
+divergido de prod en algún punto; partir de prod garantiza que el baseline
+refleje la verdad operativa, no la "verdad declarada" que podría tener
+bugs.
+
+**Riesgo de D.** El paso 6 toca prod (el `migrate resolve`). Es no-DDL
+(solo inserta una fila en `_prisma_migrations`) y no tiene efecto sobre
+las tablas, pero hay que hacerlo con backup tomado, en su propio
+momento, NO en mitad de un sprint. El resto de los pasos son sobre el
+repo y se pueden hacer en cualquier momento sin tocar prod.
+
+**Archivos afectados.** `prisma/migrations/*` (todas), `schema.prisma`
+(potencialmente, según hallazgos de la comparación), `scripts/db-test-reset.ts`
+(volver a `migrate deploy` cuando la cadena esté sana).
+
+---

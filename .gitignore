@@ -15,6 +15,10 @@ tsconfig.tsbuildinfo
 .env
 .env.local
 .env.*.local
+# .env.test contiene URLs de la branch de Neon de test con credenciales reales
+# del rol neondb_owner; nunca debe commitearse. .env.test.example sí se versiona
+# (sin secretos).
+.env.test
 
 # Excel exports (generados en runtime)
 public/exports/
