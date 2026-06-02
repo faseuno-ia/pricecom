@@ -15,5 +15,13 @@ export default defineConfig({
   test: {
     globals: false,
     testTimeout: 30_000,
+    // Los tests de integración comparten la única DB de test (Neon branch
+    // único) y se aíslan vía TRUNCATE CASCADE en beforeEach. Si vitest corre
+    // archivos en paralelo, los truncates de un archivo interfieren con los
+    // inserts del otro: violaciones de FK random en el archivo que carga
+    // primero. Forzamos archivos en serie. Tests dentro de un archivo ya van
+    // serial por default. Unit pierde algo de paralelismo (3 tests en 1
+    // archivo, irrelevante).
+    fileParallelism: false,
   },
 });
