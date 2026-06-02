@@ -166,50 +166,56 @@ extensión del `report`), componente del importador
 
 ---
 
-## Gap de cobertura: store-scoping del Fix 1 del sync (unmatched stale)
+## `store.findFirst` sin orderBy + scoping cross-store sin tests
 
-**Prioridad:** Despreciable mientras la app sea single-store-por-usuario en
-práctica. Sube a media si el cliente conecta una segunda store al mismo
-usuario o si se reportan productos cruzados entre stores.
+**Prioridad:** Atar a la decisión de arquitectura multicliente. Hoy
+despreciable (clientes tienen 1 store en práctica). Sube a alta apenas se
+soporte multi-store por usuario — antes de eso, NO es seguro.
 
-**Contexto.** Fix 1 del bug de "62 stale en No vinculados" agregó una tercera
-query al match del sync en
-`app/api/my-store/sync/products/route.ts`:
+**Síntoma inmediato (gap de cobertura).** Fix 1 del bug "62 stale en No
+vinculados" (`app/api/my-store/sync/products/route.ts`) agregó una tercera
+query al match con scoping `publications: { some: { storeId: store.id, sku: skuRaw } }`.
+El `storeId` ahí es la línea que evita matchear pub de otra store del mismo
+user. El test 2 de `tests/integration/unmatched-sync.test.ts` cubre el
+scoping por USUARIO (no cruza user1↔user2). El scoping por STORE quedó
+sin test específico (sería el "test 5"). Una regresión que rompiera ese
+`storeId` pasaría el typecheck y los 4 tests actuales.
 
-```ts
-prisma.catalogProduct.findFirst({
-  where: {
-    userId: session.user.id,
-    publications: { some: { storeId: store.id, sku: skuRaw } },
-  },
-  ...
-})
-```
+**Por qué no se agregó el test en el hot fix.** El route hace
+`prisma.store.findFirst({ where: { userId } })` sin `orderBy`, sin filtro
+por `platform`, sin filtro por `isActive`. Con dos stores válidas del
+mismo user, qué store gana es no-determinista (Postgres sin ORDER BY no
+garantiza orden). Probar el caso requiere refactor (extraer helper) o
+setup forzado (deshabilitar una store) — fuera del scope de un hot fix.
 
-El `storeId: store.id` dentro de `publications.some` es la línea que evita
-matchear una pub de otra store del mismo user. El test 2 de
-`tests/integration/unmatched-sync.test.ts` cubre el scoping por USUARIO (no
-cruza entre user1 y user2). El scoping por STORE quedó sin test específico.
+**Problema de fondo (lo importante).** El gap de cobertura es solo el
+síntoma. El problema real es que ese `findFirst` sin orden NI scoping
+explícito es un **bug latente para multi-store**. Hoy es inocuo porque
+los clientes tienen 1 store. Cuando un cliente conecte 2 (escenario
+"Woo + Tienda Nube" de la visión multicliente, o staging de migración),
+el sync podría correr contra la store equivocada de forma no determinista
+— sin error visible, solo productos cruzados entre stores.
 
-**Riesgo.** Una regresión que rompiera `storeId` en esa query pasaría el
-typecheck y los 4 tests actuales. Sería detectable solo en QA manual o
-producción multi-store.
-
-**Por qué no se agregó al sprint.** El route handler hace
-`prisma.store.findFirst({ where: { userId } })` sin `orderBy` ni filtro por
-platform/integration. Con dos stores válidas del mismo user, qué store gana
-es comportamiento de Postgres no determinista. Probar el bug específico
-requiere o (a) extraer la lógica de match a un helper testable
-`findCatalogProductForWooSku()`, o (b) un setup con stores que tengan
-estados forzados (uno sin integration, etc.) — ambos son refactor que
-excedía el scope del hot fix del cliente.
+**Conexión con readiness multicliente.** Esto NO es un caso aislado.
+Es parte de la deuda más amplia: el código está escrito asumiendo
+"una store por user" en muchos lugares (también "un user activo" en otros
+flujos). Antes de soportar multicliente real, hay que **auditar todos los
+`findFirst`** sobre `store`, `user`, `provider`, etc. que asumen
+unicidad. Cada uno necesita o:
+- Recibir el id explícito en la request (front pasa storeId/etc.).
+- Tener `orderBy` determinista (con criterio explícito de "primero").
+- Tener scoping correcto (filtro adicional como `isActive: true` o
+  `platform` requerido).
 
 **Trigger para atacarla.**
-- Cliente conecta una segunda store al mismo usuario (multi-store real).
-- Se reporta un caso de cruce entre stores.
-- Cualquier refactor mayor del route de sync.
+- Decisión de soportar multi-store por usuario (Woo + otra plataforma).
+- Cliente conecta una segunda store al mismo usuario aunque sea como
+  prueba.
+- Caso de cruce reportado entre stores.
+- Cualquier refactor estructural del module de stores.
 
-**Solución cuando importe.** Extraer el match a una función exportable:
+**Solución del gap de test del Fix 1 (cuando se haga).** Extraer la lógica
+de match del route a un helper exportable:
 
 ```ts
 export async function findCatalogProductForWooSku(
@@ -220,16 +226,24 @@ export async function findCatalogProductForWooSku(
 ): Promise<{ id: string; internalStatus: InternalPublicationStatus } | null>
 ```
 
-Llamarla desde el route. Test directo con tres casos:
-1. Match por pp.sku en la store correcta.
-2. NO match cuando pp existe en OTRA store del mismo user.
-3. NO match cuando pp existe en la misma store pero con otro userId.
+Test directo con los 3 paths de match (publicationSku, cp.sku raw, pp.sku
+canónico) + el scoping por store:
+1. Match por publicationSku.
+2. Match por cp.sku raw.
+3. Match por pp.sku canónico (Fase 3+).
+4. NO match cuando pp.sku canónico existe en OTRA store del mismo user.
 
-Caso 1 y 3 ya están cubiertos por los tests actuales del route. Caso 2 es
-el gap.
+**Solución del problema de fondo.** Auditoría de queries antes de
+multi-store. Out of scope del Fix 1 y de su test gap — es trabajo de
+arquitectura cuando llegue el momento.
 
-**Archivos afectados.** `app/api/my-store/sync/products/route.ts` (extracción),
-`tests/integration/unmatched-sync.test.ts` (caso 2 nuevo).
+**Archivos afectados (mínimo del test gap).**
+`app/api/my-store/sync/products/route.ts` (extracción del helper),
+`tests/integration/unmatched-sync.test.ts` (4 casos del helper).
+
+**Archivos afectados (deuda de fondo).** A definir por la auditoría
+multicliente; al menos `app/api/my-store/*` y todo lugar que use
+`store.findFirst({ where: { userId } })` o `user.findFirst()`.
 
 ---
 
