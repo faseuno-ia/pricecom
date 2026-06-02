@@ -3,6 +3,7 @@ import { requireSession } from "@/lib/auth";
 import { Onboarding } from "@/components/my-store/onboarding";
 import { MyStoreDashboard } from "@/components/my-store/my-store-dashboard";
 import { MyStoreTabs } from "@/components/my-store/my-store-tabs";
+import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
 
 export const metadata = {
   title: "Mi Tienda — PricEcom",
@@ -76,9 +77,16 @@ export default async function MyStorePage() {
       prisma.productPublication.count({
         where: { storeId: store.id, pendingSync: true },
       }),
-      prisma.unmatchedStoreProduct.count({
-        where: { storeId: store.id, resolved: false },
-      }),
+      // ⚠ NO contar unmatched crudo por `resolved: false` acá. Usar el
+      // helper buildActiveUnmatchedWhere SIEMPRE. Duplicar el filtro
+      // causó el bug del contador 63 vs lista 1: el endpoint de la
+      // pestaña usaba un filtro (cruzando ProductPublication.externalProductId)
+      // y este count contaba crudo → divergieron. La lógica vive en UN
+      // solo lugar: lib/store/unmatched-where.ts. Cualquier cambio de
+      // definición de "unmatched" se hace ahí.
+      buildActiveUnmatchedWhere(prisma, store.id).then((where) =>
+        prisma.unmatchedStoreProduct.count({ where })
+      ),
       prisma.category.findMany({
         orderBy: { name: "asc" },
         select: { id: true, name: true },

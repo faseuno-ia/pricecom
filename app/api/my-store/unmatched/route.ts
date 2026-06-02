@@ -16,6 +16,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
+import {
+  buildActiveUnmatchedWhere,
+  buildDiscardedUnmatchedWhere,
+} from "@/lib/store/unmatched-where";
 
 interface SuggestionPlain {
   catalogProductId: string;
@@ -35,41 +39,20 @@ export async function GET(req: NextRequest) {
   });
   if (!store) return NextResponse.json({ unmatched: [] });
 
-  // Excluir unmatched cuyo externalProductId ya tenga ProductPublication en
-  // esta store. Aplica a AMBOS modos:
-  //   - default (resolved=false): oculta los "stale" — unmatched que ya
-  //     fueron resueltos por publish desde el catálogo (publishProductToWoo
-  //     crea pp con externalProductId, pero el sync no marca resolved=true
-  //     porque su match por cp.publicationSku/sku falla para los publicados
-  //     con lazy SKU Fase 3+; ver Fix 1).
-  //   - includeDiscarded (resolved=true): excluye los que fueron resueltos
-  //     por link/create-catalog (esos tienen pp), dejando solo los descartes
-  //     manuales.
-  const pubsInStore = await prisma.productPublication.findMany({
-    where: { storeId: store.id, externalProductId: { not: null } },
-    select: { externalProductId: true },
-  });
-  const externalIdsWithPublication = new Set(
-    pubsInStore.map((p) => p.externalProductId).filter((x): x is string => !!x)
-  );
+  // Helper centralizado (lib/store/unmatched-where.ts): el filtro
+  // "no vinculado" excluye unmatched cuyo externalProductId ya tiene pp en
+  // esta store. Mismo helper que usa el contador del dashboard
+  // (app/(app)/my-store/page.tsx), garantizando que listado y contador no
+  // pueden volver a divergir.
+  const where = includeDiscarded
+    ? await buildDiscardedUnmatchedWhere(prisma, store.id)
+    : await buildActiveUnmatchedWhere(prisma, store.id);
 
   // 1. Lista unmatched + 2. Pre-fetch de todos los CatalogProduct del usuario.
   // Las dos queries se disparan en paralelo.
   const [items, catalogProducts] = await Promise.all([
     prisma.unmatchedStoreProduct.findMany({
-      where: {
-        storeId: store.id,
-        resolved: includeDiscarded ? true : false,
-        ...(externalIdsWithPublication.size > 0
-          ? {
-              NOT: {
-                externalProductId: {
-                  in: Array.from(externalIdsWithPublication),
-                },
-              },
-            }
-          : {}),
-      },
+      where,
       orderBy: { updatedAt: "desc" },
       take: 500,
     }),

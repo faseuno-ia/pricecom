@@ -31,6 +31,7 @@ import {
 import { POST as syncProductsPost } from "@/app/api/my-store/sync/products/route";
 import { GET as getUnmatched } from "@/app/api/my-store/unmatched/route";
 import { requireSession } from "@/lib/auth";
+import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
 
 const mockedRequireSession = vi.mocked(requireSession);
 
@@ -235,5 +236,89 @@ describe("Sync de tienda + pestaña No vinculados", () => {
       (u: { externalProductId: string }) => u.externalProductId
     );
     expect(externalIds).toContain("700");
+  });
+
+  it("5. Helper centralizado: count del dashboard excluye stale (no duplicar lógica)", async () => {
+    // Origen del test: el Fix 2 corrigió el endpoint de la lista pero el
+    // count del dashboard tenía su propia copia (count crudo por resolved=false)
+    // → quedaron desincronizados (lista en 1, contador en 63). El fix
+    // estructural fue extraer la lógica a un helper que ambos consumen.
+    //
+    // Este test cubre el helper directo. Con setup de 2 stale + 1 genuino,
+    // el count helper-based devuelve 1; el count crudo (que page.tsx tenía
+    // antes del fix) devuelve 3. Sin el helper, la lógica no es testeable
+    // ni compartible — el archivo `lib/store/unmatched-where.ts` ES el
+    // contrato.
+    const user = await createTestUser();
+    const provider = await createTestProvider(user.id, { skuPrefix: "T-" });
+    const { store } = await createTestStore(user.id);
+
+    // Stale 1: cp + pp con externalProductId="2001", UMSP fantasma con mismo id.
+    const cp1 = await createTestCatalogProduct(user.id, provider.id, {
+      sku: "S1",
+      finalPrice: 10,
+    });
+    await createTestPublication(cp1.id, store.id, {
+      sku: "T-S1",
+      externalProductId: "2001",
+      status: "ACTIVE",
+    });
+    await testPrisma.unmatchedStoreProduct.create({
+      data: {
+        storeId: store.id,
+        externalProductId: "2001",
+        externalSku: "T-S1",
+        name: "Stale 1",
+        externalStatus: "publish",
+        resolved: false,
+      },
+    });
+
+    // Stale 2: cp + pp con externalProductId="2002", UMSP fantasma con mismo id.
+    const cp2 = await createTestCatalogProduct(user.id, provider.id, {
+      sku: "S2",
+      finalPrice: 10,
+    });
+    await createTestPublication(cp2.id, store.id, {
+      sku: "T-S2",
+      externalProductId: "2002",
+      status: "ACTIVE",
+    });
+    await testPrisma.unmatchedStoreProduct.create({
+      data: {
+        storeId: store.id,
+        externalProductId: "2002",
+        externalSku: "T-S2",
+        name: "Stale 2",
+        externalStatus: "publish",
+        resolved: false,
+      },
+    });
+
+    // Genuino: UMSP con externalProductId="2003" sin pp asociada.
+    await testPrisma.unmatchedStoreProduct.create({
+      data: {
+        storeId: store.id,
+        externalProductId: "2003",
+        externalSku: "GENUINE-2003",
+        name: "Genuine",
+        externalStatus: "publish",
+        resolved: false,
+      },
+    });
+
+    // Helper-based count: el que page.tsx debe usar.
+    const where = await buildActiveUnmatchedWhere(testPrisma, store.id);
+    const helperCount = await testPrisma.unmatchedStoreProduct.count({ where });
+    expect(helperCount).toBe(1);
+
+    // Contrafactual: el count crudo (lo que page.tsx tenía pre-fix). Si
+    // alguien vuelve a duplicar la lógica sin pasar por el helper, ese
+    // count seguiría dando 3 — esa es la diferencia que el helper resuelve.
+    const crudoCount = await testPrisma.unmatchedStoreProduct.count({
+      where: { storeId: store.id, resolved: false },
+    });
+    expect(crudoCount).toBe(3);
+    expect(helperCount).toBeLessThan(crudoCount);
   });
 });
