@@ -22,6 +22,8 @@ import type {
   StoreIntegration,
   CatalogProduct,
   ProductPublication,
+  ExtractionJob,
+  ExtractedProduct,
 } from "@prisma/client";
 import { testPrisma } from "../setup/db";
 
@@ -174,6 +176,69 @@ export interface PublicationOverrides {
   commercialTitleUserEdited?: boolean;
   commercialDescription?: string | null;
   commercialDescriptionUserEdited?: boolean;
+}
+
+export interface ExtractionJobOverrides {
+  status?: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+}
+
+/**
+ * Crea un ExtractionJob para alimentar a upsertCatalogProducts(jobId, prisma).
+ * El job tiene userId + providerId — sin userId el upsert hace early return.
+ */
+export async function createTestExtractionJob(
+  userId: string,
+  providerId: string,
+  overrides: ExtractionJobOverrides = {}
+): Promise<ExtractionJob> {
+  return testPrisma.extractionJob.create({
+    data: {
+      userId,
+      providerId,
+      status: overrides.status ?? "COMPLETED",
+      startedAt: overrides.startedAt ?? new Date(),
+      finishedAt:
+        overrides.finishedAt === undefined ? new Date() : overrides.finishedAt,
+    },
+  });
+}
+
+export interface ExtractedProductOverrides {
+  sku?: string | null;
+  name?: string;
+  description?: string | null;
+  wholesalePrice?: number | null;
+  stock?: string | null;
+  productUrl?: string | null;
+  imageUrl?: string | null;
+}
+
+/**
+ * Crea una fila ExtractedProduct asociada a un ExtractionJob. Lo que
+ * upsertCatalogProducts considera "viene en la extracción": el conjunto de
+ * filas EP del jobId. Si el sku del CP no está en este conjunto, ese CP
+ * "desapareció" en este job.
+ */
+export async function createTestExtractedProduct(
+  jobId: string,
+  providerId: string,
+  overrides: ExtractedProductOverrides = {}
+): Promise<ExtractedProduct> {
+  return testPrisma.extractedProduct.create({
+    data: {
+      jobId,
+      providerId,
+      sku: overrides.sku === undefined ? `EXT-${uniq()}` : overrides.sku,
+      name: overrides.name ?? "Producto extraído",
+      description: overrides.description ?? null,
+      wholesalePrice: overrides.wholesalePrice ?? null,
+      stock: overrides.stock ?? null,
+      productUrl: overrides.productUrl ?? null,
+      imageUrl: overrides.imageUrl ?? null,
+    },
+  });
 }
 
 export async function createTestPublication(
