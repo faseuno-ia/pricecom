@@ -35,21 +35,23 @@ export async function GET(req: NextRequest) {
   });
   if (!store) return NextResponse.json({ unmatched: [] });
 
-  // Si el usuario pide descartados, necesitamos excluir los unmatched cuyo
-  // externalProductId ya tenga ProductPublication — esos son los que
-  // resolvieron por link/create-catalog, no por descarte manual.
-  let externalIdsWithPublication: Set<string> | null = null;
-  if (includeDiscarded) {
-    const pubs = await prisma.productPublication.findMany({
-      where: { storeId: store.id, externalProductId: { not: null } },
-      select: { externalProductId: true },
-    });
-    externalIdsWithPublication = new Set(
-      pubs
-        .map((p) => p.externalProductId)
-        .filter((x): x is string => !!x)
-    );
-  }
+  // Excluir unmatched cuyo externalProductId ya tenga ProductPublication en
+  // esta store. Aplica a AMBOS modos:
+  //   - default (resolved=false): oculta los "stale" — unmatched que ya
+  //     fueron resueltos por publish desde el catálogo (publishProductToWoo
+  //     crea pp con externalProductId, pero el sync no marca resolved=true
+  //     porque su match por cp.publicationSku/sku falla para los publicados
+  //     con lazy SKU Fase 3+; ver Fix 1).
+  //   - includeDiscarded (resolved=true): excluye los que fueron resueltos
+  //     por link/create-catalog (esos tienen pp), dejando solo los descartes
+  //     manuales.
+  const pubsInStore = await prisma.productPublication.findMany({
+    where: { storeId: store.id, externalProductId: { not: null } },
+    select: { externalProductId: true },
+  });
+  const externalIdsWithPublication = new Set(
+    pubsInStore.map((p) => p.externalProductId).filter((x): x is string => !!x)
+  );
 
   // 1. Lista unmatched + 2. Pre-fetch de todos los CatalogProduct del usuario.
   // Las dos queries se disparan en paralelo.
@@ -58,7 +60,7 @@ export async function GET(req: NextRequest) {
       where: {
         storeId: store.id,
         resolved: includeDiscarded ? true : false,
-        ...(includeDiscarded && externalIdsWithPublication
+        ...(externalIdsWithPublication.size > 0
           ? {
               NOT: {
                 externalProductId: {

@@ -166,6 +166,73 @@ extensión del `report`), componente del importador
 
 ---
 
+## Gap de cobertura: store-scoping del Fix 1 del sync (unmatched stale)
+
+**Prioridad:** Despreciable mientras la app sea single-store-por-usuario en
+práctica. Sube a media si el cliente conecta una segunda store al mismo
+usuario o si se reportan productos cruzados entre stores.
+
+**Contexto.** Fix 1 del bug de "62 stale en No vinculados" agregó una tercera
+query al match del sync en
+`app/api/my-store/sync/products/route.ts`:
+
+```ts
+prisma.catalogProduct.findFirst({
+  where: {
+    userId: session.user.id,
+    publications: { some: { storeId: store.id, sku: skuRaw } },
+  },
+  ...
+})
+```
+
+El `storeId: store.id` dentro de `publications.some` es la línea que evita
+matchear una pub de otra store del mismo user. El test 2 de
+`tests/integration/unmatched-sync.test.ts` cubre el scoping por USUARIO (no
+cruza entre user1 y user2). El scoping por STORE quedó sin test específico.
+
+**Riesgo.** Una regresión que rompiera `storeId` en esa query pasaría el
+typecheck y los 4 tests actuales. Sería detectable solo en QA manual o
+producción multi-store.
+
+**Por qué no se agregó al sprint.** El route handler hace
+`prisma.store.findFirst({ where: { userId } })` sin `orderBy` ni filtro por
+platform/integration. Con dos stores válidas del mismo user, qué store gana
+es comportamiento de Postgres no determinista. Probar el bug específico
+requiere o (a) extraer la lógica de match a un helper testable
+`findCatalogProductForWooSku()`, o (b) un setup con stores que tengan
+estados forzados (uno sin integration, etc.) — ambos son refactor que
+excedía el scope del hot fix del cliente.
+
+**Trigger para atacarla.**
+- Cliente conecta una segunda store al mismo usuario (multi-store real).
+- Se reporta un caso de cruce entre stores.
+- Cualquier refactor mayor del route de sync.
+
+**Solución cuando importe.** Extraer el match a una función exportable:
+
+```ts
+export async function findCatalogProductForWooSku(
+  prisma: PrismaClient,
+  userId: string,
+  storeId: string,
+  skuRaw: string
+): Promise<{ id: string; internalStatus: InternalPublicationStatus } | null>
+```
+
+Llamarla desde el route. Test directo con tres casos:
+1. Match por pp.sku en la store correcta.
+2. NO match cuando pp existe en OTRA store del mismo user.
+3. NO match cuando pp existe en la misma store pero con otro userId.
+
+Caso 1 y 3 ya están cubiertos por los tests actuales del route. Caso 2 es
+el gap.
+
+**Archivos afectados.** `app/api/my-store/sync/products/route.ts` (extracción),
+`tests/integration/unmatched-sync.test.ts` (caso 2 nuevo).
+
+---
+
 ## Migration history no reconstruye el schema de prod (riesgo de continuidad)
 
 **Prioridad:** Alta — atacar ANTES de montar CI, ANTES de Fase 5 (que toca

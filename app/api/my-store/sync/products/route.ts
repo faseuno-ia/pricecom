@@ -100,6 +100,18 @@ export async function POST() {
     const skuRaw = woo.sku?.trim() ?? "";
 
     // Match solo si el WooCommerce trae SKU; sin SKU no hay auto-vinculación.
+    //
+    // Tres queries en orden de prioridad legacy → actual:
+    //   1. cp.publicationSku — campo legacy pre-Fase 3. Cps publicados antes
+    //      de la migración a lazy SKU lo tienen poblado.
+    //   2. cp.sku raw — cuando el cliente cargó manualmente en Woo el sku
+    //      original del proveedor sin prefijo.
+    //   3. publication.sku canónico (Fase 3+ lazy) — el sku que pp generó al
+    //      publicar como provider.skuPrefix + cp.sku. Para los publicados con
+    //      lazy SKU, este es el ÚNICO campo que coincide con woo.sku porque
+    //      cp.publicationSku queda null y cp.sku es el raw sin prefijo.
+    //      Scopeado por storeId para no matchear pubs de otra store del
+    //      mismo user.
     const catalogProduct = skuRaw
       ? ((await prisma.catalogProduct.findFirst({
           where: { userId: session.user.id, publicationSku: skuRaw },
@@ -107,6 +119,15 @@ export async function POST() {
         })) ??
         (await prisma.catalogProduct.findFirst({
           where: { userId: session.user.id, sku: skuRaw },
+          select: { id: true, internalStatus: true },
+        })) ??
+        (await prisma.catalogProduct.findFirst({
+          where: {
+            userId: session.user.id,
+            publications: {
+              some: { storeId: store.id, sku: skuRaw },
+            },
+          },
           select: { id: true, internalStatus: true },
         })))
       : null;
