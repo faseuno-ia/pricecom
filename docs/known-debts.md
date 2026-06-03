@@ -253,13 +253,93 @@ La regla solo prohíbe `count` y `findMany` que listan/cuentan al usuario.
 
 ---
 
-## No hay gate de CI/build — lint ni tests corren antes del deploy
+## No hay gate de CI/build — lint ni tests corren antes del deploy — RESUELTA
 
-**Prioridad:** Alta. Es **prerequisito** de la regla de lint de
+**Estado:** ✅ RESUELTA el 2026-06-03. Gate de CI activo y verificado
+end-to-end en producción.
+
+**Plan ejecutado (opción A — GitHub Actions, decidido por simplicidad +
+no enlentecer cada deploy).**
+
+**Fase A — Workflow en modo informativo** (commit `c529e39`).
+- `.github/workflows/ci.yml` creado: trigger en push a main + PR a main.
+- Job único `test` sobre `ubuntu-latest`, Node 20 con cache npm.
+- Service container `postgres:16` (POSTGRES_DB=test) — efímero por job,
+  sin secrets externos, sin lifecycle de branches Neon que mantener. La
+  alternativa (Neon ephemeral branch via API token) se descartó por
+  agregar dependencia externa, secret, y costo sin aportar fidelidad
+  útil (el SQL es idéntico).
+- Steps: checkout → setup-node (con cache npm) → `npm ci` →
+  escribir `.env.test` apuntando a `localhost:5432/test` con
+  `TEST_DB_CONFIRMED=true` (el guard de `tests/setup/env.ts` pasa porque
+  localhost no contiene `ep-raspy-cloud-ap9iuixg`) → `npx tsc --noEmit`
+  → wait-for-postgres explícito (`pg_isready` loop) → `npm run db:test:reset`
+  (DROP SCHEMA + `prisma migrate deploy` desde el baseline único
+  post-rebaseline) → `npm run test`.
+- `concurrency: cancel-in-progress` por (workflow, ref) para no gastar
+  minutos en commits rápidos consecutivos.
+- `permissions: contents: read` explícito (least-privilege).
+- Validado: dos runs verdes seguidos sin flakiness, tiempo total ~1:20s
+  contra Postgres vanilla.
+
+**Fase B — Activar el gate** (commit `04db1a6`).
+- Antes del toggle: limpieza de check huérfano. Investigación de los
+  checks reportados en commits de main encontró `shimmering-analysis -
+  pricecom` (proyecto Railway viejo abandonado conectado al mismo repo
+  de GitHub) que reportaba ❌ Deployment failed en cada commit.
+  Verificación crítica: las env vars de ese proyecto tenían placeholders
+  del `.env.example` (DATABASE_URL=localhost, NEXTAUTH_SECRET=texto
+  placeholder, ENCRYPTION_KEY=placeholder, sin Neon real) — **nunca
+  tocó prod**. Proyecto eliminado de Railway (no solo desconectado).
+  Verificado en commit siguiente: solo 3 checks reportan ahora — el
+  nuestro de Actions + `extraordinary-delight - pricecom` + worker.
+- Permisos de la Railway GitHub App: confirmados que ya tenían Read
+  access a Checks y Commit statuses (el banner "Make sure you have
+  accepted our updated GitHub permissions" en Railway era genérico,
+  no requería acción).
+- Toggle "Wait for CI" activado en Railway (Settings → Source →
+  Check Suites: false → true).
+- Validación end-to-end con el commit `04db1a6` (empty, único propósito
+  probar el gate):
+  - Push completado: `2026-06-03T15:56:17Z`.
+  - Railway recibió el commit y quedó en estado **WAITING FOR CI**
+    (verificado visualmente en Activity del deployment del commit
+    `04db1a6`). NO deployó inmediato.
+  - GitHub Actions corrió el workflow CI (~1:20s).
+  - CI pasó verde.
+  - Recién entonces Railway salió de WAITING, buildeó y deployó
+    `04db1a6` como ACTIVE.
+- **El gate funciona end-to-end en producción.**
+
+**Por qué este commit es evidencia del cierre.** El propio commit que
+documenta el cierre (este) se va a deployar pasando por el gate
+recién verificado — primero por GitHub Actions (CI verde), después por
+Railway. Cierre apropiado.
+
+**Pendiente como capa futura (paso 2 explícito, NO bloqueante).**
+ESLint + la regla custom de `UnmatchedStoreProduct` se agregan SOBRE el
+gate ya funcionando, en un cambio separado:
+1. Instalar `eslint` + `eslint-config-next`.
+2. Agregar `.eslintrc.json` con la regla custom `no-restricted-syntax`
+   prohibiendo `prisma.unmatchedStoreProduct.count`/`.findMany` fuera del
+   helper `lib/store/unmatched-where.ts` (con overrides para `scripts/`
+   y `tests/`).
+3. Agregar step `npm run lint` al workflow `ci.yml` entre `npx tsc
+   --noEmit` y `npm run db:test:reset`.
+
+Ver entrada **"Lint rule custom para `UnmatchedStoreProduct`"** más
+arriba para el detalle de la regla. Esa entrada apuntaba a este gate
+como prerequisito — prerequisito ya cumplido.
+
+---
+
+**Contenido histórico (pre-resolución, para registro):**
+
+**Prioridad original:** Alta. Era **prerequisito** de la regla de lint de
 `UnmatchedStoreProduct` (entrada anterior), de cualquier futura regla de
-lint, y de que la suite P0 de tests sirva de red real. Cualquiera de esas
-deudas que se atienda antes de cerrar esta queda como decoración: la
-herramienta existe, no protege nada.
+lint, y de que la suite P0 de tests sirviera de red real. Cualquiera de
+esas deudas atendida antes de cerrar ésta quedaba como decoración: la
+herramienta existía, no protegía nada.
 
 **Estado actual (descubierto investigando la regla de unmatched).**
 - ESLint NO está instalado (`node_modules/eslint` no existe).
