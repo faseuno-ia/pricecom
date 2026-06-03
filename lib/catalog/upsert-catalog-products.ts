@@ -9,6 +9,7 @@ import {
   publishProductToWoo,
 } from "../integrations/woocommerce/publication-service";
 import type { PricingRuleForCalc } from "../pricing/pricing-engine";
+import { markPublicationsDrift } from "./mark-publications-drift";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -191,6 +192,15 @@ export async function upsertCatalogProducts(
     }
   }
 
+  // Acumulamos los cps cuyo wholesalePrice cambió respecto al valor previo.
+  // Al final del loop pasamos esta lista a markPublicationsDrift para que las
+  // pp asociadas queden marcadas como OUTDATED y aparezcan en "Sincronizar
+  // pendientes". markPublicationsDrift re-evalúa el drift contra priceInStore
+  // antes de marcar (no marca a ciegas), así que productos sin pp publicada
+  // o con drift sub-tolerancia no generan ruido.
+  const WHOLESALE_TOLERANCE = 0.005;
+  const drifted: string[] = [];
+
   for (const product of job.products) {
     const identity = identityKey({
       sku: product.sku,
@@ -233,17 +243,36 @@ export async function upsertCatalogProducts(
           supplierStatus: true,
           internalStatus: true,
           pausedBySystem: true,
+          // wholesalePrice (previo) para detectar drift de precio: si el
+          // nuevo valor difiere, marcamos la pp como OUTDATED al final del
+          // loop. Sin esto, una baja de precio del proveedor se persiste en
+          // el cp pero la pp se queda "SYNCED" mintiendo, y el botón
+          // "Sincronizar pendientes" no la encuentra → Woo nunca recibe el
+          // precio nuevo.
+          wholesalePrice: true,
         },
       });
 
       if (existing) {
         const cameBackFromRemoved =
           existing.supplierStatus === "SUPPLIER_REMOVED";
+        // Detectar cambio de wholesalePrice ANTES del update, para acumular
+        // el id en `drifted` si corresponde. La marca de drift se aplica
+        // después del loop (markPublicationsDrift re-evalúa contra priceInStore).
+        const previousWs =
+          existing.wholesalePrice == null ? null : Number(existing.wholesalePrice);
+        const newWs = supplierDataBase.wholesalePrice;
+        const wholesaleChanged =
+          (previousWs == null) !== (newWs == null) ||
+          (previousWs != null &&
+            newWs != null &&
+            Math.abs(previousWs - newWs) > WHOLESALE_TOLERANCE);
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
           data: supplierDataBase,
         });
         upsertedId = existing.id;
+        if (wholesaleChanged) drifted.push(existing.id);
         if (cameBackFromRemoved) {
           await handleReappeared({
             id: existing.id,
@@ -286,17 +315,35 @@ export async function upsertCatalogProducts(
           supplierStatus: true,
           internalStatus: true,
           pausedBySystem: true,
+          // wholesalePrice (previo) para detectar drift de precio: si el
+          // nuevo valor difiere, marcamos la pp como OUTDATED al final del
+          // loop. Sin esto, una baja de precio del proveedor se persiste en
+          // el cp pero la pp se queda "SYNCED" mintiendo, y el botón
+          // "Sincronizar pendientes" no la encuentra → Woo nunca recibe el
+          // precio nuevo.
+          wholesalePrice: true,
         },
       });
 
       if (existing) {
         const cameBackFromRemoved =
           existing.supplierStatus === "SUPPLIER_REMOVED";
+        // Mismo patrón que en el branch con SKU: detectar cambio antes del
+        // update y acumular en `drifted` si corresponde.
+        const previousWs =
+          existing.wholesalePrice == null ? null : Number(existing.wholesalePrice);
+        const newWs = supplierDataBase.wholesalePrice;
+        const wholesaleChanged =
+          (previousWs == null) !== (newWs == null) ||
+          (previousWs != null &&
+            newWs != null &&
+            Math.abs(previousWs - newWs) > WHOLESALE_TOLERANCE);
         await prismaClient.catalogProduct.update({
           where: { id: existing.id },
           data: supplierDataBase,
         });
         upsertedId = existing.id;
+        if (wholesaleChanged) drifted.push(existing.id);
         if (cameBackFromRemoved) {
           await handleReappeared({
             id: existing.id,
@@ -336,6 +383,18 @@ export async function upsertCatalogProducts(
         data: { wholesalePrice: supplierDataBase.wholesalePrice },
       });
     }
+  }
+
+  // Marcar como OUTDATED las ProductPublication de los cps cuyos
+  // wholesalePrice cambió. markPublicationsDrift re-evalúa internamente con
+  // resolvePricing (mismo motor que publishProductToWoo) — sólo marca si hay
+  // drift real contra priceInStore. Productos sin pp publicada, o con
+  // diferencia sub-tolerancia post-recálculo, no generan ruido.
+  // No empuja a Woo: el push sigue siendo decisión manual del usuario via
+  // "Sincronizar pendientes". Acá solo aseguramos que las pp efectivamente
+  // aparezcan en esa cola.
+  if (drifted.length > 0) {
+    await markPublicationsDrift(prismaClient, drifted);
   }
 
   // Marcar como SUPPLIER_REMOVED los CatalogProduct activos de este proveedor
