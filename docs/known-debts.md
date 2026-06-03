@@ -166,6 +166,175 @@ extensión del `report`), componente del importador
 
 ---
 
+## Lint rule custom para `UnmatchedStoreProduct` (defensa real contra duplicación)
+
+**Prioridad:** Alta — atacar en cuanto se pueda. Es la única defensa
+automática contra que el bug "lista vs contador" vuelva a aparecer en un
+sitio nuevo.
+
+**Contexto.** El bug "63 vs 1" del cliente reapareció en 4 sitios distintos
+durante la saga lazy SKU + dashboard:
+
+1. Sync de productos (`app/api/my-store/sync/products/route.ts`) no
+   matcheaba por `pp.sku` canónico → creaba stale.
+2. Pestaña No vinculados (`app/api/my-store/unmatched/route.ts`) contaba
+   crudo por `resolved=false` → mostraba 63.
+3. Contador de Mi Tienda (`app/(app)/my-store/page.tsx`) contaba crudo →
+   tarjeta y badge inicial en 63.
+4. Dashboard principal (`app/(app)/dashboard/page.tsx`) contaba crudo →
+   tarjeta "Atención requerida" + "Estado ecommerce" en 63.
+
+Los 4 fueron arreglados (fixes 65a43fe, 0c69651, y este commit). La
+lógica vive ahora centralizada en `lib/store/unmatched-where.ts` con
+helpers `buildActiveUnmatchedWhere` / `buildDiscardedUnmatchedWhere`.
+
+**Por qué no alcanza con disciplina humana.** Los tests de integración
+NO pueden cubrir RSC (server components) directamente — no hay renderer
+práctico en vitest. Eso deja un agujero estructural: el test 5 cubre el
+helper, pero NO detecta si un RSC nuevo cuenta crudo. El dashboard
+(consumidor 4) era exactamente ese caso: el helper estaba bien testeado,
+pero el RSC del dashboard ignoró el helper y contó crudo, y el test no
+lo atrapó. **El bug reapareció a pesar de tener el helper + el test del
+helper.**
+
+**Riesgo de fondo.** Cualquier RSC nuevo (sección del dashboard, página
+nueva, widget) que muestre/cuente unmatched va a tener su propia
+`prisma.unmatchedStoreProduct.count({where: {storeId, resolved: false}})`
+si el desarrollador no piensa explícitamente en el helper. Los tests no
+lo van a atrapar. El próximo bug se descubre en producción cuando un
+cliente compara la lista con el contador.
+
+**Trigger para atacarla.**
+- Cualquier vista nueva que muestre/cuente unmatched (alta probabilidad
+  de regresión inmediata).
+- Onboarding de un nuevo dev (alta probabilidad de duplicación inocente).
+- Refactor del dashboard o de mi-tienda.
+
+**Solución recomendada.** Lint rule custom que prohíba `count` y
+`findMany` directos sobre `unmatchedStoreProduct` fuera del helper.
+Opciones a evaluar (decisión técnica pendiente — investigar el setup
+de ESLint del repo y CI):
+
+- **A. `no-restricted-syntax` de ESLint** con un selector AST que matchee
+  `prisma.unmatchedStoreProduct.count` y `.findMany`, con override para
+  `lib/store/unmatched-where.ts` (donde la regla SÍ aplica). No requiere
+  plugin nuevo, regla estándar.
+- **B. Test custom que haga grep del codebase** y falle si aparece el
+  patrón prohibido fuera del helper. Más tosco pero no depende de la
+  config de ESLint.
+
+Cualquiera de las dos debe correrse en el build/CI (Railway) para que
+falle ANTES del deploy, no solo en lint manual del dev.
+
+**Prerequisito.** Esta regla NO sirve hasta que exista un gate de CI/build
+que la ejecute antes del deploy. Hoy no hay (ver entrada "No hay gate de
+CI/build" más abajo). Implementar la regla sin el gate solo agrega un
+lint que el dev puede ignorar — no protege de regresiones reales. El
+orden a respetar: primero montar el gate, después agregar esta regla
+adentro.
+
+**Distinguir uso legítimo de uso prohibido.** Hay sitios legítimos que
+NO deben pasar por el helper:
+- Lecturas por ID (`findFirst({id})` en endpoints
+  `unmatched/[id]/{link,resolve,create-catalog}`).
+- Escrituras (`upsert`, `update`, `updateMany` para resolver/limpiar).
+- Scripts one-off (`scripts/link-from-excel.ts`,
+  `scripts/fix-excel-duplicates.ts`).
+- Setup/assertions de tests.
+
+La regla solo prohíbe `count` y `findMany` que listan/cuentan al usuario.
+`findFirst` por id, escrituras y scripts no deberían dispararla.
+
+**Archivos afectados.**
+- `.eslintrc.json` (o equivalente) si opción A.
+- `tests/unit/no-crudo-unmatched.test.ts` (o similar) si opción B.
+- Probablemente `package.json` para asegurar que el linter corre en
+  build/CI.
+
+---
+
+## No hay gate de CI/build — lint ni tests corren antes del deploy
+
+**Prioridad:** Alta. Es **prerequisito** de la regla de lint de
+`UnmatchedStoreProduct` (entrada anterior), de cualquier futura regla de
+lint, y de que la suite P0 de tests sirva de red real. Cualquiera de esas
+deudas que se atienda antes de cerrar esta queda como decoración: la
+herramienta existe, no protege nada.
+
+**Estado actual (descubierto investigando la regla de unmatched).**
+- ESLint NO está instalado (`node_modules/eslint` no existe).
+- NO hay `.eslintrc*` ni `eslint.config*`.
+- NO hay scripts `lint` en `package.json`.
+- NO hay `husky`, `lint-staged`, ni pre-commit hooks.
+- NO hay `.github/workflows/` ni ningún CI externo.
+- `next.config.mjs` no tiene sección `eslint`.
+- El log "Linting and checking validity of types..." que aparece en
+  `next build` es no-op silencioso cuando no hay config de ESLint.
+- El Dockerfile de Railway corre solo `npm ci && npm run build`. No corre
+  ni lint ni tests.
+
+**Impacto / riesgo.**
+- **La suite P0 de tests existe pero NO es una red real**. Los 18 tests
+  verdes locales no impiden deployar con tests rojos: nadie los ejecuta
+  antes del `git push`. La protección depende 100% de que el dev se
+  acuerde de correr `npm run test`.
+- **El bug de "unmatched contado crudo" reapareció 4 veces** (sync de
+  productos, pestaña, contador de Mi Tienda, dashboard) precisamente
+  porque no había un mecanismo que atrapara el patrón sin disciplina
+  humana. Cada vez se descubrió en producción cuando un cliente lo
+  reportó.
+- Cualquier futura regla de lint (la de unmatched o la próxima) hereda
+  el mismo problema: existe pero no se ejecuta antes del deploy.
+
+**Trigger para atacarla.**
+- Antes de implementar la regla de lint de unmatched o cualquier otra
+  (esa regla pide este gate como prerequisito).
+- Antes del próximo cliente/onboarding que requiera staging/preview
+  builds.
+- Apenas se detecte una regresión en producción que un test existente
+  habría atrapado.
+
+**Solución (decisión pendiente entre dos opciones).**
+
+- **A. GitHub Actions** (CI separado del build de Railway). Workflow
+  que corre en cada push a main: `npm ci && npm run test && npm run
+  lint`. Si falla, el push se marca rojo pero **no bloquea** Railway por
+  default — habría que conectar el branch protection o un check con
+  Railway para que el deploy espere al CI verde. Más config, separa
+  responsabilidades, no enlentece cada deploy.
+
+- **B. Modificar el Dockerfile de Railway** para correr lint + tests
+  antes del build. Algo como:
+  ```dockerfile
+  RUN npm ci --production=false
+  RUN npm run lint
+  RUN npm run test:unit  # los integration requieren DATABASE_URL_TEST
+  RUN npm run build
+  ```
+  Más simple, todo en un lugar, falla naturalmente el deploy si el
+  paso revienta. Trade-off: tests de integración necesitan
+  `DATABASE_URL_TEST` accesible desde el build de Railway (variable de
+  entorno separada). Y los integration son lentos (~120s) — cada
+  deploy paga ese tiempo.
+
+**Recomendación cuando se ataque.** Opción A para el camino largo
+(escalable, deja Railway haciendo solo build/deploy). Opción B sirve
+como medida tapón si se quiere algo rápido sin montar GitHub Actions.
+
+**Conexión con otras deudas.**
+- **Regla de lint de `UnmatchedStoreProduct`** (entrada anterior): no
+  funciona sin este gate.
+- **Migration history no reconstruye el schema de prod** (más abajo):
+  cualquier CI también necesita una DB de test bootstrappeable —
+  ambas deudas se cruzan cuando llegue el momento de implementar.
+
+**Archivos afectados.**
+- Si A: `.github/workflows/ci.yml` (nuevo).
+- Si B: `Dockerfile`, `package.json` (scripts).
+- En ambos: instalar ESLint + config base, agregar `npm run lint` script.
+
+---
+
 ## `store.findFirst` sin orderBy + scoping cross-store sin tests
 
 **Prioridad:** Atar a la decisión de arquitectura multicliente. Hoy

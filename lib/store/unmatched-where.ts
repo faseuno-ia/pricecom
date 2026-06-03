@@ -3,8 +3,11 @@
 //
 // Consumidores (mantener actualizado si se agregan más):
 //   - app/api/my-store/unmatched/route.ts        → listado de la pestaña.
-//   - app/(app)/my-store/page.tsx (server)        → contador del dashboard
-//                                                  + initial badge de la pestaña.
+//   - app/(app)/my-store/page.tsx (RSC)           → contador del dashboard de
+//                                                  Mi Tienda + initial badge.
+//   - app/(app)/dashboard/page.tsx (RSC)          → tarjeta "Atención requerida"
+//                                                  + bloque "Estado ecommerce"
+//                                                  del dashboard principal.
 //
 // Origen: bug en producción donde la pestaña mostraba 63 productos "sin
 // vincular" aunque ya tenían ProductPublication apuntando al wooId correcto.

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import { cn } from "@/lib/utils";
+import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
 import {
   Store,
   Boxes,
@@ -276,9 +277,15 @@ async function getDashboardStats(userId: string) {
               prisma.productPublication.count({
                 where: { storeId, syncStatus: "ERROR" },
               }),
-              prisma.unmatchedStoreProduct.count({
-                where: { storeId, resolved: false },
-              }),
+              // ⚠ NO contar unmatched crudo por `resolved: false` acá. Usar
+              // SIEMPRE buildActiveUnmatchedWhere (helper centralizado en
+              // lib/store/unmatched-where.ts). Mismo bug que arreglamos en
+              // my-store/page.tsx: contar crudo deja el dashboard divergido
+              // del listado real ("63 sin vincular" en la tarjeta vs "1" en
+              // la pestaña). Definición de "unmatched" vive en UN solo lugar.
+              buildActiveUnmatchedWhere(prisma, storeId).then((where) =>
+                prisma.unmatchedStoreProduct.count({ where })
+              ),
             ]);
           return { active, draft, paused, errorPub, pendingSync, syncErrors, unmatched };
         })()
