@@ -1,0 +1,99 @@
+name: CI
+
+# Trigger en pushes a main + PRs hacia main.
+# - push a main: gate del deploy (cuando se active "Wait for CI" en Railway,
+#   este check tiene que pasar para que Railway deploye).
+# - pull_request a main: protección antes del merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancelar runs duplicados del mismo branch/PR — ahorra minutos cuando se
+# pushean varios commits rápido.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permisos mínimos: solo leer el repo. Documenta intent + least-privilege.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests + typecheck
+    runs-on: ubuntu-latest
+
+    # Postgres efímero para los tests de integración. Muere con el job, sin
+    # secrets externos, sin lifecycle de branches Neon que mantener.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # `npm ci` corre `postinstall` que ejecuta `prisma generate`. No hace
+      # falta un step separado de generate.
+      - name: Install dependencies
+        run: npm ci
+
+      # `.env.test` apunta al Postgres del service container (no a Neon).
+      # El guard de tests/setup/env.ts pasa: localhost no contiene el endpoint
+      # de prod `ep-raspy-cloud-ap9iuixg`, y TEST_DB_CONFIRMED=true es la firma
+      # humana esperada (acá la firma viene del workflow controlado por nosotros).
+      # No hay pooler en Postgres standalone — DATABASE_URL y DIRECT_URL apuntan
+      # al mismo endpoint, igual cumple el shape que espera el cliente Prisma.
+      - name: Write .env.test
+        run: |
+          cat > .env.test << 'EOF'
+          DATABASE_URL_TEST=postgresql://postgres:postgres@localhost:5432/test
+          DIRECT_URL_TEST=postgresql://postgres:postgres@localhost:5432/test
+          TEST_DB_CONFIRMED=true
+          EOF
+
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
+
+      # Defensa extra contra timing race: el health check del service ayuda,
+      # pero a veces db:test:reset arranca antes de que Postgres acepte
+      # conexiones reales. pg_isready viene preinstalado en ubuntu-latest.
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Esperando Postgres..."
+            sleep 2
+          done
+
+      # `db:test:reset` = DROP SCHEMA public CASCADE + CREATE SCHEMA public +
+      # prisma migrate deploy. Post-rebaseline (2026-06-03) este script
+      # reconstruye el schema desde el único baseline en
+      # prisma/migrations/. Si el baseline.sql tiene bugs, falla acá antes
+      # de los tests — que es lo que queremos.
+      - name: Bootstrap test DB schema
+        run: npm run db:test:reset
+
+      # Unit + integration en cadena. ~95s total estimado.
+      # `db:test:reset` ya dejó la DB con schema; cada test corre con su
+      # truncate en beforeEach.
+      - name: Run tests
+        run: npm run test
