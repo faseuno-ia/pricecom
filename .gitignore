@@ -20,6 +20,11 @@ tsconfig.tsbuildinfo
 # (sin secretos).
 .env.test
 
+# Dumps de prod (rollback points del rebaseline 2026-06-03 y futuros).
+# Contienen checksums y timestamps reales — no son sensibles, pero tampoco
+# útiles en git. Gitignored para evitar dejarlos accidentalmente.
+backups/
+
 # Excel exports (generados en runtime)
 public/exports/
 /exports/

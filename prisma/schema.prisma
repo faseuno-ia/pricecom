@@ -790,12 +790,19 @@ model EventLog {
   /// JSON libre para contexto adicional (precios old/new, payload Woo, etc).
   metadata      Json?
 
-  user        User?               @relation(fields: [userId], references: [id])
-  provider    Provider?           @relation(fields: [providerId], references: [id])
-  product     CatalogProduct?     @relation(fields: [productId], references: [id])
-  publication ProductPublication? @relation(fields: [publicationId], references: [id])
-  store       Store?              @relation(fields: [storeId], references: [id])
-  job         ExtractionJob?      @relation(fields: [jobId], references: [id])
+  // FKs explícitas con NoAction/NoAction: refleja el comportamiento real de
+  // las constraints en prod, en vez del default actual de Prisma (SetNull
+  // para FK nullable). Drift histórico — prod fue creado con NoAction
+  // explícito y schema.prisma asumía el default; el rebaseline alinea
+  // ambos lados. Si en el futuro se quiere SetNull (que un User borrado
+  // ponga sus EventLogs en null en vez de bloquear), se hace en una
+  // migración explícita ALTER TABLE.
+  user        User?               @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  provider    Provider?           @relation(fields: [providerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product     CatalogProduct?     @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  publication ProductPublication? @relation(fields: [publicationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  store       Store?              @relation(fields: [storeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  job         ExtractionJob?      @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([createdAt])
   @@index([severity])

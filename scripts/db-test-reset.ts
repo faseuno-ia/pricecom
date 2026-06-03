@@ -1,60 +1,62 @@
-// Reset destructivo del branch de Neon "test": prisma db push --force-reset.
-// El schema se toma de schema.prisma (no del historial de migraciones).
+// Reset destructivo del branch de Neon "test":
+//   1. DROP SCHEMA public CASCADE + CREATE SCHEMA public
+//   2. prisma migrate deploy (aplica el baseline + cualquier migración futura)
 //
-// Por qué db push y no migrate deploy: el historial de migraciones del repo
-// no reconstruye el schema real de prod (el init es un esqueleto histórico,
-// faltan ~15 tablas y casi todos los enums; prod se construyó originalmente
-// con db push masivo). Reconstruir el init es deuda separada — ver
-// docs/known-debts.md "Migration history no reconstruye el schema de prod".
+// Post-rebaseline 2026-06-03: el historial de migraciones del repo ya
+// reconstruye el schema completo de prod (un único baseline en
+// prisma/migrations/20260603000000_baseline/ + las incrementales que se
+// agreguen). El reset usa migrate deploy en vez de db push para mantener
+// fidelidad con el historial real — si una migración nueva tiene un bug
+// (DDL inválido, falta de FK), este script lo detecta antes que CI o prod.
 //
-// Para los tests es suficientemente fiel: el código importa Prisma Client
-// que se genera de schema.prisma, así que testear contra el schema que sale
-// de schema.prisma es testear contra el schema que el código realmente asume.
-// La fidelidad que perdemos es la del historial de migraciones — la deuda
-// arriba la cubre, no este script.
+// Las migraciones pre-rebaseline están archivadas en
+// prisma/migrations-archive/20260603-pre-rebaseline/ (ver README ahí).
 //
 // Usa el mismo guard que tests/setup/env.ts — imposible correr contra prod
 // por accidente.
 
 import "../tests/setup/env";
 import { spawnSync } from "node:child_process";
+import { PrismaClient } from "@prisma/client";
 
 async function main() {
   const host = process.env.DATABASE_URL?.match(/@([^/]+)/)?.[1] ?? "<host?>";
-  console.log(
-    `[db-test-reset] Reset destructivo del branch ${host}\n` +
-      `[db-test-reset] (schema desde prisma/schema.prisma vía db push --force-reset)\n`
-  );
+  console.log(`[db-test-reset] Reset destructivo del branch ${host}\n`);
 
-  // --force-reset:    dropea TODO y recrea desde cero.
-  // --skip-generate:  no regenera Prisma Client (ya está generado para prod).
-  // --accept-data-loss: confirma que sabemos que se pierde la data del branch.
-  const result = spawnSync(
-    "npx",
-    [
-      "prisma",
-      "db",
-      "push",
-      "--force-reset",
-      "--skip-generate",
-      "--accept-data-loss",
-    ],
-    {
-      stdio: "inherit",
-      env: process.env,
-      shell: true,
-    }
-  );
+  // PASO 1: limpieza total del schema public.
+  const prisma = new PrismaClient({
+    datasources: { db: { url: process.env.DIRECT_URL_TEST } },
+    log: ["error"],
+  });
+  try {
+    console.log(
+      "[db-test-reset] DROP SCHEMA public CASCADE + CREATE SCHEMA public ..."
+    );
+    await prisma.$executeRawUnsafe("DROP SCHEMA public CASCADE");
+    await prisma.$executeRawUnsafe("CREATE SCHEMA public");
+    await prisma.$executeRawUnsafe("GRANT ALL ON SCHEMA public TO public");
+    console.log("[db-test-reset] ✓ Schema dropeado y recreado\n");
+  } finally {
+    await prisma.$disconnect();
+  }
+
+  // PASO 2: aplicar el historial desde cero.
+  console.log("[db-test-reset] prisma migrate deploy (aplicando historial)...\n");
+  const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
+    stdio: "inherit",
+    env: process.env,
+    shell: true,
+  });
 
   if (result.status !== 0) {
     console.error(
-      `\n[db-test-reset] FALLÓ en db push con exit code ${result.status}`
+      `\n[db-test-reset] FALLÓ en migrate deploy con exit code ${result.status}`
     );
     process.exit(result.status ?? 1);
   }
 
   console.log(
-    `\n[db-test-reset] ✓ Branch de test listo (schema = schema.prisma)`
+    `\n[db-test-reset] ✓ Branch de test listo (schema = migrate deploy desde cero)`
   );
 }
 
