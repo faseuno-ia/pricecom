@@ -324,9 +324,19 @@ como medida tapón si se quiere algo rápido sin montar GitHub Actions.
 **Conexión con otras deudas.**
 - **Regla de lint de `UnmatchedStoreProduct`** (entrada anterior): no
   funciona sin este gate.
-- **Migration history no reconstruye el schema de prod** (más abajo):
-  cualquier CI también necesita una DB de test bootstrappeable —
-  ambas deudas se cruzan cuando llegue el momento de implementar.
+- **Migration history no reconstruye el schema de prod** (más abajo) —
+  **PREREQUISITO YA RESUELTO el 2026-06-03** (commit `e1d7ef1`). Una DB
+  de test efímera ahora se bootstrappea con `DROP SCHEMA + prisma migrate
+  deploy` desde el repo en cualquier branch fresca de Neon. Eso desbloquea
+  CI (tanto opción A como B). El script `scripts/db-test-reset.ts` del
+  repo es la receta exacta que el pipeline puede reutilizar.
+
+**Camino más corto post-rebaseline.** Antes de este cierre, opción A
+(GitHub Actions) tenía como obstáculo que su DB efímera tenía que correr
+`db push` desde `schema.prisma` (ocultando drift). Hoy: corre `prisma
+migrate deploy` directo contra una branch nueva de Neon (o un Postgres
+in-job), produce el schema real, y los tests de integración corren contra
+eso. Sin trabajo adicional sobre la cadena de migraciones.
 
 **Archivos afectados.**
 - Si A: `.github/workflows/ci.yml` (nuevo).
@@ -416,11 +426,67 @@ multicliente; al menos `app/api/my-store/*` y todo lugar que use
 
 ---
 
-## Migration history no reconstruye el schema de prod (riesgo de continuidad)
+## Migration history no reconstruye el schema de prod (riesgo de continuidad) — RESUELTA
 
-**Prioridad:** Alta — atacar ANTES de montar CI, ANTES de Fase 5 (que toca
-schema), o ante cualquier necesidad de un entorno nuevo (staging, disaster
-recovery, onboarding). Lo que pase primero. NO es una deuda menor: es un
+**Estado:** ✅ RESUELTA el 2026-06-03 (commit `e1d7ef1`). Solución D aplicada
+end-to-end con verificación empírica.
+
+**Validación realizada.**
+- `prisma db pull` contra prod → drift único aislado a 6 FKs de EventLog
+  (NoAction explícito vs default Prisma 5 SetNull).
+- `schema.prisma` reconciliado: las 6 FKs ahora declaran NoAction explícito
+  → drift cero contra prod (`migrate diff` → "empty migration").
+- Baseline único generado en `prisma/migrations/20260603000000_baseline/`
+  (749 líneas, 20 tablas + 17 enums + 66 índices + 35 FKs).
+- 12 migraciones viejas archivadas en
+  `prisma/migrations-archive/20260603-pre-rebaseline/` con README explicando
+  motivo.
+- Bootstrap end-to-end contra branch de Neon de test: DROP SCHEMA +
+  `migrate deploy` desde cero aplicó el baseline. Verificación
+  `migrate diff` del resultado vs `schema.prisma` → cero diferencias.
+  Suite completa verde post-rebaseline: unit 3/3 + integration 15/15.
+- `scripts/db-test-reset.ts` cambió de `db push --force-reset` a
+  `DROP SCHEMA + migrate deploy`. Branch test ahora usa el mismo path
+  que prod.
+- En prod: `prisma migrate resolve --applied 20260603000000_baseline`
+  (no-DDL, solo INSERT 1 fila). Estado verificado: 13 filas en
+  `_prisma_migrations` todas APPLIED, las 12 viejas con checksums
+  intactos vs dump pre-resolve.
+- Deploy de prod del commit del rebaseline (`e1d7ef1`) verificado:
+  `prisma migrate deploy` reportó "1 migration found in prisma/migrations" +
+  "No pending migrations to apply" (las 12 orphans en `_prisma_migrations`
+  son ignoradas como esperado). App y worker arrancaron normalmente,
+  consistency check limpio.
+
+**Redes que se mantienen disponibles como cierre.**
+- Dump de `_prisma_migrations` pre-resolve: `backups/prisma-migrations-pre-rebaseline-2026-06-03T04-08-13.json`
+  (gitignored, local). Permite reconstruir el estado original si llegara
+  a hacer falta.
+- Branch backup de Neon "backup-pre-rebaseline-20260603" (parent
+  production). Red nuclear.
+
+**Pendiente como higiene menor (NO bloqueante).** Las 12 orphans en
+`_prisma_migrations` de prod siguen siendo `APPLIED` aunque no existen en
+el repo. Prisma las ignora (verificado empíricamente), no afectan
+funcionalidad. Cleanup pendiente para cuando se quiera limpieza
+cosmética: DELETE directo o `migrate resolve --rolled-back` (este último
+FALLA porque las orphans están APPLIED, no FAILED — así que el cleanup
+es DELETE directo sobre `_prisma_migrations`).
+
+**Impacto del cierre en otras deudas.**
+- Habilita el gate de CI/build (entrada anterior): la DB ahora se
+  bootstrappea desde migraciones, así que CI puede montar una DB efímera
+  con `migrate deploy`.
+- Habilita Fase 5 (eliminar `cp.publicationSku`): cualquier migración
+  nueva ahora se genera contra un schema que el repo reproduce sin drift.
+
+---
+
+**Contenido histórico (pre-resolución, para registro):**
+
+**Prioridad original:** Alta — atacar ANTES de montar CI, ANTES de Fase 5
+(que toca schema), o ante cualquier necesidad de un entorno nuevo
+(staging, disaster recovery, onboarding). NO es una deuda menor: era un
 riesgo de continuidad del negocio.
 
 **Contexto y origen.** Descubierta durante el setup de testing (sprint P0
