@@ -660,3 +660,98 @@ repo y se pueden hacer en cualquier momento sin tocar prod.
 (volver a `migrate deploy` cuando la cadena esté sana).
 
 ---
+
+## Agujero de trazabilidad en `CatalogProductImage`
+
+**Prioridad:** Media — no bloqueante, pero descubierta justo antes de meter
+R2 (object storage), donde la falta de trazabilidad escala mal: cada archivo
+en R2 va a ser pago, y sin origen claro no se puede auditar/limpiar con
+confianza.
+
+**Contexto y origen.** Descubierto durante el diseño del Sprint 1A
+(`docs/sprint-1a-image-source-model.md`) al pedir "demostrar el origen real
+de las 832 USER images antes de migrar". El schema actual de
+`CatalogProductImage` tiene `{id, catalogProductId, url, position,
+isPrimary, source, altText, createdAt}` y nada más:
+
+- Sin `importBatchId` ni equivalente que diga qué proceso/importación creó
+  la fila.
+- Sin `sourceNote` ni metadata libre.
+- Sin `verifiedAt` que documente "esta URL fue confirmada empíricamente
+  contra la tienda externa el día X".
+- `EventLog` no registra creación/modificación de imágenes (búsqueda
+  `type ILIKE '%image%'` → cero filas históricas).
+
+**Impacto / riesgo.**
+
+- **Auditoría imposible.** Si aparece una imagen incorrecta (URL muerta,
+  apunta al producto equivocado, no es la imagen activa en Woo), no se
+  puede rastrear qué proceso la insertó. Se diagnostica por patrón temporal
+  (clustering de `createdAt`) y por inferencia de los call sites del código
+  — exactamente la situación de las 832 USER images de hoy: el diag del 1A
+  pudo identificar el LUGAR donde viven los archivos (Media Library de
+  WordPress de `electrofays.com`) pero NO pudo demostrar qué proceso de
+  PricEcom las insertó.
+- **Pre-R2 es el momento de discutirlo.** Cuando se introduzca object
+  storage (R2), cada imagen tendrá un costo y una vida útil. Sin
+  trazabilidad de procedencia: no se puede limpiar selectivamente
+  (¿borrar las del Excel 16/05 si el cliente abandonó esos productos?
+  ¿retener las del sync verificado?). El agujero pre-existente se amplifica.
+- **Estrategia conservadora del 1A (`STORE` solo poblado desde sync
+  verificado, fila por fila) atenúa el problema hacia adelante**: cada
+  fila futura `STORE` viene con un acoplamiento empírico documentable. Las
+  832 USER existentes siguen sin trazabilidad.
+
+**Trigger para atacarla.**
+
+- Antes de meter R2 o cualquier flujo que asuma "sé de dónde vino esta
+  imagen para decidir qué hacer con ella" (cleanup automático, retención,
+  cross-storage migration, etc.).
+- Sprint 4 (sync verificado de Woo) o 6 (consolidación de modelos), donde
+  el modelo de imágenes pasa a ser load-bearing y la opacidad del origen
+  bloquea decisiones.
+- Caso real de imagen incorrecta sin forma de rastrearla.
+
+**Solución candidata (decidir según appetite cuando se ataque).** Varios
+caminos posibles, no exclusivos:
+
+1. **Campos nuevos en `CatalogProductImage`** (cambio de schema mínimo,
+   alta compatibilidad):
+   - `imageOrigin: ImageOrigin?` enum opcional con valores
+     `SCRAPER | IMPORT | MANUAL_UPLOAD | SYNC_FROM_STORE | SCRIPT_<name>`,
+     etc. Distinto de `source` (que es el contrato de etiqueta), describe
+     el PROCESO de creación.
+   - `imageOriginRef: String?` para el id externo del proceso (job id,
+     importBatch id, sync run id, script-run timestamp).
+   - `verifiedAt: DateTime?` y `verifiedSource: String?` para registrar
+     verificación empírica contra la tienda (popular cuando `source` pasa
+     a `STORE`).
+   - `createdByUserId: String?` cuando aplicable.
+
+2. **Tabla de auditoría dedicada** (`CatalogProductImageAudit`): una fila
+   por evento de creación/modificación, con `imageId, action, processName,
+   actorId, createdAt, metadata Json`. Cero impacto en el modelo de
+   imágenes pero introduce una tabla nueva. Útil si se quiere rastrear
+   también ediciones y borrados, no solo creación.
+
+3. **Emitir `EventLog` desde los call sites de creación** (sin cambio de
+   schema). Mínimo esfuerzo: agregar `logInfo({type: 'IMAGE_CREATED', ...})`
+   en los ~6 lugares donde se crea `CatalogProductImage`. Cubre creaciones
+   futuras pero no resuelve las 832 históricas (que se quedan sin rastro
+   en cualquier caso).
+
+**Recomendación cuando se ataque.** Combinar 1 + 3: schema con
+`imageOrigin` + `verifiedAt`, y emisión paralela de `EventLog` para
+auditoría temporal. La tabla de auditoría dedicada (opción 2) queda como
+escalación si la cardinalidad de eventos hace ruido en `EventLog`.
+
+**Lo que NO sirve.** Inferir origen retroactivo por dominio o estructura
+de URL para las 832 históricas. Mismo argumento del Sprint 1A §5: convierte
+inferencia en verdad de negocio y enmascara el agujero como resuelto.
+
+**Archivos afectados (estimación).** `schema.prisma`,
+`prisma/migrations/<futura>_add_image_origin/`, los ~6 call sites que
+crean `CatalogProductImage` (ver `docs/sprint-1a-image-source-model.md`
+para la lista), `lib/events/event-log.ts` si se agregan tipos nuevos.
+
+---

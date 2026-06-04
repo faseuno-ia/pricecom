@@ -1,0 +1,22 @@
+-- Sprint 1A — agregar valor STORE al enum ImageSource.
+-- Doc de diseño: docs/sprint-1a-image-source-model.md
+--
+-- Migración hand-written (NO generada con `prisma migrate dev`).
+-- Único cambio: ALTER TYPE ADD VALUE. Cero filas afectadas.
+--
+-- Caveats (importante para 1B y para el reviewer):
+--   1. ADD VALUE es forward-only. Postgres no permite DROP de un valor de enum
+--      sin recrear el tipo entero (con todos sus usos en columnas). El rollback
+--      "limpio" no existe; ver §6 del doc.
+--   2. NO combinar este ADD VALUE con un UPDATE ... = 'STORE' en la misma
+--      migración ni en la misma transacción. Postgres rechaza usar un valor de
+--      enum recién agregado dentro de la transacción que lo agregó
+--      (https://www.postgresql.org/docs/current/sql-altertype.html — "ALTER TYPE
+--      ... ADD VALUE ... cannot be executed in a transaction block ..." si se
+--      usa el nuevo valor en la misma tx). Cualquier reclasificación va en una
+--      migración POSTERIOR, separada.
+--   3. ADD VALUE appendea el valor al final del orden físico del enum en
+--      Postgres, independientemente de su posición en schema.prisma. Es
+--      cosmético — los consumidores deben comparar por nombre, no por orden.
+
+ALTER TYPE "ImageSource" ADD VALUE 'STORE';
