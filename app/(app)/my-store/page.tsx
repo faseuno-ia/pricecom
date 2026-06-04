@@ -36,25 +36,37 @@ export default async function MyStorePage() {
     );
   }
 
-  // KPIs alineados a deriveVisualStatus:
-  //   - Publicados: pub ACTIVE
-  //   - Pausados: pub PAUSED + proveedor activo (la pausa por SUPPLIER_REMOVED
-  //     entra en Sin stock).
-  //   - Sin stock: catalogProduct.supplierStatus = SUPPLIER_REMOVED.
-  //   - Errores: pub ERROR
-  //   - Desactualizadas: syncStatus OUTDATED. (Reemplaza el viejo "pendientes"
-  //     que mezclaba PENDING_SYNC y OUTDATED.)
+  // KPIs.
+  // De INTENCIÓN del usuario (cuentan por cp.internalStatus, no por pp.status):
+  //   - Publicados:  cp.internalStatus = PUBLISHED
+  //   - Pausados:    cp.internalStatus = PAUSED + pausedBySystem=false (pausa manual real;
+  //                  los auto-pausados por SUPPLIER_REMOVED entran en "Sin stock").
+  //   - Ignorados:   cp.internalStatus = IGNORED (decisión comercial duradera; ocultos por
+  //                  default en la tabla con toggle).
+  //   - Preparados:  cp.internalStatus = PREPARED (listos para republicar; existen en Woo
+  //                  como private/draft según el diag pre-fix).
+  // OPERATIVOS (siguen contando por sus campos actuales, dimensión distinta):
+  //   - Sin stock:        cp.supplierStatus = SUPPLIER_REMOVED.
+  //   - Pendientes sync:  pp.pendingSync = true.
+  //   - Errores:          pp.status = ERROR.
+  // Universo de los KPIs de intención: pp en esta store (cps con publicación). Los
+  // NOT_PUBLISHED sin pp no entran a Mi Tienda.
   const [
     active,
     sinStock,
     paused,
+    ignored,
+    prepared,
     pubError,
     pendingSync,
     unmatchedCount,
     categories,
   ] = await Promise.all([
       prisma.productPublication.count({
-        where: { storeId: store.id, status: "ACTIVE" },
+        where: {
+          storeId: store.id,
+          catalogProduct: { is: { internalStatus: "PUBLISHED" } },
+        },
       }),
       prisma.productPublication.count({
         where: {
@@ -65,10 +77,21 @@ export default async function MyStorePage() {
       prisma.productPublication.count({
         where: {
           storeId: store.id,
-          status: "PAUSED",
           catalogProduct: {
-            is: { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+            is: { internalStatus: "PAUSED", pausedBySystem: false },
           },
+        },
+      }),
+      prisma.productPublication.count({
+        where: {
+          storeId: store.id,
+          catalogProduct: { is: { internalStatus: "IGNORED" } },
+        },
+      }),
+      prisma.productPublication.count({
+        where: {
+          storeId: store.id,
+          catalogProduct: { is: { internalStatus: "PREPARED" } },
         },
       }),
       prisma.productPublication.count({
@@ -129,6 +152,8 @@ export default async function MyStorePage() {
           active,
           sinStock,
           paused,
+          ignored,
+          prepared,
           error: pubError,
           pendingSync,
           unmatched: unmatchedCount,

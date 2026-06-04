@@ -982,3 +982,120 @@ crean `CatalogProductImage` (ver `docs/sprint-1a-image-source-model.md`
 para la lista), `lib/events/event-log.ts` si se agregan tipos nuevos.
 
 ---
+
+## Divergencia intención ↔ Woo en publicaciones IGNORED
+
+**Prioridad:** Media — no bloqueante hoy (afecta a 2 publicaciones), pero
+puede crecer y confundir al usuario: el dashboard dice "Ignorados: 18" y
+él asume que ninguno se vende, cuando en realidad 2 siguen activos en
+WooCommerce.
+
+**Contexto y origen.** Surge al rediseñar los KPIs de Mi Tienda para que
+cuenten por `cp.internalStatus` (decisión del usuario) en vez de
+`pp.status` (estado en la tienda externa). El diag empírico encontró 2
+publicaciones con `cp.internalStatus = IGNORED` pero `pp.status = ACTIVE`
+en la store ELECTROFAYS. Es decir: el usuario decidió no comerciar esos
+productos, pero alguien los reactivó en Woo y siguen vendibles. Caso
+ancla: TP-658 (DURAVIT TORRE MINI) — el mismo del Sprint 1A.
+
+**Mecánica subyacente.** `mapInternalStatus()` en
+`app/api/my-store/sync/products/route.ts` PROTEGE `cp.internalStatus =
+IGNORED|PAUSED` durante el pull (no los pisa con PUBLISHED). Pero
+`pp.status` se reescribe sin guard según lo que Woo reporta: si Woo dice
+`publish`, queda `pp.status = ACTIVE`. Así, la intención (`cp.internalStatus`)
+y la realidad operativa (`pp.status`) divergen cuando alguien reactiva en
+Woo un producto previamente ignorado en PricEcom.
+
+**Impacto / riesgo.**
+- **Confusión del KPI**: "Ignorados: N" sugiere que N productos NO se
+  venden. Mientras hayan IGNORED con `pp.status = ACTIVE`, esa lectura es
+  falsa para esos N.
+- **Hoy son 2** en ELECTROFAYS. Si la cantidad crece (cliente abre más
+  stores, agrega operadores en Woo, integra con un canal que republica
+  silenciosamente), la divergencia se vuelve material.
+- **Riesgo de venta indeseada**: el cliente decide IGNORED por razones
+  comerciales (margen negativo, problema con proveedor, producto
+  descatalogado). Si Woo sigue vendiéndolo, se concretan ventas que el
+  cliente no quería.
+
+**Trigger para atacarla.**
+- N > 5 IGNORED con `pp.status = ACTIVE`, o cualquier caso reportado por
+  el cliente.
+- Apertura de multi-store o multi-operador (probabilidad de divergencia
+  aumenta con más actores tocando Woo).
+- Refactor del dashboard que profundice los KPIs.
+
+**Solución cuando importe.** Exponer la divergencia en la UI, NO
+resolverla con un guard que pise Woo automáticamente (violaría el
+principio "Woo es source of truth para estado activo"; el sync debe
+poder reflejar el estado real). Ideas concretas no exclusivas:
+1. Sub-KPI o badge: "Ignorados: 18 (**2 activos en Woo — revisar**)".
+2. Filtro dedicado en la tabla "IGNORED con pp.status=ACTIVE" para
+   que el usuario los vea de un vistazo y decida (reactivar
+   internalStatus a PUBLISHED, o pausar en Woo).
+3. EventLog automático cuando el sync detecte un IGNORED que pasa a
+   `pp.status = ACTIVE` (no hoy — el sync ya emite eventos de cambio
+   pero no marca esta divergencia específica).
+4. Reverso del razonamiento: agregar un guard opcional al sync que
+   FORCE pause en Woo cuando detecta IGNORED + Woo dice publish — solo
+   activable explícitamente por el usuario, nunca por default.
+
+**Archivos afectados (estimación).** `app/(app)/my-store/page.tsx` (KPI
+con sub-conteo), `components/my-store/my-store-dashboard.tsx` (badge UI),
+`components/my-store/publications-table.tsx` + `app/api/my-store/publications/route.ts`
+(filtro nuevo), opcionalmente `app/api/my-store/sync/products/route.ts`
+(emisión del evento de divergencia).
+
+---
+
+## Solapamiento "Sin stock" ↔ "Pausados (manual)" en caso de borde
+
+**Prioridad:** Baja — cosmético, no es bug. La suma de KPIs no cierra
+exactamente al total de publicaciones (1417 sumadas vs 1416 reales) por
+un solo caso de borde.
+
+**Contexto y origen.** Tras el rediseño de KPIs de Mi Tienda, dos baldes
+miden dimensiones distintas que pueden coincidir en una misma publicación:
+- "Sin stock" cuenta por `cp.supplierStatus = SUPPLIER_REMOVED` (475).
+- "Pausados" cuenta por `cp.internalStatus = PAUSED + pausedBySystem = false`
+  (1, la pausa manual real).
+
+El producto que está pausado manualmente por el usuario, además de tener
+su proveedor dado de baja, cae en AMBOS KPIs. Es 1 cp en prod hoy
+(ELECTROFAYS): el usuario lo pausó manualmente y casualmente el proveedor
+también lo removió.
+
+**Impacto / riesgo.** Visual: la suma de los KPIs `919 + 475 + 1 + 18 + 4
+= 1417` versus el total `1416` da una unidad de más. Ambas etiquetas son
+ciertas para esa publicación — ni "Sin stock" ni "Pausados (manual)" la
+cuentan mal. El problema es que las dimensiones (intención del usuario
+vs estado del proveedor) son ortogonales por diseño, no excluyentes.
+
+**Trigger para atacarla.**
+- Cliente pregunta "¿por qué los KPIs no suman al total?".
+- Decisión de mostrar la suma como dato verificable en la UI (hoy no se
+  muestra).
+- Rediseño futuro que quiera categorías mutuamente excluyentes.
+
+**Solución cuando importe.** Si se quiere que los baldes sumen exacto al
+total, decidir una jerarquía de etiqueta para el caso de borde. Tres
+opciones razonables:
+1. **"Sin stock" gana**: el producto se cuenta solo ahí (es la
+   restricción operativa más fuerte). "Pausados" excluye los que además
+   tienen `supplierStatus = SUPPLIER_REMOVED`.
+2. **"Pausados (manual)" gana**: la decisión humana se prioriza sobre la
+   condición operativa. "Sin stock" excluye los que además tienen
+   `internalStatus = PAUSED + pausedBySystem = false`.
+3. **Dejarlo como está + nota explicativa**: las dimensiones son
+   ortogonales y conceptualmente correctas; agregar tooltip en los KPIs
+   explicando que pueden solapar.
+
+Recomendación inicial: opción 3 (no agrupar artificialmente algo que es
+ortogonal). Las opciones 1 o 2 son válidas si el cliente prefiere baldes
+mutuamente excluyentes.
+
+**Archivos afectados (estimación).** Solo `app/(app)/my-store/page.tsx`
+(query) y `components/my-store/my-store-dashboard.tsx` (tooltip si se
+elige opción 3). Cero impacto fuera del dashboard.
+
+---

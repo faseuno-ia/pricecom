@@ -35,6 +35,8 @@ interface Props {
     active: number;
     sinStock: number;
     paused: number;
+    ignored: number;
+    prepared: number;
     error: number;
     pendingSync: number;
     unmatched: number;
@@ -137,10 +139,14 @@ export function MyStoreDashboard({ store, integration, kpis }: Props) {
     }
   })();
 
+  // Orden: intención (Publicados, Pausados, Ignorados, Preparados) + operativos
+  // (Sin stock, Pendientes sync, Errores, No vinculados).
   const kpiCards = [
     { label: "Publicados", value: kpis.active, cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
-    { label: "Sin stock", value: kpis.sinStock, cls: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
     { label: "Pausados", value: kpis.paused, cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+    { label: "Ignorados", value: kpis.ignored, cls: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30" },
+    { label: "Preparados", value: kpis.prepared, cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
+    { label: "Sin stock", value: kpis.sinStock, cls: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
     { label: "Pendientes sync", value: kpis.pendingSync, cls: "bg-violet-500/15 text-violet-300 border-violet-500/30" },
     { label: "Errores", value: kpis.error, cls: "bg-red-500/15 text-red-300 border-red-500/30" },
     { label: "No vinculados", value: kpis.unmatched, cls: "bg-muted/30 text-muted-foreground border-border" },
@@ -209,8 +215,9 @@ export function MyStoreDashboard({ store, integration, kpis }: Props) {
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      {/* KPIs — 8 cards. lg:grid-cols-4 da 4×2 con intención arriba y
+          operativos abajo, respetando el orden semántico del array. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {kpiCards.map((k) => (
           <div key={k.label} className="bg-card border border-border rounded-xl p-4">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">

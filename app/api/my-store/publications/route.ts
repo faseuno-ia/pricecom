@@ -12,7 +12,10 @@
 //                   Filtra estrictamente syncStatus=PENDING_SYNC. NO incluye
 //                   las OUTDATED aunque también tengan pendingSync=true.
 //   OUTDATED      → drift de precio entre PricEcom y la tienda externa.
-//   PAUSED        → pausa manual del usuario, proveedor todavía activo.
+//   PAUSED        → pausa manual real (cp.internalStatus=PAUSED + pausedBySystem=false).
+//                   Alineado con el KPI "Pausados" del dashboard. Los IGNORED y
+//                   PREPARED ya NO entran acá (tienen su propia semántica); los
+//                   auto-pausados por SUPPLIER_REMOVED entran en SIN_STOCK.
 //   SIN_STOCK     → catalogProduct.supplierStatus = SUPPLIER_REMOVED,
 //                   independiente del estado interno.
 
@@ -58,6 +61,12 @@ export async function GET(req: NextRequest) {
   const filterParam = (url.searchParams.get("filter") ?? "ALL") as Filter;
   const filter: Filter = VALID_FILTERS.includes(filterParam) ? filterParam : "ALL";
   const search = url.searchParams.get("search")?.trim() ?? "";
+  // Toggle de Ignorados: por default, las publicaciones cuyo cp.internalStatus
+  // es IGNORED no se listan (decisión comercial duradera del usuario, no
+  // requieren atención cotidiana). Con includeIgnored=true se muestran.
+  // Mismo patrón que "Ver descartados manualmente" de Unmatched.
+  const includeIgnored =
+    url.searchParams.get("includeIgnored") === "true";
 
   const store = await prisma.store.findFirst({
     where: { userId: session.user.id },
@@ -77,6 +86,12 @@ export async function GET(req: NextRequest) {
     { storeId: store.id },
   ];
 
+  if (!includeIgnored) {
+    andClauses.push({
+      catalogProduct: { is: { internalStatus: { not: "IGNORED" } } },
+    });
+  }
+
   if (filter !== "ALL") {
     if (filter === "PENDING_SYNC") {
       // Estrictamente acciones de sistema pendientes (no OUTDATED, aunque
@@ -85,12 +100,14 @@ export async function GET(req: NextRequest) {
     } else if (filter === "OUTDATED") {
       andClauses.push({ syncStatus: "OUTDATED" });
     } else if (filter === "PAUSED") {
-      // Pausa manual estricta: proveedor todavía activo. Los productos
-      // pausados automáticamente por SUPPLIER_REMOVED entran en SIN_STOCK.
+      // Pausa manual estricta, alineada con el KPI "Pausados" del dashboard:
+      // cp.internalStatus=PAUSED + pausedBySystem=false. Antes el filtro miraba
+      // pp.status=PAUSED, que incluía silenciosamente IGNORED y PREPARED
+      // (ambos terminan en pp.status=PAUSED tras pauseProductInWoo). Ahora
+      // cada balde tiene su propia métrica de intención.
       andClauses.push({
-        status: "PAUSED",
         catalogProduct: {
-          is: { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          is: { internalStatus: "PAUSED", pausedBySystem: false },
         },
       });
     } else if (filter === "SIN_STOCK") {
