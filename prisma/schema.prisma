@@ -437,9 +437,19 @@ enum PublicationStatus {
   ERROR
 }
 
+/// Origen de una CatalogProductImage. Contrato:
+///   STORE     → relación verificada con la tienda externa vía sync directo.
+///   USER      → la subió el usuario, o el origen no es demostrable a nivel de fila.
+///   SUPPLIER  → (futuro) imagen importada del catálogo del proveedor.
+///   GENERATED → (futuro) generada / placeholder / IA.
+/// Ver docs/sprint-1a-image-source-model.md. STORE se introdujo en 1A vacío;
+/// las filas existentes no se reclasifican (Estrategia B, fila por fila desde
+/// Sprint 4). El orden de los valores en este enum es cosmético — Postgres
+/// preserva el orden físico de creación independientemente del schema.
 enum ImageSource {
   SUPPLIER
   USER
+  STORE
   GENERATED
 }
 
