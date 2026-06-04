@@ -660,3 +660,230 @@ repo y se pueden hacer en cualquier momento sin tocar prod.
 (volver a `migrate deploy` cuando la cadena esté sana).
 
 ---
+
+## Importador de Excel: "PRECIO WEB" se mapea a `finalPrice` sin warning
+
+**Prioridad:** Media-alta. La próxima vez que el cliente reimporte un Excel
+con la columna "PRECIO WEB", repite el incidente — 385 finalPrice fantasma
+silenciosos.
+
+**Contexto y origen.** El 15/05/2026 el cliente subió un Excel para corregir
+SKU comerciales de IMPOTEKNO. El archivo incluía una columna "PRECIO WEB" con
+el cálculo del precio actual de cada producto. `lib/catalog/import-aliases.ts`
+mapea "PRECIO WEB" (entre otros: "Precio final", "PRECIO FINAL", "Precio
+venta", "PRECIO VENTA") al campo `finalPrice` del CatalogProduct.
+`scripts/import-store-excel.ts:258-260` aplica el override sin advertencia:
+
+```ts
+if (finalPrice != null) {
+  updateData.finalPrice = finalPrice;
+  report.pricesApplied++;
+}
+```
+
+`finalPrice` es un **override** que pisa la regla de pricing automática. Una
+vez seteado, el motor (`resolvePricing`) devuelve `effectivePrice = finalPrice`
+sin recalcular desde wholesale × margen. Resultado: 385 productos quedaron
+con precio "congelado" en la foto del 15/05; cualquier cambio futuro de
+wholesale del proveedor no se reflejó en la tienda, hasta que se descubrió
+el 2026-06-03 y se limpió.
+
+**Impacto / riesgo.**
+- **Drift silencioso de precios.** El cliente no ve ningún warning durante
+  o post-import. El report dice "385 prices applied" como si fuera una
+  acción intencional, no un override sticky.
+- **Reincidencia esperable.** Cualquier Excel del proveedor que traiga
+  "PRECIO WEB" o cualquiera de los aliases (Precio final/PRECIO FINAL/
+  Precio venta/PRECIO VENTA/finalPrice) va a disparar lo mismo. Es muy
+  probable que los proveedores manden Excels con esa columna como
+  información comercial, no como instrucción de override.
+- **Limpieza es costosa.** El backfill del 2026-06-03 requirió: diagnóstico
+  forense de 4h para confirmar origen, dump JSON de respaldo, UPDATE masivo
+  en transacción con verificación, y backfill de drift posterior. No es
+  algo que escale a "lo arreglamos cuando pase".
+
+**Trigger para atacarla.**
+- Cualquier indicio de que el cliente vaya a reimportar un Excel del mismo
+  proveedor o de otro con columnas similares.
+- Onboarding de un nuevo proveedor que mande catálogo Excel — alta
+  probabilidad de columnas "Precio venta" o similares.
+- Más de un caso de soporte donde "los precios de Woo no se actualizan
+  después del extract".
+
+**Solución cuando importe.** Tres niveles, elegir según appetite:
+
+1. **Warning explícito en el report del importador** (mínimo). Sumar al
+   `report` una sección "finalPriceOverridesApplied: { sku, value }[]"
+   distinta de `pricesApplied`, mostrarla en la UI con texto claro tipo
+   "Estos N productos quedarán con precio fijo. La regla automática del
+   proveedor NO se aplicará mientras tengan finalPrice seteado. ¿Confirmás?".
+   Requiere paso de confirmación adicional en el flujo.
+
+2. **Sacar los aliases ambiguos** ("PRECIO WEB", "Precio venta", "PRECIO
+   VENTA"). Mantener solo "finalPrice" y "Precio final"/"PRECIO FINAL" como
+   alias del override real. Los otros son terminología de catálogo
+   comercial, no de override. Cambio en `lib/catalog/import-aliases.ts:65-72`.
+
+3. **Modo importación explícito**. Que el upload pida elegir entre
+   "Importar catálogo (sin tocar precios)" y "Importar con override de
+   precios". Default debería ser el primero. El segundo dispara los
+   warnings del nivel 1.
+
+Recomendación: combinar 1 + 2. El nivel 3 es más invasivo y rompe UX para
+casos legítimos.
+
+**Archivos afectados.** `lib/catalog/import-aliases.ts`,
+`scripts/import-store-excel.ts:258-260`, `app/api/catalog/import/route.ts`
+(si el flujo de UI vive ahí), componente del importador en
+`components/catalog/*`. Tests para los nuevos warnings.
+
+**Backup del incidente.** `backups/finalprices-cleanup-pre-2026-06-03T20-45-55-741Z.json`
+guarda los 385 valores originales con `{id, finalPrice, wholesalePrice,
+sourceType, providerName, sku, supplierName}`. Mantenerlo vivo unos días
+post-cleanup por si hay que revertir algún finalPrice puntual; luego archivar.
+
+---
+
+## Endpoints de edición de título/descripción no llaman a `markPublicationsDrift`
+
+**Prioridad:** Media. Gap conocido tras el backfill del 2026-06-03 que dejó
+3 publications en estado `user-edited` sin marcar.
+
+**Contexto y origen.** Durante el backfill de drift histórico se detectaron
+3 pp con `commercialTitleUserEdited=true` o `commercialDescriptionUserEdited=true`
+pero `syncStatus=SYNCED` y `pendingSync=false`. Si el usuario editó esos
+campos, la pp debería haber quedado marcada como OUTDATED + pendingSync — pero
+no lo está. Indica que el(los) endpoint(s) que setearon los flags
+`commercial*UserEdited=true` no llamaron a `markPublicationsDrift` después.
+
+`findDriftingPublications` marca como "user-edited" cualquier pp con esos
+flags porque no hay snapshot remoto de título/descripción para comparar
+(`mark-publications-drift.ts:123-136`). Es marca defensiva: si los flags
+están, asumimos drift.
+
+**Impacto / riesgo.** Cosmético hoy (3 pp), pero indica que cualquier futura
+edición de título/descripción que pase por el mismo endpoint queda con el
+mismo gap. El cliente edita el título en la UI, ve "guardado", pero la
+pp no aparece en la cola de pendientes y Woo nunca recibe el cambio. Lo
+descubre cuando compara su tienda con el catálogo y nota que "esto no se
+actualizó".
+
+**Trigger para atacarla.**
+- Caso de soporte donde "edité el título y no aparece en la tienda".
+- Cualquier refactor de los endpoints de edición de pp.
+- Auditoría del wrapper `markPublicationsDrift` para verificar que TODOS
+  los call sites de mutación visible-en-Woo lo invocan.
+
+**Solución cuando importe.**
+1. Identificar el/los endpoint(s) que setean `commercialTitleUserEdited` o
+   `commercialDescriptionUserEdited`. Candidatos: `app/api/catalog/publications/[id]/*`,
+   posiblemente bulk-update o drawer de edición.
+2. En cada call site que mute esos flags, llamar a `markPublicationsDrift`
+   con el `catalogProductId` correspondiente — misma función que ya
+   importa `upsertCatalogProducts` post-Fix 1.
+3. Test de integración por endpoint que verifique que tras la edición la
+   pp queda `pendingSync=true + syncStatus=OUTDATED`.
+4. Bonus: limpiar los 3 user-edited residuales del backfill del
+   2026-06-03 con un script puntual que solo los marque a ellos. No urgente.
+
+**Archivos afectados (a investigar).** `app/api/catalog/publications/[id]/*`,
+componentes del drawer de edición de publicaciones. Suite
+`tests/integration/` para casos por endpoint.
+
+---
+
+## Publications LACHIPELU sin wholesale ni finalPrice (no-price-calculable)
+
+**Prioridad:** Baja — bloqueada por acción del cliente. 16 pp en estado
+"no-price-calculable" detectadas por el backfill del 2026-06-03; NO se
+marcaron porque `publishProductToWoo` abortaría con "Sin precio calculado".
+
+**Contexto.** 16 catalog products de LACHIPELU - Vanesa tienen
+`wholesalePrice=null` Y `finalPrice=null`. Sin ninguno de los dos,
+`resolvePricing` no puede generar un precio. Las pp están publicadas y
+ACTIVE en Woo con un `priceInStore` viejo, pero no hay forma de calcular
+un precio efectivo nuevo para sincronizar.
+
+SKUs afectados: LA98, LA75, LA92, LA91, LA60, LA50, LA35, LA39, LA72,
+LA63, y 6 más (lista completa en log del backfill 2026-06-03 21:56:32).
+
+**Impacto / riesgo.** Bloqueante para sincronizar esas 16 pp con Woo.
+Como el sync abortaría con error "Sin precio calculado", marcarlas como
+OUTDATED solo ensucia la cola — el cliente las vería como pendientes
+pero ningún sync las podría procesar.
+
+**Trigger para atacarla.** El cliente debe cargar wholesale o finalPrice
+en cada uno (manualmente o vía extracción del proveedor si LACHIPELU tiene
+scraper configurado). Una vez con precio, automáticamente entran a la
+cola de drift cuando el wholesale del proveedor cambie.
+
+**Solución.** Tarea del cliente, no de ingeniería. Posible mejora UX:
+mostrar en el dashboard un widget "Productos sin precio configurable" con
+la lista, link directo al editor de cada uno. No urgente con 16
+productos; sí relevante si el número crece.
+
+**Archivos afectados.** Ninguno desde el backend hasta que se decida el
+widget de UI; en ese caso, `app/(app)/dashboard/page.tsx` + helper de
+query reusable.
+
+---
+
+## Auto-push de precios con guardrails (Nivel 2)
+
+**Prioridad:** Sprint futuro — feature pedida por el cliente, no es
+deuda técnica per se. Acá para no perderla del roadmap.
+
+**Contexto.** Hoy el flujo es: worker extrae → cp cambia → pp queda
+OUTDATED + pendingSync → cliente entra a "Sincronizar pendientes" y
+manualmente decide qué empujar. Funciona bien para revisar cambios
+sensibles (los 12 que SUBEN del backfill 2026-06-03 son ejemplo: cliente
+debería mirarlos antes), pero es trabajo manual recurrente para los 248
+que BAJAN o son drift técnico de $1.
+
+El cliente pidió un Nivel 2: que el sistema auto-pushee a Woo los cambios
+de precio bajo condiciones seguras, sin intervención manual.
+
+**Guardrails mínimos (sin estos NO se implementa).**
+1. **Variación máxima por sync individual.** Threshold configurable (sugerido
+   ±10% o ±$X). Sobre el threshold, queda en cola manual como hoy. El
+   cliente revisa.
+2. **Anomalías a revisión manual.** wholesale=null, finalPrice=null,
+   priceInStore=null, regla sin margen calculable → NO push automático.
+   Esos zombies van a cola para que el cliente entienda.
+3. **Nunca push de $0 o null.** Salvaguarda dura: si effectivePrice
+   resuelve a 0 o null, abortar sin tocar Woo. Esto ya existe en
+   `publishProductToWoo` ("Sin precio calculado") pero conviene
+   reafirmarlo en la capa de auto-push como segunda barrera.
+4. **Rate limiting / batching.** No empujar 260 productos a Woo de golpe.
+   Batch configurable (sugerido 20-50 por minuto) para no saturar la API
+   ni dar la sensación de "todo cambió de repente" si el cliente está
+   mirando la tienda.
+5. **Reporte vía EventLog.** Cada auto-push emite un evento
+   `WOO_AUTO_PUSH_SUCCESS` o `WOO_AUTO_PUSH_SKIPPED_<reason>` con el
+   delta de precio y guardrail aplicado. El cliente puede revisar el
+   activity log y entender qué se movió sin él.
+6. **Modo opt-in por proveedor.** No habilitar global. Que el cliente
+   active auto-push provider por provider. Empezar por uno (probablemente
+   BAZAR 380 o IMPOTEKNO donde los movimientos son predecibles), evaluar,
+   expandir.
+
+**Trigger para atacarla.** Cuando el cliente confirme que el flujo manual
+post-backfill del 2026-06-03 le funciona y quiera dar el siguiente paso.
+NO antes — el auto-push sin haber validado el flujo manual primero es
+riesgoso (ejemplo: si Fix 1 tuviera un bug latente que mete precios
+incorrectos en la cola, el auto-push los empujaría sin filtro humano).
+
+**Solución cuando importe.** Diseño concreto pendiente. Componentes
+probables: worker job nuevo (`auto-push-pending.ts`) que corre cada N
+minutos, leyendo `productPublication` con `pendingSync=true` +
+`syncStatus=OUTDATED`, aplicando los guardrails 1-4, y llamando
+`publishProductToWoo` con `dryRun=false`. Settings nuevas por
+`Provider.autoPushEnabled` y `User.autoPushMaxPercent` /
+`autoPushMaxAmountAbs`.
+
+**Archivos afectados (estimación).** Worker (nuevo job),
+`schema.prisma` (campos de config), `lib/integrations/woocommerce/*`
+(integrar con el publish existente), UI para configurar guardrails por
+proveedor en `app/(app)/providers/*`.
+
+---
