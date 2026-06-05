@@ -264,8 +264,8 @@ export function PublicationsTable() {
           ))}
         </div>
 
-        <div className="flex items-center gap-2 ml-auto">
-          <label className="text-xs flex items-center gap-1.5 text-muted-foreground cursor-pointer select-none">
+        <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-2 ml-auto">
+          <label className="text-xs flex items-center gap-1.5 text-muted-foreground cursor-pointer select-none whitespace-nowrap">
             <input
               type="checkbox"
               checked={includeIgnored}
@@ -278,14 +278,14 @@ export function PublicationsTable() {
             triggerLabel="Guía de estados"
             statuses={["PUBLISHED", "OUTDATED", "PAUSED", "SIN_STOCK"]}
           />
-          <div className="relative">
+          <div className="relative w-full sm:w-auto sm:flex-initial">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar por SKU o nombre…"
-              className="text-sm bg-background border border-border rounded-md pl-8 pr-3 py-1.5 w-64 focus:outline-none focus:ring-1 focus:ring-primary/60"
+              className="text-sm bg-background border border-border rounded-md pl-8 pr-3 py-1.5 w-full sm:w-64 focus:outline-none focus:ring-1 focus:ring-primary/60"
             />
           </div>
           <select
@@ -294,7 +294,7 @@ export function PublicationsTable() {
               setPageSize(Number(e.target.value));
               setPage(1);
             }}
-            className="text-xs bg-background border border-border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60"
+            className="text-xs bg-background border border-border rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/60 whitespace-nowrap"
           >
             <option value={50}>50 por página</option>
             <option value={100}>100 por página</option>
