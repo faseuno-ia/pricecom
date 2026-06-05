@@ -46,7 +46,7 @@ const VALID_VISUAL: VisualStatus[] = [
 // la misma prioridad que `deriveVisualStatus` en visual-status.ts para que
 // el badge y el filtro coincidan:
 //   OUTDATED > SIN_STOCK > PAUSED > PUBLISHED > PREPARED > NOT_PUBLISHED > IGNORED
-function visualStatusToWhere(
+export function visualStatusToWhere(
   s: VisualStatus
 ): Prisma.CatalogProductWhereInput {
   switch (s) {

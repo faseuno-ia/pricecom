@@ -4,6 +4,7 @@ import { Onboarding } from "@/components/my-store/onboarding";
 import { MyStoreDashboard } from "@/components/my-store/my-store-dashboard";
 import { MyStoreTabs } from "@/components/my-store/my-store-tabs";
 import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
+import { visualStatusToWhere } from "@/lib/catalog/list-filters";
 
 export const metadata = {
   title: "Mi Tienda — PricEcom",
@@ -37,20 +38,26 @@ export default async function MyStorePage() {
   }
 
   // KPIs.
-  // De INTENCIÓN del usuario (cuentan por cp.internalStatus, no por pp.status):
-  //   - Publicados:  cp.internalStatus = PUBLISHED
-  //   - Pausados:    cp.internalStatus = PAUSED + pausedBySystem=false (pausa manual real;
-  //                  los auto-pausados por SUPPLIER_REMOVED entran en "Sin stock").
-  //   - Ignorados:   cp.internalStatus = IGNORED (decisión comercial duradera; ocultos por
-  //                  default en la tabla con toggle).
-  //   - Preparados:  cp.internalStatus = PREPARED (listos para republicar; existen en Woo
-  //                  como private/draft según el diag pre-fix).
-  // OPERATIVOS (siguen contando por sus campos actuales, dimensión distinta):
+  // De INTENCIÓN del usuario (reusan visualStatusToWhere de Catálogo — UNA sola
+  // fuente de verdad para la jerarquía visual:
+  //   OUTDATED > SIN_STOCK > PAUSED > PUBLISHED > PREPARED > NOT_PUBLISHED > IGNORED).
+  // Esto garantiza que un cp con estado contradictorio (ej. PREPARED + SUPPLIER_REMOVED)
+  // se cuente UNA sola vez, en el balde de mayor prioridad (SIN_STOCK), y que el KPI
+  // de Mi Tienda y el filtro del Catálogo muestren los mismos números.
+  //   - Publicados:  visualStatusToWhere("PUBLISHED")  (excluye OUTDATED/SR)
+  //   - Pausados:    visualStatusToWhere("PAUSED") + pausedBySystem=false   ← refuerzo:
+  //                  el KPI exige pausa MANUAL (no la auto-pausa del worker). hoy no
+  //                  cambia el conteo (todos los auto-pausados tienen SR), pero
+  //                  protege la semántica si aparece un caso futuro.
+  //   - Ignorados:   visualStatusToWhere("IGNORED")    (sin filtro extra; IGNORED
+  //                  es prioridad más baja por diseño)
+  //   - Preparados:  visualStatusToWhere("PREPARED")   (excluye SR)
+  // OPERATIVOS (dimensión distinta, NO de intención):
   //   - Sin stock:        cp.supplierStatus = SUPPLIER_REMOVED.
   //   - Pendientes sync:  pp.pendingSync = true.
   //   - Errores:          pp.status = ERROR.
-  // Universo de los KPIs de intención: pp en esta store (cps con publicación). Los
-  // NOT_PUBLISHED sin pp no entran a Mi Tienda.
+  // Universo de los KPIs de intención: pp en esta store. Los NOT_PUBLISHED sin pp
+  // no entran a Mi Tienda.
   const [
     active,
     sinStock,
@@ -65,7 +72,7 @@ export default async function MyStorePage() {
       prisma.productPublication.count({
         where: {
           storeId: store.id,
-          catalogProduct: { is: { internalStatus: "PUBLISHED" } },
+          catalogProduct: { is: visualStatusToWhere("PUBLISHED") },
         },
       }),
       prisma.productPublication.count({
@@ -78,20 +85,20 @@ export default async function MyStorePage() {
         where: {
           storeId: store.id,
           catalogProduct: {
-            is: { internalStatus: "PAUSED", pausedBySystem: false },
+            is: { ...visualStatusToWhere("PAUSED"), pausedBySystem: false },
           },
         },
       }),
       prisma.productPublication.count({
         where: {
           storeId: store.id,
-          catalogProduct: { is: { internalStatus: "IGNORED" } },
+          catalogProduct: { is: visualStatusToWhere("IGNORED") },
         },
       }),
       prisma.productPublication.count({
         where: {
           storeId: store.id,
-          catalogProduct: { is: { internalStatus: "PREPARED" } },
+          catalogProduct: { is: visualStatusToWhere("PREPARED") },
         },
       }),
       prisma.productPublication.count({

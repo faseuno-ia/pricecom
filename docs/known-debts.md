@@ -1048,11 +1048,43 @@ con sub-conteo), `components/my-store/my-store-dashboard.tsx` (badge UI),
 
 ---
 
-## Solapamiento "Sin stock" ↔ "Pausados (manual)" en caso de borde
+## Solapamiento "Sin stock" ↔ "Pausados (manual)" en caso de borde — RESUELTA
 
-**Prioridad:** Baja — cosmético, no es bug. La suma de KPIs no cierra
-exactamente al total de publicaciones (1417 sumadas vs 1416 reales) por
-un solo caso de borde.
+**Estado:** ✅ RESUELTA al reusar `visualStatusToWhere` de
+`lib/catalog/list-filters.ts` en los KPIs de Mi Tienda. Una sola fuente
+de verdad para la jerarquía visual
+(`OUTDATED > SIN_STOCK > PAUSED > PUBLISHED > PREPARED > NOT_PUBLISHED > IGNORED`)
+compartida entre Catálogo y Mi Tienda. Verificación empírica contra
+prod: la suma de los 7 baldes cierra EXACTO al total de publicaciones
+de la store (1427 = 1427), cero solapamiento residual.
+
+**Cierre activado por.** Detección de un caso análogo en otro KPI:
+SV-628 (PREPARED + supplierStatus=SUPPLIER_REMOVED) doble-contado en
+"Preparados" y "Sin stock" del KPI Mi Tienda, mientras el Catálogo
+(que sí aplica la jerarquía) lo mostraba solo en "Sin stock". Daniel
+decidió alinear ambos sitios reusando `visualStatusToWhere` en vez de
+duplicar la lógica.
+
+**Cambios.**
+- `lib/catalog/list-filters.ts`: agregar `export` a `visualStatusToWhere`
+  (cero cambios de lógica; solo visibilidad).
+- `app/(app)/my-store/page.tsx`: reemplazar los WHERE literales por
+  `visualStatusToWhere("PUBLISHED" | "PAUSED" | "IGNORED" | "PREPARED")`.
+  Para "Pausados" se combina con `pausedBySystem=false` para preservar
+  la semántica "pausa manual real" (decisión original del lote anterior).
+
+**Resultado en prod.** El SV-628 pasó de contarse como Preparado (1) +
+Sin stock (1) a contarse solo como Sin stock (1). La suma de los baldes
+cierra exacto al total de publicaciones, sin doble conteo en ninguna
+combinación de baldes.
+
+---
+
+**Contenido histórico (pre-resolución, para registro):**
+
+**Prioridad original:** Baja — cosmético, no es bug. La suma de KPIs no
+cierra exactamente al total de publicaciones (1417 sumadas vs 1416
+reales) por un solo caso de borde.
 
 **Contexto y origen.** Tras el rediseño de KPIs de Mi Tienda, dos baldes
 miden dimensiones distintas que pueden coincidir en una misma publicación:
