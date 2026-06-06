@@ -34,6 +34,7 @@ type Filter =
   | "ACTIVE"
   | "DRAFT"
   | "PAUSED"
+  | "IGNORED"
   | "SIN_STOCK"
   | "ERROR"
   | "PENDING_SYNC"
@@ -43,6 +44,7 @@ const VALID_FILTERS: Filter[] = [
   "ACTIVE",
   "DRAFT",
   "PAUSED",
+  "IGNORED",
   "SIN_STOCK",
   "ERROR",
   "PENDING_SYNC",
@@ -61,12 +63,6 @@ export async function GET(req: NextRequest) {
   const filterParam = (url.searchParams.get("filter") ?? "ALL") as Filter;
   const filter: Filter = VALID_FILTERS.includes(filterParam) ? filterParam : "ALL";
   const search = url.searchParams.get("search")?.trim() ?? "";
-  // Toggle de Ignorados: por default, las publicaciones cuyo cp.internalStatus
-  // es IGNORED no se listan (decisión comercial duradera del usuario, no
-  // requieren atención cotidiana). Con includeIgnored=true se muestran.
-  // Mismo patrón que "Ver descartados manualmente" de Unmatched.
-  const includeIgnored =
-    url.searchParams.get("includeIgnored") === "true";
 
   const store = await prisma.store.findFirst({
     where: { userId: session.user.id },
@@ -86,7 +82,10 @@ export async function GET(req: NextRequest) {
     { storeId: store.id },
   ];
 
-  if (!includeIgnored) {
+  // Los IGNORED (decisión comercial duradera del usuario) se ocultan en TODOS
+  // los filtros salvo cuando el filtro activo es exactamente "IGNORED" — ahí
+  // se muestran solo ellos. Reemplaza al toggle "Ver ignorados" eliminado.
+  if (filter !== "IGNORED") {
     andClauses.push({
       catalogProduct: { is: { internalStatus: { not: "IGNORED" } } },
     });
@@ -109,6 +108,13 @@ export async function GET(req: NextRequest) {
         catalogProduct: {
           is: { internalStatus: "PAUSED", pausedBySystem: false },
         },
+      });
+    } else if (filter === "IGNORED") {
+      // Decisión comercial duradera del usuario. Alineado con el KPI
+      // "Ignorados" del dashboard. La exclusión global de arriba se saltea
+      // para este filtro (única forma de verlos).
+      andClauses.push({
+        catalogProduct: { is: { internalStatus: "IGNORED" } },
       });
     } else if (filter === "SIN_STOCK") {
       // El proveedor removió el producto, independiente del estado interno.
