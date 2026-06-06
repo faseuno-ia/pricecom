@@ -64,6 +64,7 @@ type Filter =
   | "ACTIVE"
   | "DRAFT"
   | "PAUSED"
+  | "IGNORED"
   | "SIN_STOCK"
   | "ERROR"
   | "PENDING_SYNC"
@@ -107,6 +108,7 @@ const FILTER_LABELS: Record<Filter, string> = {
   ACTIVE: "Publicados",
   DRAFT: "Borrador en Woo",
   PAUSED: "Pausados",
+  IGNORED: "Ignorados",
   SIN_STOCK: "Sin stock",
   ERROR: "Errores",
   PENDING_SYNC: "Pend. sync",
@@ -142,10 +144,6 @@ export function PublicationsTable() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  // Toggle: por default oculta cp.internalStatus=IGNORED (decisión comercial
-  // duradera, no requiere atención cotidiana). Mismo patrón que el de
-  // descartados manualmente en la pestaña No Vinculados.
-  const [includeIgnored, setIncludeIgnored] = useState(false);
   const [data, setData] = useState<{ publications: PubRow[]; total: number }>({
     publications: [],
     total: 0,
@@ -156,10 +154,10 @@ export function PublicationsTable() {
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  // Reset de página al cambiar filtro, search o toggle de ignorados.
+  // Reset de página al cambiar filtro o search.
   useEffect(() => {
     setPage(1);
-  }, [filter, search, includeIgnored]);
+  }, [filter, search]);
 
   async function handleSyncRow(p: PubRow) {
     setSyncingId(p.id);
@@ -207,7 +205,6 @@ export function PublicationsTable() {
         params.set("pageSize", String(pageSize));
         if (filter !== "ALL") params.set("filter", filter);
         if (search.trim()) params.set("search", search.trim());
-        if (includeIgnored) params.set("includeIgnored", "true");
         const res = await fetch(
           `/api/my-store/publications?${params.toString()}`
         );
@@ -227,7 +224,7 @@ export function PublicationsTable() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [page, pageSize, filter, search, includeIgnored, reloadKey]);
+  }, [page, pageSize, filter, search, reloadKey]);
 
   const drawerDetail: PubDetail | null = drawerFor ? { ...drawerFor } : null;
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
@@ -237,6 +234,7 @@ export function PublicationsTable() {
     "ACTIVE",
     "DRAFT",
     "PAUSED",
+    "IGNORED",
     "SIN_STOCK",
     "ERROR",
     "PENDING_SYNC",
@@ -265,15 +263,6 @@ export function PublicationsTable() {
         </div>
 
         <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-2 ml-auto">
-          <label className="text-xs flex items-center gap-1.5 text-muted-foreground cursor-pointer select-none whitespace-nowrap">
-            <input
-              type="checkbox"
-              checked={includeIgnored}
-              onChange={(e) => setIncludeIgnored(e.target.checked)}
-              className="accent-primary"
-            />
-            Ver ignorados
-          </label>
           <StatusHelpModal
             triggerLabel="Guía de estados"
             statuses={["PUBLISHED", "OUTDATED", "PAUSED", "SIN_STOCK"]}
