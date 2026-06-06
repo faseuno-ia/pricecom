@@ -96,14 +96,28 @@ export async function runConsistencyCheck(prisma: PrismaClient): Promise<void> {
     });
   }
 
-  // ── Caso 2: ACTIVE + supplier SUPPLIER_REMOVED → pauseProductInWoo ───────
+  // ── Caso 2: ACTIVE + supplier SUPPLIER_REMOVED + stockSource=SUPPLIER ────
+  // Solo auto-pausa cps cuya único origen de stock es el proveedor. Contrato
+  // del enum StockSource en schema.prisma (líneas 466-470):
+  //   SUPPLIER → dependemos del proveedor; si lo remueven, deberíamos pausar.
+  //   OWN      → el cliente lo tiene físicamente; sobrevive a SUPPLIER_REMOVED.
+  //   HYBRID   → mixto (no se auto-pausa).
+  // Filtro POSITIVO (= "SUPPLIER") y NO negativo (!= "OWN"): si el día de
+  // mañana se agrega un valor nuevo al enum, no entra a auto-pausa por default.
+  // Alineado con upsert-catalog-products.ts:413 e import/route.ts:491, que YA
+  // usan el mismo patrón positivo para sus propias auto-pausas.
   let case2Fixed = 0;
   let case2Errors = 0;
   try {
     const activeRemoved = await prisma.productPublication.findMany({
       where: {
         status: "ACTIVE",
-        catalogProduct: { is: { supplierStatus: "SUPPLIER_REMOVED" } },
+        catalogProduct: {
+          is: {
+            supplierStatus: "SUPPLIER_REMOVED",
+            stockSource: "SUPPLIER",
+          },
+        },
       },
       select: { id: true, catalogProductId: true, storeId: true },
     });
