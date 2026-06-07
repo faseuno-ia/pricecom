@@ -8,6 +8,39 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## `pausedBySystem=true` residual en productos OWN reactivados
+
+**Prioridad:** Baja — no afecta conteos ni jerarquía visual hoy; es un flag
+contradictorio que conviene limpiar antes de que alguien lo use como fuente.
+
+**Contexto y origen.** Al implementar el fix de jerarquía visual (SIN_STOCK
+restringido a `stockSource=SUPPLIER`), el cuadre contra prod (ELECTROFAYS)
+surfaceó 2 productos OWN ex-varados con estado contradictorio:
+`internalStatus=PUBLISHED` pero `pausedBySystem=true` (AL-202 y 12098). Son
+restos de cuando el worker auto-pausaba por `SUPPLIER_REMOVED` sin mirar
+`stockSource`. Hoy el worker ya respeta OWN/HYBRID y no los vuelve a pausar,
+pero el flag viejo quedó pegado. HX178 y MELECH-329 (también OWN ex-varados)
+tienen `pausedBySystem=false` correcto.
+
+**Impacto hoy.** Nulo en la UI: el KPI "Pausados" exige `internalStatus=PAUSED`
+(no PUBLISHED), así que estos 2 caen en PUBLISHED como corresponde y NO se
+doble-cuentan. El cuadre cierra exacto (1427=1427). El riesgo es semántico:
+un flag `pausedBySystem=true` sobre un producto PUBLISHED es mentira y podría
+confundir a un futuro query o reporte que se apoye en ese campo.
+
+**Trigger para atacarla.**
+- Aparece lógica nueva (worker, sync, dashboard) que lea `pausedBySystem`
+  como verdad sobre productos no pausados.
+- Se decide un barrido de higiene de datos.
+
+**Solución cuando importe.** UPDATE puntual con guard de prod + backup (mismo
+patrón que `reconcile-hx178`): `SET pausedBySystem=false WHERE
+stockSource IN ('OWN','HYBRID') AND internalStatus != 'PAUSED' AND
+pausedBySystem=true`. Read-only primero para confirmar el universo (se esperan
+2 hoy). Cero cambios de código.
+
+---
+
 ## TOCTOU en guard 3 del SKU (Fase 4B)
 
 **Prioridad:** Despreciable mientras la app sea single-operator y no haya

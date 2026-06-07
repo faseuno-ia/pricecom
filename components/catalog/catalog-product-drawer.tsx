@@ -625,6 +625,7 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
               const vStatus = deriveVisualStatus({
                 internalStatus: product.internalStatus ?? "NOT_PUBLISHED",
                 supplierStatus: product.supplierStatus,
+                stockSource: product.stockSource,
                 pendingSync: activePub?.pendingSync,
                 syncStatus: activePub?.syncStatus,
               });
