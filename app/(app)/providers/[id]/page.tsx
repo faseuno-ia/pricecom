@@ -590,6 +590,7 @@ export default async function ProviderDashboardPage({
               const visualStatus = deriveVisualStatus({
                 internalStatus: p.internalStatus,
                 supplierStatus: p.supplierStatus,
+                stockSource: p.stockSource,
                 pendingSync: activePub?.pendingSync,
                 syncStatus: activePub?.syncStatus,
               });

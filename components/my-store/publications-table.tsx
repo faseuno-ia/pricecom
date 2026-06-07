@@ -10,6 +10,7 @@ import {
   Loader2,
   ChevronLeft,
   ChevronRight,
+  Package,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -359,6 +360,7 @@ export function PublicationsTable() {
                 const visualStatus = deriveVisualStatus({
                   internalStatus: p.catalogProduct.internalStatus,
                   supplierStatus: p.catalogProduct.supplierStatus,
+                  stockSource: p.catalogProduct.stockSource,
                   pendingSync: p.pendingSync,
                   syncStatus: p.syncStatus,
                 });
@@ -413,11 +415,34 @@ export function PublicationsTable() {
                       {formatPrice(p.priceInStore)}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
-                      >
-                        {vBadge.label}
-                      </span>
+                      <div className="inline-flex items-center gap-1.5">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
+                        >
+                          {vBadge.label}
+                        </span>
+                        {/* Ícono "stock propio": sobrevive a SUPPLIER_REMOVED
+                            (contrato StockSource). Solo OWN/HYBRID. */}
+                        {(p.catalogProduct.stockSource === "OWN" ||
+                          p.catalogProduct.stockSource === "HYBRID") && (
+                          <span
+                            title={
+                              p.catalogProduct.stockSource === "OWN"
+                                ? "Stock propio"
+                                : "Stock híbrido"
+                            }
+                            className="inline-flex cursor-help"
+                          >
+                            <Package
+                              className={`w-3.5 h-3.5 shrink-0 ${
+                                p.catalogProduct.stockSource === "OWN"
+                                  ? "text-emerald-400"
+                                  : "text-amber-400"
+                              }`}
+                            />
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span

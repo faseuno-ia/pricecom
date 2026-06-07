@@ -27,6 +27,7 @@ import {
   Pin,
   FolderPlus,
   FolderMinus,
+  Package,
   PackagePlus,
   PackageMinus,
   PackageX,
@@ -1342,6 +1343,7 @@ export function CatalogTable({
                   const visualStatus = deriveVisualStatus({
                     internalStatus: p.internalStatus,
                     supplierStatus: p.supplierStatus,
+                    stockSource: p.stockSource,
                     pendingSync: anyDrift,
                   });
                   const vBadge = visualStatusConfig[visualStatus];
@@ -1503,12 +1505,35 @@ export function CatalogTable({
                         {p.stock ?? "—"}
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
-                        <span
-                          title={vDescription}
-                          className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
-                        >
-                          {vBadge.label}
-                        </span>
+                        <div className="inline-flex items-center gap-1.5">
+                          <span
+                            title={vDescription}
+                            className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${vBadge.className}`}
+                          >
+                            {vBadge.label}
+                          </span>
+                          {/* Ícono "stock propio": el producto sobrevive a
+                              SUPPLIER_REMOVED (contrato StockSource). Solo OWN/HYBRID. */}
+                          {(p.stockSource === "OWN" ||
+                            p.stockSource === "HYBRID") && (
+                            <span
+                              title={
+                                p.stockSource === "OWN"
+                                  ? "Stock propio"
+                                  : "Stock híbrido"
+                              }
+                              className="inline-flex cursor-help"
+                            >
+                              <Package
+                                className={`w-3.5 h-3.5 shrink-0 ${
+                                  p.stockSource === "OWN"
+                                    ? "text-emerald-400"
+                                    : "text-amber-400"
+                                }`}
+                              />
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 relative">
                         <div className="flex items-center gap-1.5">

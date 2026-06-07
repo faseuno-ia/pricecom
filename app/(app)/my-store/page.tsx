@@ -53,7 +53,9 @@ export default async function MyStorePage() {
   //                  es prioridad más baja por diseño)
   //   - Preparados:  visualStatusToWhere("PREPARED")   (excluye SR)
   // OPERATIVOS (dimensión distinta, NO de intención):
-  //   - Sin stock:        cp.supplierStatus = SUPPLIER_REMOVED.
+  //   - Sin stock:        visualStatusToWhere("SIN_STOCK") — SUPPLIER_REMOVED +
+  //                       stockSource=SUPPLIER (los OWN/HYBRID removidos NO son
+  //                       "sin stock": sobreviven en su balde de intención).
   //   - Pendientes sync:  pp.pendingSync = true.
   //   - Errores:          pp.status = ERROR.
   // Universo de los KPIs de intención: pp en esta store. Los NOT_PUBLISHED sin pp
@@ -78,7 +80,7 @@ export default async function MyStorePage() {
       prisma.productPublication.count({
         where: {
           storeId: store.id,
-          catalogProduct: { is: { supplierStatus: "SUPPLIER_REMOVED" } },
+          catalogProduct: { is: visualStatusToWhere("SIN_STOCK") },
         },
       }),
       prisma.productPublication.count({

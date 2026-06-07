@@ -66,26 +66,36 @@ export function visualStatusToWhere(
         },
       };
     case "SIN_STOCK":
-      // El proveedor removió el producto. Cubre PAUSED+SUPPLIER_REMOVED,
-      // NOT_PUBLISHED+SUPPLIER_REMOVED, etc. IGNORED queda excluido porque
-      // tiene su propio filtro.
+      // El proveedor removió el producto Y el stock dependía del proveedor
+      // (stockSource="SUPPLIER"). Cubre PAUSED+SR, NOT_PUBLISHED+SR, etc.
+      // IGNORED queda excluido porque tiene su propio filtro. Los OWN/HYBRID
+      // removidos NO entran acá: sobreviven en su balde de internalStatus
+      // (contrato de StockSource — un OWN se vende aunque el proveedor desaparezca).
       return {
         supplierStatus: "SUPPLIER_REMOVED",
+        stockSource: "SUPPLIER",
         internalStatus: { notIn: ["IGNORED"] },
       };
     case "PAUSED":
-      // Pausa manual estricta: proveedor todavía activo. Productos pausados
-      // automáticamente por el worker (porque el proveedor los removió)
-      // entran en SIN_STOCK, no acá.
+      // Pausa manual estricta. Excluimos los que YA cuenta SIN_STOCK
+      // (SR + dependiente del proveedor); un OWN/HYBRID removido sigue siendo
+      // un pausado real, no "sin stock".
       return {
         internalStatus: "PAUSED",
-        supplierStatus: { not: "SUPPLIER_REMOVED" },
+        OR: [
+          { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          { stockSource: { not: "SUPPLIER" } },
+        ],
       };
     case "PUBLISHED":
-      // Sincronizado y disponible: PUBLISHED + proveedor activo + sin drift.
+      // Sincronizado y disponible: PUBLISHED + sin drift + no es SIN_STOCK
+      // (o sea: proveedor activo, O bien stock propio que sobrevive a la baja).
       return {
         internalStatus: "PUBLISHED",
-        supplierStatus: { not: "SUPPLIER_REMOVED" },
+        OR: [
+          { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          { stockSource: { not: "SUPPLIER" } },
+        ],
         publications: {
           none: {
             OR: [
@@ -98,12 +108,18 @@ export function visualStatusToWhere(
     case "PREPARED":
       return {
         internalStatus: "PREPARED",
-        supplierStatus: { not: "SUPPLIER_REMOVED" },
+        OR: [
+          { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          { stockSource: { not: "SUPPLIER" } },
+        ],
       };
     case "NOT_PUBLISHED":
       return {
         internalStatus: "NOT_PUBLISHED",
-        supplierStatus: { not: "SUPPLIER_REMOVED" },
+        OR: [
+          { supplierStatus: { not: "SUPPLIER_REMOVED" } },
+          { stockSource: { not: "SUPPLIER" } },
+        ],
       };
     case "IGNORED":
       return { internalStatus: "IGNORED" };
