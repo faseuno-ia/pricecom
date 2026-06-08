@@ -302,6 +302,9 @@ Marcadas explícitamente como **no resueltas** en este documento:
   qué es la decisión de mayor alcance— está justo debajo de esta lista.
 - **Limpieza futura del enum:** `syncStatus.PAUSED` (dead member) y otros valores
   sin uso real (`READY` salvo default, `ERROR_SKU_CONFLICT` sin filas hoy).
+- **Semántica de OWN:** definir si `stockSource=OWN` representa stock físico real o
+  workaround operativo. Esta decisión condiciona el diseño de F (retorno
+  OWN→SUPPLIER).
 
 **Sobre la decisión `OUTDATED` (detalle):**
 
@@ -338,30 +341,77 @@ Marcadas explícitamente como **no resueltas** en este documento:
 > Esta es probablemente la decisión arquitectónica de mayor alcance que
 > permanece abierta dentro del modelo Source of Truth.
 
-### Automatismos operativos (pendiente de auditoría completa)
+### Automatismos operativos (auditoría read-only A–F)
 
-Los automatismos de la sección 9 forman parte del modelo Source of Truth y deben
-ser **auditados contra el código** antes de considerarse implementados.
+> **Estado: auditados read-only contra el código (no implementados).** Esta
+> sección reemplaza al "pendiente de auditoría": A–F ya fueron verificados
+> end-to-end leyendo el código real (lección EF18: no asumir que una regla existe,
+> confirmarla con sospecha reforzada sobre lo que ya creíamos saber). La sección 9
+> sigue siendo el comportamiento *deseado*; lo de abajo es lo *verificado*.
 
-La lección del incidente EF18 fue **asumir que una regla existía cuando en
-realidad no estaba garantizada por el código**. No repetir ese supuesto: lo de la
-sección 9 es comportamiento deseado, no comportamiento verificado.
-
-Diagnóstico pendiente (read-only). La columna marcada (`✓`) indica el grado de
-evidencia **ya** disponible en el diagnóstico del worker (§8-bis); el resto es lo
-que falta auditar:
-
-| Automatismo | Estado actual (según código leído) | Funciona | Parcial | Falta | Riesgo |
+| Automatismo | Estado actual | Funciona | Parcial | Falta | Riesgo |
 | --- | --- | --- | --- | --- | --- |
-| Remoción por proveedor | `SUPPLIER_REMOVED`; auto-pausa si `stockSource=SUPPLIER`; despublica (`draft`) | — | ✓ §8-bis (upsert + consistency-check caso 2) | Push honesto a Woo ante fallo (depende de 1A) | Medio |
-| Reaparición del proveedor | Reactiva sólo si `pausedBySystem=true`; respeta manual e ignorados | — | ✓ §8-bis (reactivación + fix OWN/HYBRID) | Confirmar no-pisado de ignorados end-to-end | Bajo |
-| Cambio de precio | `markPublicationsDrift` → `OUTDATED` + `pendingSync` | — | ✓ §8-bis (mark-drift) | Confirmación real contra Woo (ver decisión `OUTDATED`) | Medio |
-| Cambio de margen del proveedor | Recalcula afectados + encola sync | — | ✓ parcial (mismo motor de drift) | Propagación completa del cambio de margen a todos los afectados | Medio |
-| **Conversión a Stock Propio (E)** | Permite republicar OWN aunque el proveedor no lo tenga | — | — | ✗ Sin auditar específicamente | **Alto** (clase EF18) |
-| **Retorno Stock Propio → Proveedor (F)** | `OWN→SUPPLIER` manteniendo `internalStatus`; no forzar publicación | — | — | ✗ Sin auditar específicamente | **Alto** |
+| **A** Remoción por proveedor | Path worker funciona; path import incompleto | Sí, worker | Import/manual | Alinear import con 1A.2 | Medio |
+| **B** Reaparición | Funciona con `pausedBySystem` | Sí | Depende de A | — | Bajo |
+| **C** Precio proveedor | Marca drift | Sí, hasta marcar | Sync manual | Auto-push no existe | Medio |
+| **D** Margen / regla | Por-producto sí; regla no | Parcial | Sí | Regla no marca drift/EventLog | Alto |
+| **E** Stock propio | Acción manual existe | Sí | Guards faltantes | Validaciones / republicación auto | Medio-Alto |
+| **F** OWN→SUPPLIER | No existe | No | — | Diseño completo | Alto |
 
-Parte de la evidencia ya existe en el diagnóstico del worker (§8-bis). La
-auditoría futura debe **reutilizar esa evidencia y no comenzar desde cero**.
+**A — Remoción por proveedor.** Path **worker** (extracción) funciona end-to-end:
+detecta SKU ausente → `SUPPLIER_REMOVED`; si `stockSource=SUPPLIER` (+ PREPARED/
+PUBLISHED) auto-pausa con `pausedBySystem=true` e intenta push a Woo (`draft`) con
+contrato honesto; OWN/HYBRID sobreviven (filtro positivo `="SUPPLIER"`).
+**Gap (path import/manual):** la auto-pausa del import **no** setea
+`pausedBySystem=true` y **no** pushea inmediatamente a Woo. Cruce crítico: esos
+productos quedan indistinguibles de una pausa manual, así que **B nunca los
+auto-reactiva** cuando el proveedor reaparece — el path import **degrada
+permanentemente B** para esos productos, y puede dejar `PricEcom=PAUSED /
+Woo=publish`. Decisión: A-import entra en el scope de **1A.2** o queda como
+**deuda crítica** (no es un detalle menor).
+
+**B — Reaparición.** Funciona: `handleReappeared` reactiva sólo si
+`pausedBySystem=true`; no toca pausas manuales; IGNORED protegido (doble guard).
+EF18 cubierto. **Gap:** depende de que A haya seteado bien `pausedBySystem`; si la
+remoción vino por el path import (sin ese flag), B no reactiva.
+
+**C — Cambio de precio del proveedor.** Funciona hasta marcar drift: el worker
+detecta el cambio de `wholesalePrice` y `markPublicationsDrift` marca
+`OUTDATED + pendingSync`. **Gap:** Woo **no** se actualiza automáticamente — el
+push es **manual** (botón "Sincronizar pendientes"). En este flujo, "actualizar
+Woo" hoy significa **marcar y esperar el sync manual**, no auto-push.
+
+**D — Cambio de margen / regla de pricing. Parcial.** Funciona el cambio de margen
+**por producto** (marca drift). **Falta:** el cambio de **regla** de pricing
+(global/proveedor/categoría) **no marca drift**, **no genera `pendingSync`** y
+**no genera EventLog**. Como `resolvePricing` lee las reglas en runtime, PricEcom
+puede mostrar precios nuevos mientras Woo sigue con los viejos **sin alerta**.
+**Riesgo Alto** (cientos/miles de productos en silencio). Decisión: separar D en
+(1) **detección** —la regla debe marcar drift + EventLog— y (2) **propagación**
+—depende del drainer / contrato honesto de 1A—.
+
+**E — Conversión a Stock Propio.** Existe y funciona como **acción manual**:
+`copy_own_stock` setea `stockSource=OWN`; habilita publicar aunque
+`supplierStatus=SUPPLIER_REMOVED` (el push no chequea `supplierStatus`); el worker
+respeta OWN. **Gaps:** guards insuficientes de precio/SKU al convertir; **no**
+republica automáticamente (el usuario debe publicar). **Riesgo Medio-Alto.**
+
+**F — Retorno OWN → SUPPLIER. No existe.** Ningún path automático cambia
+`stockSource=OWN` a `SUPPLIER` cuando el proveedor reaparece (la reaparición no
+toca `stockSource`; confirmado con grep de escritores en todo el repo: sólo lo
+escriben acciones manuales/creación). El retorno es **100% manual**
+(`remove_own_stock`). **Riesgo Alto** — el ciclo de vida OWN queda incompleto.
+**Decisión abierta (bloqueante de F): definir qué significa `OWN`:**
+- (1) **stock físico real** del cliente → **no** debe volver a SUPPLIER
+  automáticamente al reaparecer el proveedor;
+- (2) **workaround** para publicar un removido → **sí** tiene sentido volver a
+  SUPPLIER al reaparecer.
+
+No implementar F sin cerrar esta semántica (ver "Semántica de OWN" en decisiones
+abiertas).
+
+Parte de la evidencia provino del diagnóstico del worker (§8-bis); la auditoría la
+reutilizó y la confirmó end-to-end.
 
 > Estas decisiones son **posteriores** a 1A y dependen de cómo cierre el contrato
 > honesto. Ver [1a-honest-sync-contract.md](./1a-honest-sync-contract.md).
