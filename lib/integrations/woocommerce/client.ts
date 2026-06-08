@@ -9,6 +9,7 @@
 // para conexiones HTTPS.
 
 import { decrypt } from "@/lib/utils/crypto";
+import { WooApiError } from "./woo-api-error";
 
 export interface WooProduct {
   id: number;
@@ -83,30 +84,38 @@ export class WooCommerceClient {
     url: string,
     options: RequestInit = {}
   ): Promise<Response> {
-    const signal = options.signal ?? AbortSignal.timeout(30000);
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        ...options.headers,
-        Authorization: this.authHeader(),
-        "Content-Type": "application/json",
-      },
-      signal,
-    });
+    try {
+      const signal = options.signal ?? AbortSignal.timeout(30000);
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          ...options.headers,
+          Authorization: this.authHeader(),
+          "Content-Type": "application/json",
+        },
+        signal,
+      });
 
-    if (res.status !== 401) return res;
+      if (res.status !== 401) return res;
 
-    // Algunos hostings strippean Authorization — reintento con query params.
-    const separator = url.includes("?") ? "&" : "?";
-    const urlWithAuth = `${url}${separator}${this.authParams()}`;
-    return fetch(urlWithAuth, {
-      ...options,
-      headers: {
-        ...options.headers,
-        "Content-Type": "application/json",
-      },
-      signal: options.signal ?? AbortSignal.timeout(30000),
-    });
+      // Algunos hostings strippean Authorization — reintento con query params.
+      const separator = url.includes("?") ? "&" : "?";
+      const urlWithAuth = `${url}${separator}${this.authParams()}`;
+      return await fetch(urlWithAuth, {
+        ...options,
+        headers: {
+          ...options.headers,
+          "Content-Type": "application/json",
+        },
+        signal: options.signal ?? AbortSignal.timeout(30000),
+      });
+    } catch (err) {
+      // Error de transporte (timeout/red/abort): no hubo respuesta HTTP. Lo
+      // estructuramos como WooApiError para que el contrato honesto pueda
+      // clasificarlo (1A.1). Si ya es WooApiError (no debería acá), no re-envolver.
+      if (WooApiError.is(err)) throw err;
+      throw WooApiError.fromTransport(err, "request");
+    }
   }
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
@@ -141,12 +150,7 @@ export class WooCommerceClient {
   async getProduct(productId: number): Promise<WooProduct | null> {
     const res = await this.fetchWoo(`${this.baseUrl}/products/${productId}`);
     if (res.status === 404) return null;
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `WooCommerce get error: HTTP ${res.status} ${text.slice(0, 200)}`
-      );
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "get");
     return res.json();
   }
 
@@ -156,12 +160,7 @@ export class WooCommerceClient {
     const res = await this.fetchWoo(
       `${this.baseUrl}/products?sku=${encodeURIComponent(sku)}`
     );
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `WooCommerce findProductsBySku error: HTTP ${res.status} ${text.slice(0, 200)}`
-      );
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "findProductsBySku");
     return res.json();
   }
 
@@ -169,9 +168,7 @@ export class WooCommerceClient {
     const res = await this.fetchWoo(
       `${this.baseUrl}/products?page=${page}&per_page=${perPage}&status=any`
     );
-    if (!res.ok) {
-      throw new Error(`WooCommerce products error: HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "products");
     return res.json();
   }
 
@@ -208,12 +205,7 @@ export class WooCommerceClient {
       method: "POST",
       body: JSON.stringify(data),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `WooCommerce create error: HTTP ${res.status} ${text.slice(0, 200)}`
-      );
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "create");
     return res.json();
   }
 
@@ -237,12 +229,7 @@ export class WooCommerceClient {
       method: "PUT",
       body: JSON.stringify(data),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `WooCommerce update error: HTTP ${res.status} ${text.slice(0, 200)}`
-      );
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "update");
     return res.json();
   }
 
@@ -260,12 +247,7 @@ export class WooCommerceClient {
       `${this.baseUrl}/products/${productId}?force=${force}`,
       { method: "DELETE" }
     );
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `WooCommerce delete error: HTTP ${res.status} ${text.slice(0, 200)}`
-      );
-    }
+    if (!res.ok) throw await WooApiError.fromResponse(res, "delete");
     return res.json();
   }
 
@@ -287,9 +269,7 @@ export class WooCommerceClient {
       const res = await this.fetchWoo(
         `${this.baseUrl}/products/categories?page=${page}&per_page=100&hide_empty=false`
       );
-      if (!res.ok) {
-        throw new Error(`WooCommerce categories error: HTTP ${res.status}`);
-      }
+      if (!res.ok) throw await WooApiError.fromResponse(res, "categories");
       const batch = (await res.json()) as WooCategory[];
       all.push(...batch);
       if (batch.length < 100) break;
