@@ -614,8 +614,29 @@ export function CatalogTable({
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const { updated } = (await res.json()) as { updated: number };
-      toast.success(`${updated} productos: ${verb}`);
+      const { updated, wooErrors = 0, wooPending = 0 } = (await res.json()) as {
+        updated: number;
+        wooErrors?: number;
+        wooPending?: number;
+      };
+      // 1A.2-ab — contrato honesto: si Woo no aplicó el cambio, NO mostrar verde.
+      // wooErrors = falló en la tienda; wooPending = sin conexión, quedó en cola.
+      const wooUnapplied = wooErrors + wooPending;
+      if ((action === "pause" || action === "ignore") && wooUnapplied > 0) {
+        const parts = [
+          wooErrors > 0 ? `${wooErrors} con error en la tienda` : null,
+          wooPending > 0
+            ? `${wooPending} pendiente(s) de aplicar (sin conexión a la tienda)`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        toast.warning(
+          `${updated} productos: ${verb} en PricEcom — ${parts}. Usá "Sincronizar pendientes".`
+        );
+      } else {
+        toast.success(`${updated} productos: ${verb}`);
+      }
       if (!ids) deselectAll();
       refresh();
     } catch (err) {

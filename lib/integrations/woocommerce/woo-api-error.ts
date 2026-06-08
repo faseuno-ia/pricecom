@@ -124,10 +124,11 @@ export class WooApiError extends Error {
  *
  *   recoverable → reintentable (timeout, red, 5xx, 429).
  *   terminal    → no se arregla reintentando (400/4xx de validación).
- *   ambiguous   → el status HTTP no alcanza para decidir (401/403/404);
- *                 1A.2 lo resuelve (carril de salud de integración para 401/403,
- *                 probe getProduct para 404).
- *   unknown     → no clasificable todavía (parse, kind desconocido).
+ *   ambiguous   → no se puede decidir con lo que tenemos (401/403/404 + parse:
+ *                 Woo respondió pero no se pudo interpretar). 1A.2 los trata como
+ *                 PENDING_SYNC; la resolución fina (probe getProduct para 404,
+ *                 carril de salud de integración para 401/403) queda para 1A.4.
+ *   unknown     → genuino: transporte no mapeado / status raro / caso defensivo.
  */
 export function classifyWooError(err: WooApiError): WooErrorClass {
   switch (err.kind) {
@@ -136,6 +137,10 @@ export function classifyWooError(err: WooApiError): WooErrorClass {
     case "abort":
       return "recoverable";
     case "parse":
+      // Woo respondió pero PricEcom no pudo interpretar la respuesta: no sabemos
+      // si Woo aplicó o no el cambio → AMBIGUO, no terminal. En pause/ignore
+      // (idempotentes) reintentar es seguro. (Decisión 1A.2.)
+      return "ambiguous";
     case "unknown":
       return "unknown";
     case "http": {

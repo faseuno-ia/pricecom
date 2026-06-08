@@ -101,14 +101,16 @@ describe("classifyWooError", () => {
     }
   });
 
-  it("ambiguous: 401 / 403 / 404", () => {
+  it("ambiguous: 401 / 403 / 404 y parse (Woo respondió pero no se pudo interpretar)", () => {
     for (const s of [401, 403, 404]) {
       expect(classifyWooError(http(s))).toBe("ambiguous");
     }
+    // parse = Woo respondió pero PricEcom no pudo interpretar la respuesta → no
+    // sabemos si aplicó → ambiguo (no terminal). Reintentar es seguro en pause/ignore.
+    expect(classifyWooError(WooApiError.fromTransport(new SyntaxError("bad"), "x"))).toBe("ambiguous");
   });
 
-  it("unknown: parse, kind desconocido", () => {
-    expect(classifyWooError(WooApiError.fromTransport(new SyntaxError("bad"), "x"))).toBe("unknown");
+  it("unknown: sólo el genuino (transporte no mapeado / caso defensivo)", () => {
     expect(classifyWooError(WooApiError.fromTransport(new Error("???"), "x"))).toBe("unknown");
   });
 });
