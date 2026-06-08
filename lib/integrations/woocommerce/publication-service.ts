@@ -14,11 +14,30 @@ import { logInfo, logWarning, logError } from "@/lib/events/event-log";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
 import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
+import { WooApiError, classifyWooError } from "./woo-api-error";
 
 export interface PublishResult {
   success: boolean;
   externalProductId?: number;
   error?: string;
+}
+
+// 1A.2-ab — contrato honesto: mapea un error de Woo (catch) al EJE SYNC.
+//   recoverable / ambiguous → PENDING_SYNC + pendingSync=true (reintentable; el
+//     drainer "Sincronizar pendientes" lo toma). ambiguous incluye 401/403/404 y
+//     parse (Woo respondió pero no se pudo interpretar).
+//   terminal / unknown      → ERROR + pendingSync=false (requiere intervención
+//     humana; NO se reintenta solo).
+// Nunca se escribe pp.status (eje operativo): el fallo de sync vive en el eje sync.
+function syncFieldsForWooError(err: unknown): {
+  syncStatus: "PENDING_SYNC" | "ERROR";
+  pendingSync: boolean;
+} {
+  const cls = WooApiError.is(err) ? classifyWooError(err) : "unknown";
+  if (cls === "recoverable" || cls === "ambiguous") {
+    return { syncStatus: "PENDING_SYNC", pendingSync: true };
+  }
+  return { syncStatus: "ERROR", pendingSync: false };
 }
 
 // Parsea el campo CatalogProduct.stock (string, ej. "10", "Sí", "—") a número
@@ -521,12 +540,15 @@ export async function pauseProductInWoo(
     return { success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // 1A.2-ab: clasificar el fallo (recoverable/ambiguous → PENDING_SYNC;
+    // terminal/unknown → ERROR + pendingSync=false). NO tocar pp.status.
+    const { syncStatus, pendingSync } = syncFieldsForWooError(err);
     await prisma.productPublication.update({
       where: { id: pub.id },
       data: {
-        syncStatus: "ERROR",
+        syncStatus,
         syncError: message,
-        pendingSync: true,
+        pendingSync,
       },
     });
     await logError({

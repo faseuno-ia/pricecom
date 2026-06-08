@@ -8,6 +8,7 @@ import {
   publishProductToWoo,
   pauseProductInWoo,
 } from "@/lib/integrations/woocommerce/publication-service";
+import { pausePublicationsForCatalogProducts } from "@/lib/integrations/woocommerce/pause-publications";
 import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 import { logInfo } from "@/lib/events/event-log";
@@ -445,59 +446,22 @@ export async function POST(req: NextRequest) {
   // pauseProductInWoo loguea WOO_SYNC_ERROR y marca la publication con
   // syncStatus=ERROR + pendingSync=true para que quede capturada por el
   // próximo retry desde la UI.
+  // 1A.2-ab — el push de pausa vive en un helper testeable. Tapa el agujero
+  // sin-credenciales (antes: continue silencioso → pp ACTIVE/publish invisible;
+  // ahora: PENDING_SYNC visible para el drainer) y devuelve conteos honestos
+  // (pushed / failed / pendingNoClient) que la API expone sin falso verde.
   let wooPaused = 0;
   let wooErrors = 0;
+  let wooPending = 0;
   if (action === "pause" || action === "ignore") {
-    const publications = await prisma.productPublication.findMany({
-      where: { catalogProductId: { in: ownedIds }, status: "ACTIVE" },
-      select: { id: true, catalogProductId: true, storeId: true },
-    });
-
-    if (publications.length > 0) {
-      // Las publications de un mismo usuario suelen pertenecer a la misma
-      // store. Por las dudas resolvemos un client por storeId (cache).
-      const clientByStore = new Map<string, WooCommerceClient>();
-      const distinctStoreIds = Array.from(
-        new Set(publications.map((p) => p.storeId))
-      );
-      for (const sid of distinctStoreIds) {
-        const store = await prisma.store.findFirst({
-          where: { id: sid, userId: session.user.id },
-          include: {
-            integrations: { orderBy: { createdAt: "desc" }, take: 1 },
-          },
-        });
-        const integration = store?.integrations[0];
-        if (!store || !integration) continue;
-        try {
-          clientByStore.set(
-            sid,
-            WooCommerceClient.fromIntegration({
-              storeUrl: store.url,
-              consumerKeyEncrypted: integration.consumerKeyEncrypted,
-              consumerSecretEncrypted: integration.consumerSecretEncrypted,
-            })
-          );
-        } catch {
-          // Sin credenciales válidas, no podemos pushear. La publication se
-          // quedó con catalogProduct.internalStatus=PAUSED y reaparecerá en
-          // el próximo sync como drift.
-        }
-      }
-
-      for (const pub of publications) {
-        const client = clientByStore.get(pub.storeId);
-        if (!client) continue;
-        const res = await pauseProductInWoo(
-          prisma,
-          client,
-          pub.storeId,
-          pub.catalogProductId
-        );
-        if (res.success) wooPaused++;
-        else wooErrors++;
-      }
-    }
+    const r = await pausePublicationsForCatalogProducts(
+      prisma,
+      session.user.id,
+      ownedIds
+    );
+    wooPaused = r.pushed;
+    wooErrors = r.failed;
+    wooPending = r.pendingNoClient;
   }
 
   // Audit trail por acción de usuario.
@@ -538,7 +502,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     updated: result.count,
     ...(action === "pause" || action === "ignore"
-      ? { wooPaused, wooErrors }
+      ? { wooPaused, wooErrors, wooPending }
       : {}),
   });
 }
