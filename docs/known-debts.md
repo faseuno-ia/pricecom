@@ -8,6 +8,45 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## `markPublicationsDrift` es unidireccional (no limpia OUTDATED residual)
+
+**Prioridad:** Media — no corrompe datos ni toca Woo, pero ensucia la cola de
+"Desactualizados" con falsos pendientes que hay que limpiar a mano.
+
+**Contexto.** `lib/catalog/mark-publications-drift.ts` solo escribe en una
+dirección:
+- marca `syncStatus=OUTDATED + pendingSync=true` cuando detecta drift real
+  (`|effectivePrice − priceInStore| > $0.50`);
+- **NO** limpia OUTDATED→SYNCED cuando el drift desaparece. La función solo
+  agrega a `drifts[]` las que driftan y hace `updateMany` sobre esas; no hay rama
+  que des-marque las que ya estaban OUTDATED y ahora coinciden.
+
+**Ejemplo real (2026-06-09).** Bazar 380: se subió el margen 27%→37% (D1 marcó
+~194 publicaciones OUTDATED), luego se revirtió 37%→27% **sin sincronizar a Woo**.
+Las 194 quedaron OUTDATED aunque `effectivePrice == priceInStore` otra vez (diff=0),
+porque la reversión dejó el margen exacto original pero nada las des-marcó. La
+reversión (`PRICING_RULE_CHANGED` 37→27) registró `marked=0`: no encontró drift
+nuevo, pero tampoco limpió las viejas.
+
+**Workaround actual.** `scripts/fix-outdated-residual.ts` (o una limpieza
+controlada puntual con backup, como la del 2026-06-09 sobre Bazar 380): recalcula
+`effectivePrice` vs `priceInStore`, y pasa a `SYNCED`/`pendingSync=false` las
+residuales (`≤ $0.50`), dejando intactas las de drift real.
+
+**Trigger para atacarla.**
+- Cada reversión de margen/regla deja un lote de falsos OUTDATED que el cliente ve
+  como pendientes.
+- Se encara D2/D3 (donde la honestidad del estado de sync es central).
+
+**Decisión pendiente.** Diseñar si la detección de drift puede limpiar
+OUTDATED→SYNCED automáticamente **sin reintroducir falso verde** (el riesgo que
+motivó el contrato honesto 1A: una pub realmente desincronizada no debe quedar
+SYNCED por error). Probablemente: solo des-marcar cuando `effectivePrice` coincide
+con `priceInStore` Y no hay otra causa de pendiente (título/desc user-edited,
+acción de sistema), reusando el mismo `findDriftingPublications` como fuente única.
+
+---
+
 ## "Pend. Sync" vs "Desactualizados": predicados inconsistentes, buckets no atómicos
 
 **Prioridad:** Media — no rompe nada hoy (todos los contadores en 0 en prod),
