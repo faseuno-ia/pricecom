@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
+import { SYNC_ERRORS_WHERE } from "@/lib/store/sync-buckets";
 
 export async function GET() {
   const session = await requireSession();
@@ -44,7 +45,7 @@ export async function GET() {
         where: { storeId: store.id, status: "PAUSED" },
       }),
       prisma.productPublication.count({
-        where: { storeId: store.id, status: "ERROR" },
+        where: { storeId: store.id, ...SYNC_ERRORS_WHERE },
       }),
       prisma.productPublication.count({
         where: { storeId: store.id, pendingSync: true },

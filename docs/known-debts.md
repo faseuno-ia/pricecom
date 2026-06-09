@@ -8,6 +8,58 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## "Pend. Sync" vs "Desactualizados": predicados inconsistentes, buckets no atómicos
+
+**Prioridad:** Media — no rompe nada hoy (todos los contadores en 0 en prod),
+pero los tres indicadores de "pendiente/desactualizado" pueden mostrar números
+distintos y `OUTDATED` se cuenta doble. Quedó fuera de scope de 1A.2-kpi (que
+solo tocó el bucket "Errores").
+
+**Contexto y origen.** Detectado en el diagnóstico de 1A.2-kpi. Hoy conviven tres
+predicados distintos para el eje sync de "pendiente":
+- **KPI "Pendientes sync"** (`my-store/page.tsx`, `api/my-store/route.ts`) cuenta
+  `pendingSync=true` → incluye **PENDING_SYNC + OUTDATED** (ambos setean
+  `pendingSync=true`).
+- **Chip "Pend. sync"** (`publications/route.ts`) filtra `syncStatus=PENDING_SYNC`
+  → **NO** incluye OUTDATED.
+- **Chip "Desactualizados"** (`publications/route.ts`) filtra `syncStatus=OUTDATED`.
+
+**Consecuencia.**
+- El KPI "Pendientes sync" y el chip "Pend. sync" pueden mostrar **números
+  distintos** (el KPI infla con los OUTDATED).
+- `OUTDATED` queda **contado en dos lugares**: KPI "Pendientes sync" + chip
+  "Desactualizados".
+- La suma de los buckets visibles de sync **no es atómica** (un OUTDATED aparece
+  dos veces).
+
+**Impacto hoy.** Nulo en prod (PENDING_SYNC=0, OUTDATED=0, todo SYNCED). El riesgo
+es de consistencia cuando aparezcan pendientes/drift reales: el cliente vería un
+KPI que no cuadra con el chip.
+
+**Por qué no se arregla en 1A.2-kpi.** Ese sprint cambió la FUENTE de datos del
+bucket "Errores" (a `syncStatus IN (ERROR, ERROR_SKU_CONFLICT)` vía
+`SYNC_ERRORS_WHERE`), no los nombres ni el predicado de "pendiente". Alinear
+"Pend. Sync" / "Desactualizados" es un debate de **predicado canónico + nombres**
+(¿"pendiente" = `pendingSync=true` o `syncStatus=PENDING_SYNC`? ¿OUTDATED es su
+propio bucket o parte de "pendientes"?), que merece su propio sprint.
+
+**Trigger para atacarla.**
+- Aparecen PENDING_SYNC u OUTDATED reales en prod y el cliente nota que KPI y chip
+  no coinciden.
+- Se encara el sprint de "predicado canónico / separación visual de ejes".
+
+**Solución cuando importe.** Definir UN predicado canónico de "pendiente" y un
+bucket único para OUTDATED, extraídos a `lib/store/sync-buckets.ts` (donde ya vive
+`SYNC_ERRORS_WHERE`) como `SYNC_PENDING_WHERE` / `SYNC_OUTDATED_WHERE`, y usarlos
+en KPI + chip + filtro para que cuadren atómicamente. Decidir nombres en ese mismo
+sprint.
+
+**Archivos afectados (estimación).** `app/(app)/my-store/page.tsx`,
+`app/api/my-store/route.ts`, `app/api/my-store/publications/route.ts`,
+`components/my-store/publications-table.tsx`, `lib/store/sync-buckets.ts`.
+
+---
+
 ## `pausedBySystem=true` residual en productos OWN reactivados
 
 **Prioridad:** Baja — no afecta conteos ni jerarquía visual hoy; es un flag
