@@ -943,6 +943,10 @@ de precio bajo condiciones seguras, sin intervención manual.
    Batch configurable (sugerido 20-50 por minuto) para no saturar la API
    ni dar la sensación de "todo cambió de repente" si el cliente está
    mirando la tienda.
+   - **Dato medido (D1, 2026-06):** la DETECCIÓN de drift `markPublicationsDrift`
+     sobre ~900 publicaciones tarda ≈2754ms (sincrónica, sin tocar Woo). Es la
+     marca, no el push. Señal de volumen: si crece bastante, el batching/job de
+     sync —y eventualmente la propia detección— sube de prioridad.
 5. **Reporte vía EventLog.** Cada auto-push emite un evento
    `WOO_AUTO_PUSH_SUCCESS` o `WOO_AUTO_PUSH_SKIPPED_<reason>` con el
    delta de precio y guardrail aplicado. El cliente puede revisar el
