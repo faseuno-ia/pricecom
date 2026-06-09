@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { PricingRuleScope, RoundingMode } from "@prisma/client";
 import { z } from "zod";
+import { markDriftForRuleChange } from "@/lib/catalog/mark-drift-for-rule-change";
+
+export const maxDuration = 60;
 
 const SCOPES: PricingRuleScope[] = ["GLOBAL", "PROVIDER", "CATEGORY"];
 const ROUNDINGS: RoundingMode[] = ["NONE", "CEIL", "NEAREST_100", "NEAREST_500", "ENDING_990"];
@@ -25,7 +28,7 @@ export async function PATCH(
 
   const owned = await prisma.pricingRule.findFirst({
     where: { id: params.id, userId: session.user.id },
-    select: { id: true },
+    select: { id: true, scope: true, scopeId: true, name: true, marginPercent: true },
   });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -58,7 +61,23 @@ export async function PATCH(
     data: parsed.data,
   });
 
-  return NextResponse.json(updated);
+  // D1: re-evaluar drift en el scope VIEJO ∪ NUEVO (margen/scope/priority/
+  // isActive pueden desincronizar productos de ambos lados). Después del update
+  // para que markPublicationsDrift recompute con la regla nueva.
+  const drift = await markDriftForRuleChange(prisma, {
+    userId: session.user.id,
+    ruleId: updated.id,
+    action: "updated",
+    scopes: [
+      { scope: owned.scope, scopeId: owned.scopeId },
+      { scope: updated.scope, scopeId: updated.scopeId },
+    ],
+    ruleName: updated.name,
+    marginPercentOld: owned.marginPercent,
+    marginPercentNew: updated.marginPercent,
+  });
+
+  return NextResponse.json({ ...updated, markedOutdated: drift.markedOutdated });
 }
 
 export async function DELETE(
@@ -69,9 +88,16 @@ export async function DELETE(
 
   const owned = await prisma.pricingRule.findFirst({
     where: { id: params.id, userId: session.user.id },
-    select: { id: true },
+    select: { id: true, scope: true, scopeId: true, name: true, marginPercent: true },
   });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // D1: capturar los ids linkeados ANTES del delete (el delete los pone
+  // pricingRuleId=null y se perderían).
+  const linked = await prisma.catalogProduct.findMany({
+    where: { pricingRuleId: params.id },
+    select: { id: true },
+  });
 
   // Desvincular CatalogProducts que apuntaban a esta regla (set null en FK).
   await prisma.$transaction([
@@ -82,5 +108,16 @@ export async function DELETE(
     prisma.pricingRule.delete({ where: { id: params.id } }),
   ]);
 
-  return NextResponse.json({ ok: true });
+  // D1: marcar drift DESPUÉS del delete — resolvePricing ya no ve la regla.
+  const drift = await markDriftForRuleChange(prisma, {
+    userId: session.user.id,
+    ruleId: params.id,
+    action: "deleted",
+    scopes: [{ scope: owned.scope, scopeId: owned.scopeId }],
+    extraCatalogProductIds: linked.map((c) => c.id),
+    ruleName: owned.name,
+    marginPercentOld: owned.marginPercent,
+  });
+
+  return NextResponse.json({ ok: true, markedOutdated: drift.markedOutdated });
 }

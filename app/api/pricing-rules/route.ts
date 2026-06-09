@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { PricingRuleScope, RoundingMode } from "@prisma/client";
 import { z } from "zod";
+import { markDriftForRuleChange } from "@/lib/catalog/mark-drift-for-rule-change";
+
+export const maxDuration = 60;
 
 const SCOPES: PricingRuleScope[] = ["GLOBAL", "PROVIDER", "CATEGORY"];
 const ROUNDINGS: RoundingMode[] = ["NONE", "CEIL", "NEAREST_100", "NEAREST_500", "ENDING_990"];
@@ -113,5 +116,18 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json(rule, { status: 201 });
+  // D1: una regla nueva puede dejar productos publicados desactualizados.
+  const drift = await markDriftForRuleChange(prisma, {
+    userId: session.user.id,
+    ruleId: rule.id,
+    action: "created",
+    scopes: [{ scope: rule.scope, scopeId: rule.scopeId }],
+    ruleName: rule.name,
+    marginPercentNew: rule.marginPercent,
+  });
+
+  return NextResponse.json(
+    { ...rule, markedOutdated: drift.markedOutdated },
+    { status: 201 }
+  );
 }

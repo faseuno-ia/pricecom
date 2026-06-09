@@ -77,7 +77,17 @@ export function PricingRulesPage({ providers, categories }: Props) {
     try {
       const res = await fetch(`/api/pricing-rules/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Error al eliminar");
-      toast.success("Regla eliminada");
+      const data = (await res.json().catch(() => ({}))) as {
+        markedOutdated?: number;
+      };
+      const n = data.markedOutdated ?? 0;
+      toast.success(
+        `Regla eliminada${
+          n > 0
+            ? ` — ${n} producto${n === 1 ? "" : "s"} marcado${n === 1 ? "" : "s"} para sincronizar`
+            : ""
+        }`
+      );
       load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -92,6 +102,16 @@ export function PricingRulesPage({ providers, categories }: Props) {
         body: JSON.stringify({ isActive: !rule.isActive }),
       });
       if (!res.ok) throw new Error("Error");
+      // D1: activar/desactivar una regla también puede desincronizar productos.
+      const data = (await res.json().catch(() => ({}))) as {
+        markedOutdated?: number;
+      };
+      const n = data.markedOutdated ?? 0;
+      if (n > 0) {
+        toast.success(
+          `${n} producto${n === 1 ? "" : "s"} marcado${n === 1 ? "" : "s"} para sincronizar`
+        );
+      }
       load();
     } catch (err) {
       toast.error((err as Error).message);
@@ -281,7 +301,19 @@ function PricingRuleModal({
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? "Error al guardar");
       }
-      toast.success(rule ? "Regla actualizada" : "Regla creada");
+      // D1: avisar cuántos productos publicados quedaron desactualizados por el
+      // cambio de regla, para que el usuario sepa que tiene que sincronizar.
+      const data = (await res.json().catch(() => ({}))) as {
+        markedOutdated?: number;
+      };
+      const n = data.markedOutdated ?? 0;
+      toast.success(
+        `${rule ? "Regla actualizada" : "Regla creada"}${
+          n > 0
+            ? ` — ${n} producto${n === 1 ? "" : "s"} marcado${n === 1 ? "" : "s"} para sincronizar`
+            : ""
+        }`
+      );
       onSaved();
     } catch (err) {
       toast.error((err as Error).message);
