@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { Prisma } from "@prisma/client";
+import { SYNC_ERRORS_WHERE } from "@/lib/store/sync-buckets";
 import {
   resolvePricing,
   type PricingRuleForCalc,
@@ -121,6 +122,11 @@ export async function GET(req: NextRequest) {
       andClauses.push({
         catalogProduct: { is: { supplierStatus: "SUPPLIER_REMOVED" } },
       });
+    } else if (filter === "ERROR") {
+      // Errores de sync TERMINALES (1A.2-kpi): mismo predicado que el KPI.
+      // syncStatus IN (ERROR, ERROR_SKU_CONFLICT) — NO pp.status (que ya no se
+      // escribe en fallos de sync desde 1A.2-ab).
+      andClauses.push(SYNC_ERRORS_WHERE);
     } else {
       andClauses.push({ status: filter });
     }

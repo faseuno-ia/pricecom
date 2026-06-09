@@ -5,6 +5,7 @@ import { MyStoreDashboard } from "@/components/my-store/my-store-dashboard";
 import { MyStoreTabs } from "@/components/my-store/my-store-tabs";
 import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
 import { visualStatusToWhere } from "@/lib/catalog/list-filters";
+import { SYNC_ERRORS_WHERE } from "@/lib/store/sync-buckets";
 
 export const metadata = {
   title: "Mi Tienda — PricEcom",
@@ -57,7 +58,7 @@ export default async function MyStorePage() {
   //                       stockSource=SUPPLIER (los OWN/HYBRID removidos NO son
   //                       "sin stock": sobreviven en su balde de intención).
   //   - Pendientes sync:  pp.pendingSync = true.
-  //   - Errores:          pp.status = ERROR.
+  //   - Errores:          syncStatus IN (ERROR, ERROR_SKU_CONFLICT) — SYNC_ERRORS_WHERE.
   // Universo de los KPIs de intención: pp en esta store. Los NOT_PUBLISHED sin pp
   // no entran a Mi Tienda.
   const [
@@ -104,7 +105,7 @@ export default async function MyStorePage() {
         },
       }),
       prisma.productPublication.count({
-        where: { storeId: store.id, status: "ERROR" },
+        where: { storeId: store.id, ...SYNC_ERRORS_WHERE },
       }),
       prisma.productPublication.count({
         where: { storeId: store.id, pendingSync: true },

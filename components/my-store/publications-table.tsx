@@ -29,6 +29,7 @@ type SyncStatus =
   | "SYNCED"
   | "OUTDATED"
   | "ERROR"
+  | "ERROR_SKU_CONFLICT"
   | "PAUSED";
 
 interface PubRow {
@@ -98,6 +99,10 @@ const syncBadgeFor: Record<SyncStatus, { label: string; cls: string }> = {
     label: "Error sync",
     cls: "bg-red-500/15 text-red-300 border-red-500/30",
   },
+  ERROR_SKU_CONFLICT: {
+    label: "Conflicto SKU",
+    cls: "bg-red-500/15 text-red-300 border-red-500/30",
+  },
   PAUSED: {
     label: "Pausado",
     cls: visualStatusConfig.PAUSED.className,
@@ -128,6 +133,8 @@ const SYNC_TOOLTIPS: Record<SyncStatus, string> = {
     "El precio en PricEcom difiere del precio en WooCommerce. Sincronizá para actualizar.",
   ERROR:
     "El último push a WooCommerce falló. Reintentá desde el botón de sync.",
+  ERROR_SKU_CONFLICT:
+    "El SKU ya existe en WooCommerce con otro producto. Requiere resolución manual (no se reintenta solo).",
   PAUSED: "Publicación pausada en la tienda.",
 };
 

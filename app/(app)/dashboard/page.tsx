@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { cn } from "@/lib/utils";
 import { buildActiveUnmatchedWhere } from "@/lib/store/unmatched-where";
+import { SYNC_ERRORS_WHERE } from "@/lib/store/sync-buckets";
 import {
   Store,
   Boxes,
@@ -275,7 +276,7 @@ async function getDashboardStats(userId: string) {
                 where: { storeId, pendingSync: true },
               }),
               prisma.productPublication.count({
-                where: { storeId, syncStatus: "ERROR" },
+                where: { storeId, ...SYNC_ERRORS_WHERE },
               }),
               // ⚠ NO contar unmatched crudo por `resolved: false` acá. Usar
               // SIEMPRE buildActiveUnmatchedWhere (helper centralizado en
