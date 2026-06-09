@@ -15,6 +15,7 @@ import { prisma } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth";
 import { buildPublicationSku } from "@/lib/catalog/publication-sku";
 import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
+import { reconcileRemovedOnImport } from "@/lib/catalog/reconcile-removed-on-import";
 import {
   pickField,
   parseImportNumber,
@@ -479,85 +480,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (importedSkus.length > 0) {
-    const baseWhere = {
-      userId: session.user.id,
-      providerId,
-      supplierStatus: "ACTIVE" as const,
-      sourceType: { in: ["SCRAPED", "IMPORTED"] as ("SCRAPED" | "IMPORTED")[] },
-      sku: { notIn: importedSkus },
-    };
-
-    // Caso 1: PREPARED|PUBLISHED + stockSource SUPPLIER → PAUSED + SUPPLIER_REMOVED.
-    // Pre-resolvemos los IDs para poder propagar pendingSync=true a sus
-    // ProductPublication (que están desincronizadas: PricEcom = PAUSED pero
-    // WooCommerce sigue mostrando publish).
-    const toAutoPause = await prisma.catalogProduct.findMany({
-      where: {
-        ...baseWhere,
-        stockSource: "SUPPLIER",
-        internalStatus: { in: ["PREPARED", "PUBLISHED"] },
-      },
-      select: { id: true },
-    });
-
-    let removedPausedCount = 0;
-    if (toAutoPause.length > 0) {
-      const pauseIds = toAutoPause.map((p) => p.id);
-      const removedPaused = await prisma.catalogProduct.updateMany({
-        where: { id: { in: pauseIds } },
-        data: {
-          supplierStatus: "SUPPLIER_REMOVED",
-          internalStatus: "PAUSED",
-        },
-      });
-      removedPausedCount = removedPaused.count;
-      await prisma.productPublication.updateMany({
-        where: {
-          catalogProductId: { in: pauseIds },
-          status: "ACTIVE",
-        },
-        data: { pendingSync: true, syncStatus: "PENDING_SYNC" },
-      });
-
-      // Trace per-batch del auto-pause: hasta acá el import solo emitía el
-      // report agregado al cerrar. Ese rastro no alcanza para "qué pasó con
-      // este producto" en el activity log.
-      if (removedPausedCount > 0) {
-        await logInfo({
-          source: "SYNC",
-          type: "PRODUCT_AUTO_PAUSED",
-          title: `${removedPausedCount} producto(s) auto-pausados durante import (supplier removed)`,
-          userId: session.user.id,
-          providerId,
-          metadata: {
-            productIds: pauseIds,
-            count: removedPausedCount,
-            reason: "supplier_removed_during_import",
-            newStatus: "PAUSED",
-            importBatchId,
-          },
-        });
-      }
-    }
-
-    // Caso 2: el resto (excepto IGNORED y el caso 1) → solo SUPPLIER_REMOVED
-    const removedRest = await prisma.catalogProduct.updateMany({
-      where: {
-        ...baseWhere,
-        internalStatus: { not: "IGNORED" },
-        NOT: {
-          AND: [
-            { stockSource: "SUPPLIER" },
-            { internalStatus: { in: ["PREPARED", "PUBLISHED"] } },
-          ],
-        },
-      },
-      data: { supplierStatus: "SUPPLIER_REMOVED" },
-    });
-
-    report.removed = removedPausedCount + removedRest.count;
-  }
+  // Reconciliación de removidos por proveedor (1A.2-import): auto-pausa con
+  // pausedBySystem=true (para que B reactive al reaparecer) + marca el resto
+  // como SUPPLIER_REMOVED. Estrategia "encolar": deja pp PENDING_SYNC; el
+  // consistency-check / drainer bajan Woo a draft. Lógica extraída a un helper
+  // testeable (el route usa el prisma de prod y no se testea directo).
+  const removed = await reconcileRemovedOnImport(prisma, {
+    userId: session.user.id,
+    providerId,
+    importedSkus,
+    importBatchId,
+  });
+  report.removed = removed.removedPaused + removed.removedRest;
 
   // Emisión del job sintético + comparison + changes. Se hace en una sola
   // transacción para mantener consistencia: si algo falla, no quedan jobs
