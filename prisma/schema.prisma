@@ -617,6 +617,14 @@ model ProductPublication {
   /// Snapshot del precio en la tienda al momento del último sync. Permite
   /// detectar drift entre lo que el motor calcula y lo que está publicado.
   priceInStore      Float?
+  /// Baseline de autoridad del precio (D2 — ver docs/d2-price-authority-design.md §2).
+  /// ES el precio PERSISTIDO del último push exitoso (el valor enviado a Woo, NUNCA un
+  /// recálculo). Su null-ness DERIVA la autoridad del precio de la fila:
+  ///   - != null  ⇒ autoridad PricEcom → SYNCED = |computed − lastPushedPrice| ≤ tolerancia.
+  ///   - == null  ⇒ autoridad Woo → SYNCED por definición (no reclamamos control).
+  /// Lo escribe SOLO el price-push exitoso (publishProductToWoo). Los pulls
+  /// (sync/products, link, create-catalog), el pause y el edit de SKU NO lo tocan.
+  lastPushedPrice   Float?
   /// Snapshot del stock en la tienda al momento del último sync.
   stockInStore      Int?
   /// Snapshot del nombre de categoría asignado en la tienda externa.
