@@ -8,6 +8,50 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## HX178 — `internalStatus` desalineado vs Woo + link `externalProductId` a verificar
+
+**Prioridad:** Baja — no urgente; el producto está publicado en Woo y el cliente lo ve.
+Detectado el 2026-06-11 en el diagnóstico read-only de visibilidad OWN.
+
+**Contexto y origen.** Identidad: `HX178` = SKU del proveedor (IMPOTEKNO); `JOR987` = SKU
+comercial (`publicationSku`); "Pulpo-medusa-bailarín". `externalProductId` guardado = **9282**.
+Síntoma: `internalStatus = PREPARED` en PricEcom, pero el producto está **PUBLICADO en Woo**.
+Origen probable (read-only): la publicación tiene `externalProductId=9282` pero **ningún evento
+de push** (`WOO_PRODUCT_CREATED`/`WOO_SYNC_SUCCESS`) en EventLog → el `SYNCED` no vino de un push
+de PricEcom. Lo más probable: un **PULL matcheó por SKU** contra un producto que ya existía
+publicado en Woo y lo vinculó. Es decir, una fila de **autoridad-Woo** (PricEcom la adoptó, no la
+creó). Bajo el modelo de D2 su `lastPushedPrice` será null → autoridad Woo, que es correcto. Lo
+desalineado es el `internalStatus` (PREPARED) respecto del estado real (publicado en Woo): **el
+eje operativo no tiene un estado que represente "adoptado de Woo, no publicado por mí".**
+
+**Impacto hoy.** Cosmético: el producto se ve en Woo y el cliente lo ve; el desalineo de
+`internalStatus` no afecta la visibilidad. El riesgo real está en el link a verificar (abajo).
+
+**⚠️ Verificación pendiente ANTES de cualquier push sobre esta fila.** Confirmar que el producto
+Woo con `externalProductId=9282` es **efectivamente** JOR987 / Pulpo-medusa (no otro producto con
+el mismo SKU). Método: en el admin de Woo, buscar el producto con SKU `JOR987` y confirmar que su
+ID interno es 9282; o abrir el `externalUrl` guardado (`…/pulpo-medusa-bailarin…`) y confirmar que
+es el producto correcto.
+- **Si 9282 ↔ JOR987 coinciden** → el vínculo es correcto; HX178 es solo `internalStatus`
+  desalineado (cosmético; cae naturalmente dentro de D2 cuando el modelo de autoridad se extienda
+  al eje operativo — hoy D2 es solo precio, **fuera de alcance**).
+- **Si NO coinciden** → es un **link cruzado** (PricEcom apunta a un producto Woo ajeno): más
+  serio, porque un push sobre HX178 escribiría sobre el **producto equivocado en la tienda viva**.
+  Atender **antes** de habilitar cualquier push sobre esta fila.
+
+**Trigger para atacarla.**
+- Antes de habilitar cualquier push/sync que escriba sobre HX178 (la verificación del link es
+  bloqueante de ese push).
+- Cuando D2 extienda el modelo de autoridad al eje operativo (el `internalStatus` desalineado se
+  resuelve ahí, no con un parche puntual).
+
+**No resolver a mano.** No forzar `internalStatus` a PUBLISHED sin antes (a) la verificación del
+link 9282 ↔ JOR987, y (b) saber **cuántas otras filas adoptadas-por-pull** están en el mismo
+estado — es un **patrón**, no un caso único, y pertenece a la familia source-of-truth / D2, no a
+un parche puntual.
+
+---
+
 ## `markPublicationsDrift` es unidireccional (no limpia OUTDATED residual)
 
 **Prioridad:** Media — no corrompe datos ni toca Woo, pero ensucia la cola de
