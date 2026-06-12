@@ -62,7 +62,7 @@ autoridad separada.
 
 | Campo | Quién escribe | Significado |
 |---|---|---|
-| **`lastPushedPrice`** (NUEVO, `Float?`) | **solo paths de push** (`publishProductToWoo` éxito CREATE/UPDATE; push de edición de SKU) | precio calculado del último push exitoso = **baseline de autoridad PricEcom** |
+| **`lastPushedPrice`** (NUEVO, `Float?`) | **solo el price-push exitoso** (`publishProductToWoo` éxito CREATE/UPDATE). El edit de SKU pushea solo `{sku}`, no `regular_price`, y NO toca `lastPushedPrice`. | precio calculado del último push exitoso = **baseline de autoridad PricEcom** |
 | `priceInStore` (existente, redefinido) | pulls (`sync/products`, `link`, `create-catalog`) | "último valor observado en Woo" — **informativo**, ya NO es el comparando del invariante |
 | `syncStatus` / `pendingSync` | reconciliación + paths de push/pause/edit | estado del eje sync |
 
