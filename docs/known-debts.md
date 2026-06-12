@@ -1030,6 +1030,20 @@ componentes del drawer de edición de publicaciones. Suite
 "no-price-calculable" detectadas por el backfill del 2026-06-03; NO se
 marcaron porque `publishProductToWoo` abortaría con "Sin precio calculado".
 
+**Estado (2026-06-12): costo CARGADO para los 16 → desbloqueados.** Se escribió
+`wholesalePrice = precio_tienda × 0.8` (costo derivado del Excel del cliente, margen
+25% hacia atrás; **NO** es costo real de proveedor) vía write transaccional directo a
+`CatalogProduct.wholesalePrice` (Gate 2 LACHIPELU; backups en
+`artifacts/backups/lachi16/`). Resultado: `effectivePrice = costo × 1.27` (regla
+LACHIPELU 27%, CEIL) **> 0 en los 16** → ya NO abortan con "Sin precio calculado",
+son **publicables**. Confirmado en ese gate que **LACHIPELU es carga-manual pura**
+(0 `ExtractionJob`/`ExtractedProduct` jamás), así que ninguna extracción va a
+re-perder el costo. **Siguen en PREPARED:** cargar el costo no levanta
+`internalStatus` — la publicación real (push a Woo) es **Parte 2 pendiente** (requiere
+el wrapper price-only sobre `updateProductPrice` + `lastPushedPrice`, y confirmar el
+estado real en Woo, que el espejo ve como `draft`). Lista de SKUs cargados: LA12, LA16,
+LA20, LA35, LA37, LA39, LA44, LA50, LA60, LA63, LA72, LA75, LA91, LA92, LA98, LA113.
+
 **Contexto.** 16 catalog products de LACHIPELU - Vanesa tienen
 `wholesalePrice=null` Y `finalPrice=null`. Sin ninguno de los dos,
 `resolvePricing` no puede generar un precio. Las pp están publicadas y
