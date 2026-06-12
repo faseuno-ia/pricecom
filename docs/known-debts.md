@@ -8,6 +8,46 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## No existe un "refresh seguro de espejo" Woo→PricEcom (solo el pull de blast radius amplio)
+
+**Prioridad:** Media — no rompe nada en estado estable, pero **bloquea operaciones quirúrgicas** que
+necesitan un `priceInStore` fresco sin efectos colaterales. Detectado en Gate 2A de la restauración de
+precios post-incidente (2026-06-12).
+
+**Contexto.** PricEcom no lee Woo en vivo: `priceInStore`/`stockInStore`/`externalStatus` son un espejo
+que solo se actualiza cuando corre el pull "Sincronizar productos" (`app/api/my-store/sync/products/route.ts`).
+Ese pull es el **único** camino para refrescar el espejo, y su lógica está **inline en el `POST()`**
+gated por `requireSession()` — no hay función reutilizable ni script.
+
+**El problema.** El pull NO es un refresh acotado del espejo. Reescribe, para **toda la tienda**:
+`status`, `externalSku`, `externalStatus`, `priceInStore`, `stockInStore`, `categoryInStore`,
+`syncStatus=SYNCED`, `pendingSync=false`, `commercialTitle/Description` (si no están user-edited), y
+**`CatalogProduct.internalStatus` vía `mapInternalStatus`** — que puede **regresar PUBLISHED→PREPARED**
+para cualquier producto cuyo Woo esté hoy en `draft/private/pending`. Es **el mismo mecanismo** que
+produjo las regresiones a PREPARED del incidente del cliente. O sea: el pull que "actualiza precios"
+también **muta estado operativo**.
+
+**Impacto actual.** Antes de una restauración quirúrgica de precios no se puede refrescar el espejo sin
+arriesgar churn de estado en toda la tienda. En Gate 2A se eligió **Opción B** (operar sobre el espejo
+viejo de las 15:14 + CSV de las 12:30, sin pull) justamente para no introducir ese blast radius. Costo:
+la operación corre sobre fotos de hace horas y es ciega a cambios que el cliente haya hecho en Woo
+después del último pull.
+
+**Por qué importa (raíz del incidente).** Parte de por qué el incidente fue difícil de contener es esta
+ausencia: el único "sincronizar" disponible mezcla refresh de datos con mutación de estado, así que el
+cliente no tiene forma de "volver a leer Woo" sin riesgo de mover productos a PREPARED.
+
+**Trigger para atacarla.** Cualquier operación que necesite espejo fresco como precondición segura
+(restauración de precios, reconciliación, auditoría de drift contra Woo en vivo).
+
+**Solución concreta.** Extraer un **pull narrow** reutilizable que escriba SOLO
+`priceInStore`/`stockInStore`/`externalStatus`/`lastSyncedAt` (lectura de Woo → espejo), **sin** tocar
+`internalStatus`/`status`/títulos. Idealmente como función de lib (`refreshStoreMirror(prisma, store, client)`)
+invocable desde un script controlado, separada del pull "completo" que sí re-deriva estado. Eso da un
+"volver a leer Woo" idempotente y de blast radius mínimo. Es su propio gate (write nuevo a prod).
+
+---
+
 ## Residuos de B-Prep-1 (clasificación de errores Woo): SKU route + `PublicationStatus.ERROR`
 
 **Prioridad:** Baja — ninguno rompe nada hoy; quedan anotados al cerrar B-Prep-1 (el sprint que
