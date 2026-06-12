@@ -358,6 +358,7 @@ export async function publishProductToWoo(
         status: "ACTIVE",
         syncStatus: "SYNCED",
         priceInStore: price,
+        lastPushedPrice: price, // D2 2B: baseline de autoridad = precio pusheado (= regular_price)
         pendingSync: false,
         publishedAt: new Date(),
         lastSyncedAt: new Date(),
@@ -377,6 +378,7 @@ export async function publishProductToWoo(
         status: "ACTIVE",
         syncStatus: "SYNCED",
         priceInStore: price,
+        lastPushedPrice: price, // D2 2B
         pendingSync: false,
         lastSyncedAt: new Date(),
         lastSyncAt: new Date(),
