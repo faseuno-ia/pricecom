@@ -8,6 +8,30 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## Residuos de B-Prep-1 (clasificación de errores Woo): SKU route + `PublicationStatus.ERROR`
+
+**Prioridad:** Baja — ninguno rompe nada hoy; quedan anotados al cerrar B-Prep-1 (el sprint que
+hizo que push/pause clasifiquen terminales a `ERROR_TERMINAL` y salgan del loop del drainer).
+
+**1. El catch del SKU route hardcodea `ERROR + pendingSync=true`.**
+`app/api/catalog/publications/[id]/sku/route.ts:230` sigue marcando todo fallo de push de SKU como
+`ERROR + pendingSync=true`, sin usar el helper compartido `syncFieldsForWooError`. **Hoy benigno:**
+el guard 3 (`assertSkuNotInWoo`) atrapa el conflicto de SKU **antes** del catch, así que lo que
+llega ahí es transitorio (timeout/5xx) y `pendingSync=true` es correcto. **Riesgo:** un terminal
+**no-conflict** que llegue a ese catch (p.ej. 400 por payload de SKU) quedaría `ERROR + pendingSync=true`
+→ el drainer lo reintentaría en loop — exactamente el bug que B-Prep-1 arregló en publish/pause.
+- **Trigger:** **Operación B** (push masivo de 692 SKU nuevos a Woo) ejercita justo este path a escala.
+- **Solución:** usar el mismo helper compartido (`syncFieldsForWooError`) en ese catch, igual que
+  publish/pause. Probablemente antes/durante Operación B.
+
+**2. `PublicationStatus.ERROR` quedó sin writer.**
+Tras B-Prep-1, el publish catch dejó de escribir `pp.status="ERROR"` (era el bug de separación de
+ejes; ahora el fallo de sync vive solo en `syncStatus`). El valor `ERROR` del enum `PublicationStatus`
+ya no lo escribe nadie en runtime. **Inocuo** dejarlo (additivo-inverso; quitarlo no aporta).
+Candidato a limpieza cosmética futura.
+
+---
+
 ## HX178 — `internalStatus` desalineado vs Woo + link `externalProductId` a verificar
 
 **Prioridad:** Baja — no urgente; el producto está publicado en Woo y el cliente lo ve.

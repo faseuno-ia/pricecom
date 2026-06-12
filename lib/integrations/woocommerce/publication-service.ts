@@ -26,18 +26,18 @@ export interface PublishResult {
 //   recoverable / ambiguous → PENDING_SYNC + pendingSync=true (reintentable; el
 //     drainer "Sincronizar pendientes" lo toma). ambiguous incluye 401/403/404 y
 //     parse (Woo respondió pero no se pudo interpretar).
-//   terminal / unknown      → ERROR + pendingSync=false (requiere intervención
-//     humana; NO se reintenta solo).
+//   terminal / unknown      → ERROR_TERMINAL + pendingSync=false (requiere
+//     intervención humana; NO se reintenta solo; sale del drainer POR VALOR).
 // Nunca se escribe pp.status (eje operativo): el fallo de sync vive en el eje sync.
 function syncFieldsForWooError(err: unknown): {
-  syncStatus: "PENDING_SYNC" | "ERROR";
+  syncStatus: "PENDING_SYNC" | "ERROR_TERMINAL";
   pendingSync: boolean;
 } {
   const cls = WooApiError.is(err) ? classifyWooError(err) : "unknown";
   if (cls === "recoverable" || cls === "ambiguous") {
     return { syncStatus: "PENDING_SYNC", pendingSync: true };
   }
-  return { syncStatus: "ERROR", pendingSync: false };
+  return { syncStatus: "ERROR_TERMINAL", pendingSync: false };
 }
 
 // Parsea el campo CatalogProduct.stock (string, ej. "10", "Sí", "—") a número
@@ -456,13 +456,13 @@ export async function publishProductToWoo(
       metadata: { error: message },
     });
     if (existingPub?.id) {
+      const { syncStatus, pendingSync } = syncFieldsForWooError(err);
       await prisma.productPublication.update({
         where: { id: existingPub.id },
         data: {
-          syncStatus: "ERROR",
-          status: "ERROR",
+          syncStatus,
           syncError: message,
-          pendingSync: true,
+          pendingSync,
         },
       });
     }

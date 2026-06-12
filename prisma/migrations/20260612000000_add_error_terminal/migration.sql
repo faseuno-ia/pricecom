@@ -1,0 +1,1 @@
+ALTER TYPE "PublicationSyncStatus" ADD VALUE 'ERROR_TERMINAL';

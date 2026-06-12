@@ -1,7 +1,7 @@
 // 1A.2-ab — pause/ignore honestos. pauseProductInWoo ante fallo de Woo debe
 // clasificar (classifyWooError) en vez de marcar todo ERROR+pendingSync=true:
 //   recoverable / ambiguous / parse → PENDING_SYNC + pendingSync=true
-//   terminal / unknown             → ERROR + pendingSync=false
+//   terminal / unknown             → ERROR_TERMINAL + pendingSync=false
 // y NUNCA escribir pp.status="ERROR" (eso es eje operativo).
 //
 // Además: el helper pausePublicationsForCatalogProducts marca PENDING_SYNC
@@ -66,8 +66,8 @@ describe("pauseProductInWoo — clasificación honesta de fallo Woo", () => {
     { name: "recoverable (503)", err: () => new WooApiError({ message: "x", kind: "http", status: 503, op: "status" }), syncStatus: "PENDING_SYNC", pendingSync: true },
     { name: "ambiguous (404)", err: () => new WooApiError({ message: "x", kind: "http", status: 404, op: "status" }), syncStatus: "PENDING_SYNC", pendingSync: true },
     { name: "parse", err: () => WooApiError.fromTransport(new SyntaxError("bad"), "status"), syncStatus: "PENDING_SYNC", pendingSync: true },
-    { name: "terminal (400)", err: () => new WooApiError({ message: "x", kind: "http", status: 400, op: "status" }), syncStatus: "ERROR", pendingSync: false },
-    { name: "unknown", err: () => WooApiError.fromTransport(new Error("???"), "status"), syncStatus: "ERROR", pendingSync: false },
+    { name: "terminal (400)", err: () => new WooApiError({ message: "x", kind: "http", status: 400, op: "status" }), syncStatus: "ERROR_TERMINAL", pendingSync: false },
+    { name: "unknown", err: () => WooApiError.fromTransport(new Error("???"), "status"), syncStatus: "ERROR_TERMINAL", pendingSync: false },
   ];
 
   for (const c of cases) {
