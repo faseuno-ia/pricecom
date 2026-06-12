@@ -22,6 +22,7 @@ type SyncStatus =
   | "OUTDATED"
   | "ERROR"
   | "ERROR_SKU_CONFLICT"
+  | "ERROR_TERMINAL"
   | "PAUSED";
 
 export interface PubDetail {

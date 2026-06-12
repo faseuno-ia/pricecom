@@ -4,10 +4,10 @@
 
 import type { Prisma } from "@prisma/client";
 
-// Bucket "Errores": fallos TERMINALES del contrato honesto (1A.2-ab).
-//   syncStatus IN (ERROR, ERROR_SKU_CONFLICT)
+// Bucket "Errores": fallos TERMINALES del contrato honesto (1A.2-ab + B-Prep-1).
+//   syncStatus IN (ERROR, ERROR_SKU_CONFLICT, ERROR_TERMINAL)
 // NO incluye PENDING_SYNC: los pendientes (recoverable/ambiguous, incluido el
 // caso sin-credenciales) tienen su propio bucket visible ("Pend. sync").
 export const SYNC_ERRORS_WHERE = {
-  syncStatus: { in: ["ERROR", "ERROR_SKU_CONFLICT"] },
+  syncStatus: { in: ["ERROR", "ERROR_SKU_CONFLICT", "ERROR_TERMINAL"] },
 } satisfies Prisma.ProductPublicationWhereInput;

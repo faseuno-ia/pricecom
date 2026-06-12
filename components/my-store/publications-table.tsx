@@ -30,6 +30,7 @@ type SyncStatus =
   | "OUTDATED"
   | "ERROR"
   | "ERROR_SKU_CONFLICT"
+  | "ERROR_TERMINAL"
   | "PAUSED";
 
 interface PubRow {
@@ -103,6 +104,10 @@ const syncBadgeFor: Record<SyncStatus, { label: string; cls: string }> = {
     label: "Conflicto SKU",
     cls: "bg-red-500/15 text-red-300 border-red-500/30",
   },
+  ERROR_TERMINAL: {
+    label: "Error (intervención)",
+    cls: "bg-red-500/15 text-red-300 border-red-500/30",
+  },
   PAUSED: {
     label: "Pausado",
     cls: visualStatusConfig.PAUSED.className,
@@ -135,6 +140,8 @@ const SYNC_TOOLTIPS: Record<SyncStatus, string> = {
     "El último push a WooCommerce falló. Reintentá desde el botón de sync.",
   ERROR_SKU_CONFLICT:
     "El SKU ya existe en WooCommerce con otro producto. Requiere resolución manual (no se reintenta solo).",
+  ERROR_TERMINAL:
+    "El push a WooCommerce falló por un error que no se resuelve reintentando (validación/datos). Requiere revisión manual.",
   PAUSED: "Publicación pausada en la tienda.",
 };
 
