@@ -314,6 +314,11 @@ enum PublicationSyncStatus {
   /// duplicado en la tienda. Cuando esta publication tiene este status,
   /// se la saca de la cola de reintento (pendingSync=false).
   ERROR_SKU_CONFLICT
+  /// Error TERMINAL genérico de push/pause (validación/datos/4xx, o transporte
+  /// no mapeado): reintentar no ayuda. Sale de la cola del drainer POR VALOR
+  /// (no está en su OR), igual que ERROR_SKU_CONFLICT. pendingSync=false.
+  /// Requiere intervención manual.
+  ERROR_TERMINAL
 }
 
 model Store {
