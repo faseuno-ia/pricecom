@@ -85,7 +85,10 @@ desconectada (`client.ts:254-256`, manda solo `{ regular_price }`).
 > Inventario de decisiones pendientes. Para cada una: la tensión y las opciones legítimas. **No se
 > recomienda, no se elige, no se prejuzga nada acá.** Gate 1 las resuelve.
 
+> **Estado:** RESUELTA en la Sección C (C.D / C.C / C.B). La decisión **A** sigue abierta — ver C.A.
+
 ### A. `previousPrice` en el EventLog del wrapper
+> **→ Sigue abierta. Ver C.A.**
 - **Opción 1:** `previousPrice = priceInStore` previo (lo que hace el molde hoy, A.5 — consistente con el
   push).
 - **Opción 2:** `previousPrice = lastPushedPrice` previo (baseline de autoridad 2B).
@@ -93,12 +96,14 @@ desconectada (`client.ts:254-256`, manda solo `{ regular_price }`).
   quiere significar el "triple cruce" de 2B define cuál corresponde. Sin resolver.
 
 ### B. Idempotencia cuando `newPrice == precio actual` (`priceInStore` / `lastPushedPrice`)
+> **→ Resuelta en C.B.**
 - **Sub-decisiones:** ¿salir temprano sin llamar a Woo? ¿llamar igual a Woo? ¿emitir EventLog o no?
 - **Tensión:** el primer push real planeado es "pushear el mismo precio = no-op observable" para validar
   B-Prep-1 y 2B en prod. Si el wrapper cortocircuita con precio igual, ese test **no** ejercita el path
   HTTP ni valida nada. La decisión de idempotencia condiciona el plan de validación. Sin resolver.
 
 ### C. Forma del `Result`
+> **→ Resuelta en C.C.**
 - **Opción 1:** espejar `PublishResult { success, externalProductId?, error? }` (A.10) → el caller del
   flujo masivo **no** puede distinguir `ERROR_TERMINAL` de `PENDING_SYNC` sin re-leer DB (N queries).
 - **Opción 2:** `Result` más rico que incluya la clasificación sync (`syncStatus` / `pendingSync`) para que
@@ -106,6 +111,7 @@ desconectada (`client.ts:254-256`, manda solo `{ regular_price }`).
 - **Tensión:** reusabilidad del flujo masivo vs simetría con el push. Sin resolver.
 
 ### D. Fallo parcial Woo OK / DB FAIL (el más delicado)
+> **→ Resuelta en C.D.**
 - **Escenario:** Woo responde 200, la escritura de `priceInStore` / `lastPushedPrice` falla → Woo
   actualizado, PricEcom sin baseline → drift falso → `OUTDATED` → reintento → republicación. Es la
   desincronización de espejo que enseñó el incidente, y A.8 confirma que el detector vivo la castiga al
@@ -120,3 +126,125 @@ desconectada (`client.ts:254-256`, manda solo `{ regular_price }`).
 
 **Cierre.** Ninguna de las decisiones de la Sección B está tomada. La Sección A es lo verificado contra el
 código real; la Sección B es lo que Gate 1 debe resolver **antes** de implementar el wrapper.
+
+---
+
+## SECCIÓN C — Decisiones Gate 1
+
+> Resuelve las decisiones que la Sección B dejó abiertas, en orden **D → C → B** (D es la raíz: define la
+> máquina de estados y arrastra a C y B). **A queda reabierta** al final (C.A). Cada decisión resuelta
+> lleva opción elegida, por qué (citando la Sección A) y efecto en el contrato.
+
+### C.D — Fallo parcial Woo OK / DB FAIL + reintento  [RESUELTA]
+
+**Orden: push-first** (Woo primero, DB después). DB-first generaría **falso-verde**: el detector vivo
+vería `effective == priceInStore` → `SYNCED` con Woo viejo (A.3). Push-first replica el molde (A.4) y
+hace que un fallo de Woo deje `priceInStore` intacto = consistente con el Woo real (viejo).
+
+**Dos regiones de fallo:**
+- **Woo falla (no hubo 200):** `syncFieldsForWooError` tal cual — `terminal/unknown → ERROR_TERMINAL + pSync=false`; `recoverable/ambiguous → PENDING_SYNC + pSync=true`. Woo y `priceInStore` quedan viejos, consistentes.
+- **Woo 200 + DB falla:** el error es de Prisma, no `WooApiError` → `syncFieldsForWooError` lo daría `unknown → ERROR_TERMINAL`, lo cual es **incorrecto** (es reintentable). **Branch deliberado:** forzar `PENDING_SYNC + pSync=true` (write mínimo best-effort) para que el drainer lo tome. **Backstop** si hasta ese write falla: `markPublicationsDrift` periódico lo agarra **precisamente porque `priceInStore` quedó viejo** (A.8) → `OUTDATED` → drainer → converge. *(Gate 2: diseñar qué write mínimo, dónde, y qué pasa si también falla; la convergencia vía backstop ya está cubierta.)*
+
+**Corrección de diseño (cerrada, verificada contra código — NO es una opción):** el gate de precondición
+es **`status = ACTIVE`** (la fila debe estar activa en PricEcom), **no** el OR `status=ACTIVE ∨
+externalStatus=publish`. Motivo verificado: una fila `status=PAUSED + externalStatus=publish` (el caso de
+drift que el predicado del drainer levanta, `sync/publications/route.ts:117`) pasaría el OR, pero en el
+retry el `shouldPause` del drainer (`sync/publications/route.ts:151-154`) ve `status=PAUSED` → la
+**pausa** en Woo en vez de republicar, revirtiendo el push de precio en una pausa y rompiendo el contrato
+del wrapper. `status=ACTIVE` garantiza `shouldPause=false` → el retry del drainer republica
+(`status:publish` sobre fila ya publish) = inocuo.
+
+**Quién reintenta y el invariante "no republica":** el reintento lo toma el drainer vía
+`publishProductToWoo` (`sync/publications/route.ts:157`, republica `status:publish`, A.4). Con el gate
+`status=ACTIVE` ese retry es inocuo. El invariante "no republica" del wrapper se sostiene: ni el wrapper
+ni su retry vuelven visible algo que no lo estaba.
+
+**Caveat acotado (documentar, no bloqueante):** el `publishProductToWoo` del drainer **recomputa** el
+precio con `resolvePricing` (`sync/publications/route.ts:162`), no usa el `newPrice` del wrapper. Para los
+usos previstos (BAZAR, validación 2B) `newPrice == regla` → converge igual. Un `newPrice` arbitrario ≠
+regla sería "corregido" por el retry hacia la regla — fuera del uso previsto.
+
+**Máquina de estados resultante:**
+
+| Caso | Resultado |
+|---|---|
+| guardrail falla | `{ GUARDRAIL }`, no toca Woo |
+| Woo falla (terminal) | `ERROR_TERMINAL`, `pSync=false` (fuera del drainer) |
+| Woo falla (transitorio) | `PENDING_SYNC`, `pSync=true` (drainer reintenta, inocuo por gate `status=ACTIVE`) |
+| Woo 200, DB ok | `SYNCED`, `pSync=false`, `priceInStore = lastPushedPrice = newPrice` |
+| Woo 200, DB falla | best-effort `PENDING_SYNC`, `pSync=true` (converge vía drainer/backstop) |
+
+### C.C — Forma del `Result`  [RESUELTA]
+
+**Elección: `Result` enriquecido** (no espejar `PublishResult` de A.10). El loop del flujo masivo
+necesita reporte agregado por ítem **sin re-leer DB**; `PublishResult` no distingue `ERROR_TERMINAL` de
+`PENDING_SYNC` ni el rechazo por guardrail. Expone la clasificación que el wrapper **ya** computa (vía
+`syncFieldsForWooError`) — superficie nueva, no lógica nueva.
+
+```
+type PriceOnlyOutcome =
+  | { ok: true;  wooId; newPrice; previousPrice; priceUnchanged }
+  | { ok: false; kind: "GUARDRAIL";      reason }   // Woo NUNCA tocado
+  | { ok: false; kind: "PENDING_SYNC";   error }    // transitorio (incl. 200-then-DB-fail)
+  | { ok: false; kind: "ERROR_TERMINAL"; error }    // requiere humano
+```
+
+Los `kind` espejan el `syncStatus` que el wrapper escribió → una sola fuente de verdad. `GUARDRAIL` se
+distingue porque esos ítems **nunca** tocaron Woo. Difiere de A.10 a propósito (reusabilidad > simetría
+con el molde).
+
+### C.B — Idempotencia (`newPrice == precio actual`)  [RESUELTA]
+
+**Elección: NO early-exit.** Siempre llama a Woo, siempre emite EventLog, **sin flag de forzar**.
+
+Razones encadenadas:
+1. La validación 2B "mismo precio = no-op observable" **muere** si cortocircuita; con always-push la validación **es** el path normal.
+2. Que la DB diga "ya está en X" no implica que Woo esté en X (el cliente edita a mano — ceguera D2 §1); always-push impone la autoridad igual.
+3. **Interlock con C.D:** el retry de 200-then-DB-fail **es** un re-push del mismo precio; cortocircuitar con precio igual lo saltearía y nunca convergería → rompería D.
+
+**EventLog:** `WOO_SYNC_SUCCESS` siempre; cuando `previousPrice == newPrice` se etiqueta
+`priceUnchanged:true` en metadata (alimenta el `priceUnchanged` del Result). **Qué baseline define
+"igual" depende de A** (C.A).
+
+### C.A — `previousPrice` del EventLog  [SIGUE ABIERTA — pendiente de Daniel]
+
+**Aclaración clave:** `previousPrice` **NO** es una de las tres patas del triple cruce de 2B. Las tres
+patas son `{lastPushedPrice tras el push}` == `{newPrice en el log}` == `{regular_price en Woo}`.
+`previousPrice` es el "antes", metadata informativa. Por lo tanto el argumento "`previousPrice` debe ser
+autoridad para el cruce" está **sobredimensionado**: el cruce no lo usa.
+
+**El trade-off real:** la Opción 2 da una señal limpia de no-op para la validación (`previousPrice ==
+newPrice` cuando la autoridad no cambió), pero su costo es un **EventLog heterogéneo** — el push emite
+`previousPrice = priceInStore` previo (observación, A.5) y el wrapper emitiría `previousPrice =
+lastPushedPrice` previo (autoridad): el mismo campo, mismo tipo de evento, **dos semánticas según el
+emisor**. Es la misma sobrecarga que sufre `priceInStore` — justo la enfermedad que D2 quiere matar.
+
+**Las tres salidas (enunciadas, sin elegir):**
+- **(a) Opción 1:** `previousPrice = priceInStore` previo. Homogéneo con el push (A.5), a costa de que el "antes" esté teñido por pulls.
+- **(b) Opción 2 + migrar también el push a Opción 2 más adelante** (homogeneizar para adelante). Scope acoplado a D2, más grande que este wrapper.
+- **(c) Opción 2 sólo en el wrapper**, aceptando y documentando la heterogeneidad del EventLog.
+
+**Estado:** decisión pendiente de Daniel. Condiciona el `priceUnchanged` de C.B (qué baseline define
+"igual").
+
+---
+
+## Contrato actualizado del wrapper (C.D / C.C / C.B; A como variable pendiente)
+
+- **Firma:** `updatePriceOnlyInWoo(prisma, client, publicationId, newPrice)` — servicio puro reutilizable.
+- **Precondiciones (guardrail, fail-closed):** `newPrice > 0`; `externalProductId` presente;
+  **`status = ACTIVE`** (corrección C.D). Si fallan → `{ GUARDRAIL }`, no toca Woo.
+- **Secuencia:** resolver publication → leer `previousPrice` (**baseline pendiente de C.A**) → guardrails
+  → **push-first** `{regular_price}` → Woo 200 → DB (`priceInStore=newPrice`, `lastPushedPrice=newPrice`,
+  `SYNCED`, `pSync=false`, `syncError=null`, `lastSyncedAt/lastSyncAt=now()`; **no toca**
+  `status`/`externalStatus`/`sku`/`externalSku`/`internalStatus`/títulos) → EventLog `WOO_SYNC_SUCCESS`
+  siempre `{wooId, previousPrice, newPrice, priceUnchanged}` → return `PriceOnlyOutcome`. Errores:
+  Woo-fail → `syncFieldsForWooError`; 200-then-DB-fail → best-effort `PENDING_SYNC`.
+- **Invariantes (Gate 0, intactos):** no `status` → no republica; no `sku` → sin guard 3; no marca drift;
+  éxito `pSync=false` → no encola. **Nuevo (C.D):** el único retry que republica es el del drainer,
+  inocuo por gate `status=ACTIVE`.
+
+---
+
+**Cierre de la Sección C.** C.D, C.C y C.B quedan **cerradas**. **C.A sigue pendiente de Daniel** y debe
+decidirse antes de Gate 2 (implementación), porque fija el baseline de `previousPrice` / `priceUnchanged`.
