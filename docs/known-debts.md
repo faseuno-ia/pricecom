@@ -8,6 +8,18 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## 2026-06-13 — Semántica de `EventLog.metadata.previousPrice` formalizada
+
+`previousPrice` en el metadata de `WOO_SYNC_SUCCESS` significa **observación** (`priceInStore` previo),
+homogéneo entre `publishProductToWoo` y el wrapper price-only — **NO** autoridad (`lastPushedPrice`).
+La señal de autoridad es `priceUnchanged` (= `lastPushedPrice` previo == `newPrice`), derivada aparte.
+Formalizado en `docs/price-only-wrapper-design.md` C.A (cuarta vía). Hoy **nadie** lee
+`metadata.previousPrice` (census verificado: 1 emisor, 0 lectores), así que la semántica no está
+defendida por ningún consumidor. Si en el futuro un dashboard / auditoría / analytics lee ese campo,
+debe respetar esta semántica y no reinterpretarla informalmente como autoridad.
+
+---
+
 ## No existe un "refresh seguro de espejo" Woo→PricEcom (solo el pull de blast radius amplio)
 
 **Prioridad:** Media — no rompe nada en estado estable, pero **bloquea operaciones quirúrgicas** que
