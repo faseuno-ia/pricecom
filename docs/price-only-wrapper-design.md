@@ -1,7 +1,7 @@
 # Wrapper price-only (`updatePriceOnlyInWoo`) — diseño
 
 **Fecha:** 2026-06-13
-**Estado:** Gate 0 cerrado en lo verificado; decisiones de implementación abiertas para Gate 1.
+**Estado:** Gate 1 COMPLETO (las cuatro decisiones resueltas); Gate 2 (implementación) desbloqueado.
 
 **Qué es el wrapper:** un servicio puro y reutilizable —`updatePriceOnlyInWoo`— que pushea **solo el
 precio** de un producto a WooCommerce **sin tocar status, SKU ni el resto de la publicación**. Pensado
@@ -85,10 +85,10 @@ desconectada (`client.ts:254-256`, manda solo `{ regular_price }`).
 > Inventario de decisiones pendientes. Para cada una: la tensión y las opciones legítimas. **No se
 > recomienda, no se elige, no se prejuzga nada acá.** Gate 1 las resuelve.
 
-> **Estado:** RESUELTA en la Sección C (C.D / C.C / C.B). La decisión **A** sigue abierta — ver C.A.
+> **Estado:** RESUELTA en la Sección C. Las **cuatro** decisiones cerradas (C.D / C.C / C.B; y **A** en C.A — cuarta vía).
 
 ### A. `previousPrice` en el EventLog del wrapper
-> **→ Sigue abierta. Ver C.A.**
+> **→ Resuelta en C.A (cuarta vía).**
 - **Opción 1:** `previousPrice = priceInStore` previo (lo que hace el molde hoy, A.5 — consistente con el
   push).
 - **Opción 2:** `previousPrice = lastPushedPrice` previo (baseline de autoridad 2B).
@@ -202,49 +202,63 @@ Razones encadenadas:
 2. Que la DB diga "ya está en X" no implica que Woo esté en X (el cliente edita a mano — ceguera D2 §1); always-push impone la autoridad igual.
 3. **Interlock con C.D:** el retry de 200-then-DB-fail **es** un re-push del mismo precio; cortocircuitar con precio igual lo saltearía y nunca convergería → rompería D.
 
-**EventLog:** `WOO_SYNC_SUCCESS` siempre; cuando `previousPrice == newPrice` se etiqueta
-`priceUnchanged:true` en metadata (alimenta el `priceUnchanged` del Result). **Qué baseline define
-"igual" depende de A** (C.A).
+**EventLog:** `WOO_SYNC_SUCCESS` siempre. La señal `priceUnchanged` se computa contra **`lastPushedPrice`
+previo** (`priceUnchanged = lastPushedPrice previo == newPrice`, decisión C.A — cuarta vía) y se etiqueta
+en metadata (alimenta el `priceUnchanged` del Result). El campo logueado `previousPrice` sigue siendo
+`priceInStore` previo (observación, homogéneo con el push); `priceUnchanged` es señal derivada aparte.
 
-### C.A — `previousPrice` del EventLog  [SIGUE ABIERTA — pendiente de Daniel]
+### C.A — `previousPrice` del EventLog  [RESUELTA — cuarta vía]
 
-**Aclaración clave:** `previousPrice` **NO** es una de las tres patas del triple cruce de 2B. Las tres
-patas son `{lastPushedPrice tras el push}` == `{newPrice en el log}` == `{regular_price en Woo}`.
-`previousPrice` es el "antes", metadata informativa. Por lo tanto el argumento "`previousPrice` debe ser
-autoridad para el cruce" está **sobredimensionado**: el cruce no lo usa.
+**Decisión: cuarta vía — desacoplar la metadata histórica de la señal de validación.** El doc había
+acoplado `previousPrice` (metadata) con `priceUnchanged` (señal); son separables, y se separan:
+- **`previousPrice` = `priceInStore` previo** — logueado en el EventLog, **homogéneo con el push** (A.5):
+  el mismo campo significa lo mismo lo emita el push o el wrapper = observación previa.
+- **`priceUnchanged` = (`lastPushedPrice` previo == `newPrice`)** — señal de no-op **derivada**, computada
+  aparte del campo logueado, usando el baseline de autoridad 2B.
 
-**El trade-off real:** la Opción 2 da una señal limpia de no-op para la validación (`previousPrice ==
-newPrice` cuando la autoridad no cambió), pero su costo es un **EventLog heterogéneo** — el push emite
-`previousPrice = priceInStore` previo (observación, A.5) y el wrapper emitiría `previousPrice =
-lastPushedPrice` previo (autoridad): el mismo campo, mismo tipo de evento, **dos semánticas según el
-emisor**. Es la misma sobrecarga que sufre `priceInStore` — justo la enfermedad que D2 quiere matar.
+**Por qué:** desacoplarlos da las dos cosas a la vez — EventLog homogéneo con el push **y** señal de no-op
+limpia — sin el compromiso de migrar `publishProductToWoo` (salida b) ni la heterogeneidad semántica del
+mismo campo (salida c).
 
-**Las tres salidas (enunciadas, sin elegir):**
-- **(a) Opción 1:** `previousPrice = priceInStore` previo. Homogéneo con el push (A.5), a costa de que el "antes" esté teñido por pulls.
-- **(b) Opción 2 + migrar también el push a Opción 2 más adelante** (homogeneizar para adelante). Scope acoplado a D2, más grande que este wrapper.
-- **(c) Opción 2 sólo en el wrapper**, aceptando y documentando la heterogeneidad del EventLog.
+**Fundamento de compatibilidad (census verificado contra código):** un solo emisor de `WOO_SYNC_SUCCESS`
+(`publication-service.ts:421`); **cero lectores de `metadata.previousPrice`** en todo el repo (los dos
+lectores de EventLog —`app/(app)/activity/page.tsx` y `app/(app)/dashboard/page.tsx`— lo tratan como
+display opaco; el único acceso a `.metadata` es el writer, `lib/events/event-log.ts:52`); `lastPushedPrice`
+**sin lector** en código (solo se escribe, `publication-service.ts:361/381`) y el "triple cruce" de 2B
+**no implementado**. Por lo tanto nada depende hoy de la semántica de `previousPrice` → la cuarta vía no
+rompe consumidores.
 
-**Estado:** decisión pendiente de Daniel. Condiciona el `priceUnchanged` de C.B (qué baseline define
-"igual").
+> **Nota honesta:** como hoy **nadie** lee `previousPrice`, el census da *compatible para las cuatro
+> salidas* (a/b/c/cuarta vía). La cuarta vía se elige por el mejor set-up futuro (log homogéneo + señal
+> limpia) a **costo presente cero**, no por evitar una ruptura actual.
+
+**Salidas previas (conservadas como registro del trade-off — descartadas a favor de la cuarta vía):**
+- ~~(a)~~ `previousPrice = priceInStore` previo, sin señal de no-op derivada — descartada (no da la señal limpia).
+- ~~(b)~~ Opción 2 + migrar el push — descartada (scope acoplado a D2, más grande que el wrapper).
+- ~~(c)~~ Opción 2 solo en el wrapper — descartada (heterogeneidad semántica del mismo campo).
 
 ---
 
-## Contrato actualizado del wrapper (C.D / C.C / C.B; A como variable pendiente)
+## Contrato actualizado del wrapper (C.D / C.C / C.B / C.A — cerrado)
 
 - **Firma:** `updatePriceOnlyInWoo(prisma, client, publicationId, newPrice)` — servicio puro reutilizable.
 - **Precondiciones (guardrail, fail-closed):** `newPrice > 0`; `externalProductId` presente;
   **`status = ACTIVE`** (corrección C.D). Si fallan → `{ GUARDRAIL }`, no toca Woo.
-- **Secuencia:** resolver publication → leer `previousPrice` (**baseline pendiente de C.A**) → guardrails
-  → **push-first** `{regular_price}` → Woo 200 → DB (`priceInStore=newPrice`, `lastPushedPrice=newPrice`,
-  `SYNCED`, `pSync=false`, `syncError=null`, `lastSyncedAt/lastSyncAt=now()`; **no toca**
+- **Secuencia:** resolver publication → leer `priceInStore` previo (→ `previousPrice`) y `lastPushedPrice`
+  previo (→ señal `priceUnchanged`) (C.A — cuarta vía) → guardrails → **push-first** `{regular_price}` →
+  Woo 200 → DB (`priceInStore=newPrice`, `lastPushedPrice=newPrice`, `SYNCED`, `pSync=false`,
+  `syncError=null`, `lastSyncedAt/lastSyncAt=now()`; **no toca**
   `status`/`externalStatus`/`sku`/`externalSku`/`internalStatus`/títulos) → EventLog `WOO_SYNC_SUCCESS`
-  siempre `{wooId, previousPrice, newPrice, priceUnchanged}` → return `PriceOnlyOutcome`. Errores:
-  Woo-fail → `syncFieldsForWooError`; 200-then-DB-fail → best-effort `PENDING_SYNC`.
+  siempre `{wooId, previousPrice = priceInStore previo, newPrice, priceUnchanged = (lastPushedPrice previo == newPrice)}`
+  → return `PriceOnlyOutcome`. Errores: Woo-fail → `syncFieldsForWooError`; 200-then-DB-fail →
+  best-effort `PENDING_SYNC`.
 - **Invariantes (Gate 0, intactos):** no `status` → no republica; no `sku` → sin guard 3; no marca drift;
   éxito `pSync=false` → no encola. **Nuevo (C.D):** el único retry que republica es el del drainer,
   inocuo por gate `status=ACTIVE`.
 
 ---
 
-**Cierre de la Sección C.** C.D, C.C y C.B quedan **cerradas**. **C.A sigue pendiente de Daniel** y debe
-decidirse antes de Gate 2 (implementación), porque fija el baseline de `previousPrice` / `priceUnchanged`.
+**Cierre de la Sección C.** Las cuatro decisiones (C.D / C.C / C.B / C.A) quedan **cerradas**. C.A se
+resolvió por la **cuarta vía** (`previousPrice = priceInStore` previo, homogéneo con el push;
+`priceUnchanged` derivado de `lastPushedPrice` previo). **Gate 1 completo → Gate 2 (implementación)
+desbloqueado.**
