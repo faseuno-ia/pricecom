@@ -1,0 +1,92 @@
+[
+  {
+    "id": 40003,
+    "name": "REMERA TALLES VARIOS (VARIABLE C/ RANGO)",
+    "sku": "",
+    "description": "",
+    "permalink": "https://importadorahaote.com/product/remera-talles/",
+    "type": "variable",
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "prices": {
+      "price": "5000",
+      "regular_price": "5000",
+      "sale_price": "5000",
+      "price_range": { "min_amount": "5000", "max_amount": "7000" },
+      "currency_code": "ARS",
+      "currency_minor_unit": 0
+    },
+    "images": [
+      { "id": 104, "src": "https://importadorahaote.com/wp-content/uploads/remera.jpg" }
+    ],
+    "categories": [{ "id": 13, "name": "Indumentaria", "slug": "indumentaria" }]
+  },
+  {
+    "id": 40004,
+    "name": "PELOTA COLORES (VARIABLE SIN RANGO)",
+    "sku": "",
+    "description": "",
+    "permalink": "https://importadorahaote.com/product/pelota-colores/",
+    "type": "variable",
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "prices": {
+      "price": "2200",
+      "regular_price": "2200",
+      "sale_price": "2200",
+      "price_range": null,
+      "currency_code": "ARS",
+      "currency_minor_unit": 0
+    },
+    "images": [
+      { "id": 105, "src": "https://importadorahaote.com/wp-content/uploads/pelota.jpg" }
+    ],
+    "categories": [{ "id": 14, "name": "Pelotas", "slug": "pelotas" }]
+  },
+  {
+    "id": 40005,
+    "name": "PRODUCTO SIN IMAGEN NI CATEGORIA",
+    "sku": "",
+    "description": "",
+    "permalink": "https://importadorahaote.com/product/sin-imagen/",
+    "type": "simple",
+    "is_purchasable": true,
+    "is_in_stock": false,
+    "prices": {
+      "price": "1000",
+      "regular_price": "1000",
+      "sale_price": "1000",
+      "price_range": null,
+      "currency_code": "ARS",
+      "currency_minor_unit": 0
+    },
+    "images": [],
+    "categories": []
+  },
+  {
+    "id": 40006,
+    "name": "LED STRIP RGB 5M",
+    "sku": "",
+    "description": "Tira LED RGB de 5 metros con controlador.",
+    "permalink": "https://ledmoments.com/product/led-strip-rgb-5m/",
+    "type": "simple",
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "prices": {
+      "price": "1590000",
+      "regular_price": "1590000",
+      "sale_price": "1590000",
+      "price_range": null,
+      "currency_code": "ARS",
+      "currency_minor_unit": 2
+    },
+    "images": [
+      { "id": 106, "src": "https://ledmoments.com/wp-content/uploads/led-strip.jpg" },
+      { "id": 107, "src": "https://ledmoments.com/wp-content/uploads/led-strip-2.jpg" }
+    ],
+    "categories": [
+      { "id": 20, "name": "Iluminación", "slug": "iluminacion" },
+      { "id": 21, "name": "Tiras LED", "slug": "tiras-led" }
+    ]
+  }
+]
