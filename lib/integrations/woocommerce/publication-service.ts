@@ -29,7 +29,7 @@ export interface PublishResult {
 //   terminal / unknown      → ERROR_TERMINAL + pendingSync=false (requiere
 //     intervención humana; NO se reintenta solo; sale del drainer POR VALOR).
 // Nunca se escribe pp.status (eje operativo): el fallo de sync vive en el eje sync.
-function syncFieldsForWooError(err: unknown): {
+export function syncFieldsForWooError(err: unknown): {
   syncStatus: "PENDING_SYNC" | "ERROR_TERMINAL";
   pendingSync: boolean;
 } {
