@@ -28,6 +28,8 @@ model User {
 enum ProviderType {
   /// Catálogo obtenido vía web scraping automatizado.
   SCRAPER
+  /// Catálogo obtenido vía WooCommerce Store API (JSON), sin scraping de HTML.
+  WOO_STORE_API
   /// Carga manual producto por producto (sin scraping).
   MANUAL
   /// Carga masiva por archivo Excel/CSV.
