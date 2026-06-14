@@ -8,51 +8,59 @@ solución concreta cuando se decida atacarla.
 
 ---
 
-## 2026-06-14 — Los pushes price-only (wrapper) no refrescan el front público de Woo; SpeedyCache no tiene API de purga externa
+## 2026-06-14 — Los pushes price-only (wrapper) no refrescan el front público de Woo
 
 **Síntoma observado:** tras `updatePriceOnlyInWoo` (8255→8256, producto 10248/TP-480647), el GET directo a
 la API de Woo confirmó `regular_price="8256.00"` (el dato canónico se actualizó), pero la página pública de
 la tienda siguió mostrando 8255 por >10min, pese a auto-purga de SpeedyCache configurada. El dato en Woo es
 correcto; lo que no refresca es la caché de página del front público.
 
-**Causa — DEMOSTRADO por código (no es "REST sí/no purga"):**
-La diferencia no es API REST vs panel —ambos paths usan REST—. Es **tocar status vs no tocar status**:
-- "Sincronizar" (botón) → `app/api/my-store/sync/publications/route.ts:155-162` → `publishProductToWoo`,
-  cuyo `updatePayload` manda `status:"publish"` (`publication-service.ts:244-245`) vía `updateProduct`
-  (`:293`). Republica en cada sync. → el front SÍ refresca (observado: cambiar precio + Sincronizar refresca;
-  pause+publish también).
-- Wrapper `updatePriceOnlyInWoo` → `updateProductPrice` → `updateProduct(id, { regular_price })`
-  (`client.ts:254-256`), SOLO `regular_price`, sin status, sin sku, por diseño "no republica"
-  (`price-only-service.ts`). → el front NO refresca.
-La diferencia de payload (status vs no-status) está demostrada leyendo el código.
+**DEMOSTRADO (código + observación):**
+1. `publishProductToWoo` manda `status:"publish"` además del precio (`publication-service.ts:244-245`,
+   enviado vía `updateProduct` `:293`).
+2. `updatePriceOnlyInWoo` manda únicamente `regular_price` (`client.ts:254-256`), sin status ni sku.
+3. El botón "Sincronizar" pasa por `publishProductToWoo` (`sync/publications/route.ts:155-162`, rama no-pause).
+4. Pause→Publish refresca el front público (observado).
+5. Sincronizar refresca el front público (observado).
+6. El wrapper price-only actualiza Woo correctamente (verificado por GET a la API y en admin, 8256).
+7. El wrapper price-only NO refrescó el front público inmediatamente (>10min).
 
-**Causa — HIPÓTESIS (no verificada, fuera del código):** que ese `status:"publish"` sea el trigger exacto
-de la auto-purga de SpeedyCache (hook tipo save_post). Es comportamiento del plugin de WordPress; consistente
-con todo lo observado pero NO demostrado. Se probaría con un experimento controlado o confirmando la config
-de SpeedyCache con el cliente.
+**NO DEMOSTRADO (hipótesis sobre el mecanismo — varias compatibles con la evidencia):**
+- que `status:"publish"` sea el trigger de la purga (hook tipo `transition_post_status`); pero reescribir
+  "publish" sobre algo ya publish no sería una *transición* real, y Sincronizar igual refresca → debilita
+  esta variante, no la prueba.
+- que el trigger sea `updateProduct()` disparando un hook de WooCommerce (`woocommerce_update_product`)
+  independiente del status.
+- que sea una integración/config específica del WordPress de ESTE cliente.
+La evidencia (diferencia de payload + síntoma) NO distingue entre estas. El mecanismo causal queda ABIERTO;
+se resolvería con experimento controlado o inspeccionando la config del WP del cliente.
 
-**Hallazgo bloqueante para la solución (doc oficial speedycache.com/docs, 2026-06-14):** SpeedyCache NO
-expone una API de purga externa (no hay endpoint REST tipo Cloudflare/Fastly que PricEcom pueda llamar
-desde afuera). Su purga es por panel de admin o por hooks internos de WordPress. → La solución "ideal" (el
-wrapper llama post-push a una API de purga de SpeedyCache) NO es construible: esa API no existe.
+**Sobre soluciones de purga — lo que se buscó vs lo que se concluye:**
+DEMOSTRADO: no se encontró una API REST pública documentada de SpeedyCache (revisado el índice de
+speedycache.com/docs, 2026-06-14 — todas las secciones son de panel/config; ninguna de API/REST/webhooks).
+NO CONCLUIDO: que no exista solución programática utilizable por PricEcom. Siguen sin explorar y NO
+dependen de que SpeedyCache publique una REST API:
+- endpoint WordPress propio (mu-plugin que exponga una ruta de purga).
+- función PHP interna de SpeedyCache invocable desde un hook/mu-plugin.
+- WP-CLI (`wp speedycache ...` o `wp_cache_flush()`).
+- acción AJAX autenticada de WordPress.
+- purga vía CDN si hay uno por delante (Cloudflare, etc.).
+- otro plugin de caché coexistiendo con su propio mecanismo de purga.
+Casi todos viven en el WP del cliente (no en PricEcom) → probablemente requieren coordinación/acceso del
+cliente. Pero la afirmación firme es solo "no hay REST API pública documentada", no "no hay solución".
 
-**Implicación: la solución toca el WordPress del cliente, NO es resoluble solo desde PricEcom.** Opciones:
-1. mu-plugin/snippet en el WP del cliente que purgue la página del producto en updates por REST (correcto,
-   pero requiere que el cliente lo instale — no tenemos acceso al admin).
-2. endpoint custom de purga en el WP del cliente que PricEcom llame post-push (construible, código del lado
-   cliente, coordinar con él).
-3. aceptar/comunicar el delay: el precio en Woo siempre es correcto; el público lo ve al expirar el cache
-   lifespan o con purga manual. Cero código si el negocio tolera el delay.
-4. (DESCARTADA) meterle status al wrapper — rompería su invariante "no republica", su razón de ser.
+**Descartado:** meterle status al wrapper para forzar la purga — rompería su invariante "no republica",
+su razón de ser.
 
-**Antes de exponer el wrapper a un caller que el cliente mire (UI / BAZAR / LACHIPELU): resolver esto.**
-Si no, el cliente cambiará el precio, el push aplicará correctamente en Woo, y el cliente —mirando la tienda
-pública— verá el precio viejo y creerá que "no funcionó". Incidente de confianza con todo técnicamente bien.
+**Impacto (alto) antes de exponer el wrapper a un caller que el cliente mire (UI/BAZAR/LACHIPELU):** el
+cliente cambiaría el precio, el push aplicaría correctamente en Woo, y el cliente —mirando la tienda
+pública— vería el precio viejo y creería que "no funcionó". Incidente de confianza con todo técnicamente bien.
 
-**Próximo paso: conversación con el cliente, no sprint de código.** Definir: (a) cache lifespan configurado
-(¿el delay es tolerable solo?), (b) ¿dispuesto a instalar un snippet/mu-plugin?, (c) ¿criticidad de reflejo
-inmediato vs minutos/horas? La respuesta decide entre opción 1/2 (código WP del cliente) o la opción 3
-(aceptar/comunicar el delay).
+**Próximo paso: diagnóstico del mecanismo + conversación con el cliente, NO sprint de código aún.** Definir:
+(a) cache lifespan configurado (¿el delay es tolerable solo?), (b) qué dispara realmente la purga en SU WP
+(experimento o inspección), (c) ¿dispuesto a instalar un mu-plugin/snippet?, (d) criticidad de reflejo
+inmediato vs minutos/horas. Recién con eso se elige entre purga programática (código WP del cliente) o
+aceptar/comunicar el delay.
 
 ---
 
