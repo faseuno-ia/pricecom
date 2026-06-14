@@ -80,7 +80,7 @@ function makePrisma(
 }
 
 // updatePriceImpl permite resolver un WooProduct o lanzar un WooApiError.
-function makeClient(updatePriceImpl?: (...args: unknown[]) => Promise<unknown>) {
+function makeClient(updatePriceImpl?: (id: number, price: number) => Promise<unknown>) {
   return {
     updateProductPrice: vi.fn(
       updatePriceImpl ?? (async (id: number) => wooProduct(id))
@@ -334,8 +334,12 @@ describe("updatePriceOnlyInWoo — C.D: 200-then-DB-fail (branch deliberado)", (
     // que NO es el write de baseline fallido — setea syncStatus sin tocar priceInStore),
     // ese write deja PENDING_SYNC + pendingSync=true. No se exige que exista ni su forma.
     const writeDatas = [
-      ...update.mock.calls.map((c) => (c[0] as { data?: Record<string, unknown> })?.data),
-      ...updateMany.mock.calls.map((c) => (c[0] as { data?: Record<string, unknown> })?.data),
+      ...update.mock.calls.map(
+        (c) => ((c as unknown[])[0] as { data?: Record<string, unknown> } | undefined)?.data
+      ),
+      ...updateMany.mock.calls.map(
+        (c) => ((c as unknown[])[0] as { data?: Record<string, unknown> } | undefined)?.data
+      ),
     ].filter(Boolean) as Record<string, unknown>[];
     const recoveryWrites = writeDatas.filter(
       (d) => "syncStatus" in d && !("priceInStore" in d)
