@@ -20,7 +20,12 @@ export type FetchFn = (url: string) => Promise<FetchLikeResponse>;
 export interface WooStoreApiOptions {
   /** Base del sitio Woo (ej. "https://importadorahaote.com"). */
   baseUrl: string;
-  /** Prefijo del SKU comercial (ej. "ELY-"); el sku de la API se ignora. */
+  /**
+   * Prefijo del SKU COMERCIAL del proveedor (ej. "ELY-"). NO se usa para el
+   * sku del proveedor (ScrapedProduct.sku = id pelado): el prefijo se aplica
+   * recién al publicar, donde el SKU comercial = provider.skuPrefix + cp.sku.
+   * Se mantiene en la firma por compatibilidad con el call site del worker.
+   */
   skuPrefix: string;
   /** Fetch inyectado (no se usa `fetch` global directo). */
   fetchFn: FetchFn;
@@ -76,7 +81,7 @@ function shouldExclude(p: WooApiProduct): boolean {
   return isNotPurchasable(p) || isBundle(p) || isVariableWithRange(p);
 }
 
-function mapProduct(p: WooApiProduct, skuPrefix: string): ScrapedProduct {
+function mapProduct(p: WooApiProduct): ScrapedProduct {
   // Precio CRUDO (sin descuento — el listDiscountPercent lo aplica el pricing-engine).
   // Number(price) / 10^minor_unit: Haote minor=0 → /1; LEDMOMENTS minor=2 → /100.
   const minor = p.prices?.currency_minor_unit ?? 0;
@@ -88,7 +93,7 @@ function mapProduct(p: WooApiProduct, skuPrefix: string): ScrapedProduct {
   const lastCat = cats.length > 0 ? cats[cats.length - 1] : undefined;
 
   return {
-    sku: `${skuPrefix}${p.id}`, // el sku de la API viene "" → se ignora
+    sku: String(p.id), // id pelado; el prefijo se aplica al publicar (SKU comercial), NO acá
     name: p.name ?? "",
     description: p.description ? p.description : null, // "" → null
     wholesalePrice,
@@ -102,22 +107,20 @@ function mapProduct(p: WooApiProduct, skuPrefix: string): ScrapedProduct {
   };
 }
 
-function collectPage(
-  body: unknown,
-  out: ScrapedProduct[],
-  skuPrefix: string
-): void {
+function collectPage(body: unknown, out: ScrapedProduct[]): void {
   const items = Array.isArray(body) ? (body as WooApiProduct[]) : [];
   for (const item of items) {
     if (shouldExclude(item)) continue;
-    out.push(mapProduct(item, skuPrefix));
+    out.push(mapProduct(item));
   }
 }
 
 export async function extractWooStoreApi(
   opts: WooStoreApiOptions
 ): Promise<ScrapedProduct[]> {
-  const { baseUrl, skuPrefix, fetchFn, onProgress, onLog } = opts;
+  // skuPrefix existe en opts pero NO se usa acá (ver comentario en la interfaz):
+  // el sku del proveedor es el id pelado; el prefijo se aplica al publicar.
+  const { baseUrl, fetchFn, onProgress, onLog } = opts;
   const root = baseUrl.replace(/\/+$/, "");
   const urlFor = (page: number) =>
     `${root}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
@@ -138,7 +141,7 @@ export async function extractWooStoreApi(
   const parsedTotal = parseInt(totalPagesHeader ?? "", 10);
   const totalPages = Number.isFinite(parsedTotal) && parsedTotal >= 1 ? parsedTotal : 1;
 
-  collectPage(await first.json(), products, skuPrefix);
+  collectPage(await first.json(), products);
   await onProgress?.(1, totalPages, products.length);
 
   for (let page = 2; page <= totalPages; page++) {
@@ -149,7 +152,7 @@ export async function extractWooStoreApi(
       await onLog?.("ERROR", msg, { status: res.status, page });
       throw new Error(msg);
     }
-    collectPage(await res.json(), products, skuPrefix);
+    collectPage(await res.json(), products);
     await onProgress?.(page, totalPages, products.length);
   }
 

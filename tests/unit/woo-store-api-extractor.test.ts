@@ -56,8 +56,9 @@ describe("extractWooStoreApi — paginación", () => {
 
     // Válidos: 31385 (p1) + 40004, 40005, 40006 (p2) = 4 (los excluidos se filtran).
     expect(res).toHaveLength(4);
+    // sku = id pelado del proveedor (sin prefijo); el prefijo se aplica al publicar.
     expect(skus(res)).toEqual(
-      expect.arrayContaining(["ELY-31385", "ELY-40004", "ELY-40005", "ELY-40006"])
+      expect.arrayContaining(["31385", "40004", "40005", "40006"])
     );
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatch(/page=1/);
@@ -78,25 +79,25 @@ describe("extractWooStoreApi — filtros de exclusión", () => {
   it("excluye is_purchasable === false (no comprables)", async () => {
     const { fetchFn } = makeFetch([PAGE1]); // 40001 no comprable
     const res = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn });
-    expect(skus(res)).not.toContain("ELY-40001");
+    expect(skus(res)).not.toContain("40001");
   });
 
   it("excluye type === 'woosb' (bundles/combos)", async () => {
     const { fetchFn } = makeFetch([PAGE1]); // 40002 woosb
     const res = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn });
-    expect(skus(res)).not.toContain("ELY-40002");
+    expect(skus(res)).not.toContain("40002");
   });
 
   it("excluye variable con prices.price_range != null", async () => {
     const { fetchFn } = makeFetch([PAGE2]); // 40003 variable c/ rango
     const res = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn });
-    expect(skus(res)).not.toContain("ELY-40003");
+    expect(skus(res)).not.toContain("40003");
   });
 
   it("INCLUYE variable sin price_range (válido)", async () => {
     const { fetchFn } = makeFetch([PAGE2]); // 40004 variable sin rango
     const res = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn });
-    expect(skus(res)).toContain("ELY-40004");
+    expect(skus(res)).toContain("40004");
   });
 });
 
@@ -105,7 +106,7 @@ describe("extractWooStoreApi — mapeo al contrato ScrapedProduct", () => {
   it("mapea un producto simple válido", async () => {
     const { fetchFn } = makeFetch([[byId(31385)]]);
     const [p] = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn });
-    expect(p.sku).toBe("ELY-31385"); // sku de la API ("") se ignora
+    expect(p.sku).toBe("31385"); // id pelado; la API trae sku "" y se ignora; el prefijo se aplica al publicar
     expect(p.wholesalePrice).toBe(3500); // minor_unit 0 → /1, crudo sin descuento
     expect(p.name).toBe("AUTO DE FRICCIÓN SUPER RACER");
     expect(p.description).toBeNull(); // "" → null
@@ -138,16 +139,18 @@ describe("extractWooStoreApi — precio por currency_minor_unit", () => {
   });
 });
 
-// ── 5. SKU PREFIX parametrizado ──────────────────────────────────────────────────
-describe("extractWooStoreApi — skuPrefix parametrizado (no hardcodeado)", () => {
-  it("usa el prefix recibido: 'ELY-' y 'LEDM-'", async () => {
+// ── 5. SKU = id pelado, INDEPENDIENTE del skuPrefix ──────────────────────────────
+describe("extractWooStoreApi — sku = id pelado (el prefijo NO afecta el sku)", () => {
+  it("el sku es el id del proveedor sin prefijo, cualquiera sea el skuPrefix", async () => {
+    // Mismo id (31385) con dos prefijos distintos → el sku NO cambia: es "31385".
+    // El skuPrefix se aplica recién al publicar (SKU comercial), no acá.
     const { fetchFn: f1 } = makeFetch([[byId(31385)]]);
     const [a] = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn: f1 });
-    expect(a.sku).toBe("ELY-31385");
+    expect(a.sku).toBe("31385");
 
     const { fetchFn: f2 } = makeFetch([[byId(31385)]]);
     const [b] = await extractWooStoreApi({ baseUrl: BASE, skuPrefix: "LEDM-", fetchFn: f2 });
-    expect(b.sku).toBe("LEDM-31385");
+    expect(b.sku).toBe("31385");
   });
 });
 
