@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK" | "WOO_STORE_API";
 
 interface ProviderOpt {
   id: string;
@@ -41,6 +41,7 @@ export function ManualProductForm({
       OWN_STOCK: 0,
       IMPORTED: 1,
       SCRAPER: 2,
+      WOO_STORE_API: 2,
     };
     return [...providers].sort(
       (a, b) =>

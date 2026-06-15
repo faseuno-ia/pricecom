@@ -88,7 +88,7 @@ interface CatalogRow {
     id: string;
     name: string;
     baseUrl: string;
-    providerType: "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+    providerType: "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK" | "WOO_STORE_API";
   };
   images: { id: string; url: string; isPrimary: boolean }[];
   assignedCategory: { id: string; name: string } | null;

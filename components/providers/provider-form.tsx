@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK" | "WOO_STORE_API";
 
 interface ProviderFormProps {
   provider?: {

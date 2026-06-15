@@ -13,6 +13,7 @@ import {
   Hand,
   Globe,
   Boxes,
+  Plug,
 } from "lucide-react";
 import Link from "next/link";
 import { ProviderActions } from "@/components/providers/provider-actions";
@@ -42,6 +43,11 @@ const typeBadge: Record<
     label: "Stock propio",
     className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
     icon: Boxes,
+  },
+  WOO_STORE_API: {
+    label: "Automático (API)",
+    className: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+    icon: Plug,
   },
 };
 

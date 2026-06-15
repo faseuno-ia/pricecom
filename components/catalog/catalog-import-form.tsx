@@ -6,7 +6,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { Loader2, Upload, FileSpreadsheet, BookOpen } from "lucide-react";
 
-type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
+type ProviderType = "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK" | "WOO_STORE_API";
 
 interface ProviderOpt {
   id: string;
