@@ -28,6 +28,10 @@ import {
   Plug,
 } from "lucide-react";
 import type { ProviderType } from "@prisma/client";
+import {
+  isExtractableProvider,
+  hasScraperSelectors,
+} from "@/lib/providers/provider-type";
 import { normalizeImageUrl } from "@/lib/utils";
 import {
   deriveVisualStatus,
@@ -90,15 +94,16 @@ export default async function ProviderDashboardPage({
   });
   if (!provider) notFound();
 
-  const isScraper = provider.providerType === "SCRAPER";
-  // SCRAPER y IMPORTED comparten la infraestructura de ExtractionJob +
-  // Comparison + ProductChange. SCRAPER lo alimenta el worker, IMPORTED lo
-  // alimenta POST /api/catalog/import con un job sintético source="IMPORT".
-  // Los botones de "Extraer" / "Configurar" siguen siendo exclusivos de
-  // SCRAPER.
+  // "Extraíble" = SCRAPER || WOO_STORE_API: ambos tienen botón Extraer,
+  // historial de jobs y Excel del worker. El gear "Configurar" (selectores)
+  // sigue siendo exclusivo de SCRAPER (WOO_STORE_API no tiene scraperConfig).
+  const isExtractable = isExtractableProvider(provider.providerType);
+  // SCRAPER, WOO_STORE_API e IMPORTED comparten la infraestructura de
+  // ExtractionJob + Comparison + ProductChange. SCRAPER/WOO los alimenta el
+  // worker, IMPORTED lo alimenta POST /api/catalog/import con un job sintético
+  // source="IMPORT".
   const hasExtractionHistory =
-    provider.providerType === "SCRAPER" ||
-    provider.providerType === "IMPORTED";
+    isExtractable || provider.providerType === "IMPORTED";
 
   // Where común para queries del catálogo.
   //
@@ -227,7 +232,7 @@ export default async function ProviderDashboardPage({
           },
         })
       : Promise.resolve(null),
-    isScraper
+    isExtractable
       ? prisma.extractionJob.findFirst({
           where: {
             providerId: provider.id,
@@ -241,7 +246,7 @@ export default async function ProviderDashboardPage({
     // Historial de jobs: para SCRAPER cuenta extracciones reales; para IMPORTED
     // cuenta los jobs sintéticos de import. El link discreto al final solo
     // aparece para SCRAPER (los jobs IMPORT no se ven en /extractions).
-    isScraper
+    isExtractable
       ? prisma.extractionJob.count({ where: { providerId: provider.id } })
       : Promise.resolve(0),
   ]);
@@ -364,7 +369,7 @@ export default async function ProviderDashboardPage({
               >
                 {hostname} <ExternalLink className="w-3 h-3" />
               </a>
-              {isScraper && (
+              {isExtractable && (
                 <>
                   <span className="opacity-40">·</span>
                   <span>
@@ -383,7 +388,7 @@ export default async function ProviderDashboardPage({
 
           {/* Acciones rápidas */}
           <div className="flex items-center gap-2 flex-wrap">
-            {isScraper ? (
+            {isExtractable ? (
               <>
                 <Link
                   href={`/new-extraction?providerId=${provider.id}`}
@@ -391,12 +396,14 @@ export default async function ProviderDashboardPage({
                 >
                   <Play className="w-3.5 h-3.5" /> Extraer
                 </Link>
-                <Link
-                  href={`/providers/${provider.id}/config`}
-                  className="flex items-center gap-1.5 border border-border px-3.5 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
-                >
-                  <Settings className="w-3.5 h-3.5" /> Configurar
-                </Link>
+                {hasScraperSelectors(provider.providerType) && (
+                  <Link
+                    href={`/providers/${provider.id}/config`}
+                    className="flex items-center gap-1.5 border border-border px-3.5 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5" /> Configurar
+                  </Link>
+                )}
               </>
             ) : (
               <>
@@ -420,7 +427,7 @@ export default async function ProviderDashboardPage({
             >
               <Edit className="w-3.5 h-3.5" /> Editar
             </Link>
-            {isScraper && lastExcelJob?.excelFileUrl && (
+            {isExtractable && lastExcelJob?.excelFileUrl && (
               <a
                 href={lastExcelJob.excelFileUrl}
                 download
@@ -567,7 +574,7 @@ export default async function ProviderDashboardPage({
         {catalogTotal === 0 ? (
           <div className="py-12 text-center text-sm text-muted-foreground">
             Sin productos cargados.{" "}
-            {isScraper ? (
+            {isExtractable ? (
               <Link
                 href={`/new-extraction?providerId=${provider.id}`}
                 className="text-primary hover:underline"
@@ -659,7 +666,7 @@ export default async function ProviderDashboardPage({
       </div>
 
       {/* Link discreto al historial (solo SCRAPER) */}
-      {isScraper && extractionJobsTotal > 0 && (
+      {isExtractable && extractionJobsTotal > 0 && (
         <div className="text-center">
           <Link
             href={`/extractions?providerId=${provider.id}`}

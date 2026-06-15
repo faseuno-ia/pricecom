@@ -7,6 +7,7 @@ import {
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
+import { isExtractableProvider } from "@/lib/providers/provider-type";
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireSession();
@@ -135,17 +136,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     );
   }
 
-  // wholesalePrice solo es editable por el usuario en productos no-SCRAPER.
-  // Bloqueamos a nivel API por si el cliente lo mete a mano (la UI ya oculta
-  // el campo, pero defensa en profundidad).
+  // wholesalePrice solo es editable por el usuario en productos no-extraíbles.
+  // En fuentes automáticas (SCRAPER / WOO_STORE_API) el costo lo gobierna el
+  // worker; bloqueamos a nivel API por si el cliente lo mete a mano (la UI ya
+  // oculta el campo, pero defensa en profundidad).
   if (
     parsed.data.wholesalePrice !== undefined &&
-    owned.provider.providerType === "SCRAPER"
+    isExtractableProvider(owned.provider.providerType)
   ) {
     return NextResponse.json(
       {
         error:
-          "El precio de costo de productos scraper solo lo actualiza el worker",
+          "El precio de costo de productos de extracción automática solo lo actualiza el worker",
       },
       { status: 400 }
     );

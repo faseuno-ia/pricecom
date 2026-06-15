@@ -19,6 +19,10 @@ import Link from "next/link";
 import { ProviderActions } from "@/components/providers/provider-actions";
 import { requireSession } from "@/lib/auth";
 import type { ProviderType } from "@prisma/client";
+import {
+  isExtractableProvider,
+  hasScraperSelectors,
+} from "@/lib/providers/provider-type";
 
 const typeBadge: Record<
   ProviderType,
@@ -149,7 +153,7 @@ export default async function ProvidersPage() {
             })();
             const tBadge = typeBadge[p.providerType];
             const TypeIcon = tBadge.icon;
-            const isScraper = p.providerType === "SCRAPER";
+            const isExtractable = isExtractableProvider(p.providerType);
             return (
               <div
                 key={p.id}
@@ -215,7 +219,7 @@ export default async function ProvidersPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  {isScraper ? (
+                  {isExtractable ? (
                     <>
                       <div>
                         <p className="text-muted-foreground text-[10px] uppercase tracking-wider">
@@ -264,7 +268,7 @@ export default async function ProvidersPage() {
                 </div>
 
                 <div className="relative flex items-center gap-1.5 pt-2 border-t border-border">
-                  {isScraper ? (
+                  {isExtractable ? (
                     <>
                       <Link
                         href={`/new-extraction?providerId=${p.id}`}
@@ -273,13 +277,15 @@ export default async function ProvidersPage() {
                       >
                         <Play className="w-3 h-3" /> Extraer
                       </Link>
-                      <Link
-                        href={`/providers/${p.id}/config`}
-                        className="flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md p-1.5 transition-colors"
-                        title="Selectores"
-                      >
-                        <Settings className="w-3.5 h-3.5" />
-                      </Link>
+                      {hasScraperSelectors(p.providerType) && (
+                        <Link
+                          href={`/providers/${p.id}/config`}
+                          className="flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-md p-1.5 transition-colors"
+                          title="Selectores"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                        </Link>
+                      )}
                     </>
                   ) : (
                     <>

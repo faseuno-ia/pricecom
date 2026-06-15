@@ -12,6 +12,7 @@ import { pausePublicationsForCatalogProducts } from "@/lib/integrations/woocomme
 import type { PricingRuleForCalc } from "@/lib/pricing/pricing-engine";
 import { markPublicationsDrift } from "@/lib/catalog/mark-publications-drift";
 import { logInfo } from "@/lib/events/event-log";
+import { isExtractableProvider } from "@/lib/providers/provider-type";
 
 // Acciones de usuario — NUNCA tocan supplierStatus (ese estado lo maneja
 // exclusivamente el worker / importador en base a presencia del producto en
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest) {
       },
     });
     const eligibleIds = products
-      .filter((p) => p.provider.providerType !== "SCRAPER")
+      .filter((p) => !isExtractableProvider(p.provider.providerType))
       .map((p) => p.id);
     const skipped = products.length - eligibleIds.length;
 
@@ -348,7 +349,7 @@ export async function POST(req: NextRequest) {
       },
     });
     const eligibleIds = products
-      .filter((p) => p.provider.providerType !== "SCRAPER")
+      .filter((p) => !isExtractableProvider(p.provider.providerType))
       .map((p) => p.id);
     const skipped = products.length - eligibleIds.length;
 

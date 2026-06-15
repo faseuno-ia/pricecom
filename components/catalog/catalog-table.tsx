@@ -36,6 +36,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { normalizeImageUrl } from "@/lib/utils";
+import { isExtractableProvider } from "@/lib/providers/provider-type";
 import { CatalogProductDrawer } from "./catalog-product-drawer";
 import { ApplyMarginModal } from "./apply-margin-modal";
 import { ApplyCostModal } from "./apply-cost-modal";
@@ -382,7 +383,8 @@ export function CatalogTable({
     () =>
       data.products.some(
         (p) =>
-          selectedIds.has(p.id) && p.provider.providerType !== "SCRAPER"
+          selectedIds.has(p.id) &&
+          !isExtractableProvider(p.provider.providerType)
       ),
     [data.products, selectedIds]
   );
@@ -1641,7 +1643,7 @@ export function CatalogTable({
                             >
                               <PauseCircle className="w-3 h-3" /> Pausar
                             </button>
-                            {p.provider.providerType !== "SCRAPER" &&
+                            {!isExtractableProvider(p.provider.providerType) &&
                               p.supplierStatus !== "SUPPLIER_REMOVED" && (
                                 <button
                                   type="button"

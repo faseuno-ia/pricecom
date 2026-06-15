@@ -15,6 +15,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { formatPrice, normalizeImageUrl } from "@/lib/utils";
+import { isExtractableProvider } from "@/lib/providers/provider-type";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import {
@@ -449,12 +450,13 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
       }
 
       // ── 2. PATCH del resto de campos comerciales ──
-      // wholesalePrice solo se manda si el proveedor es no-SCRAPER y el usuario
-      // ingresó un valor numérico > 0. El backend rechaza el campo en SCRAPER.
-      const isScraper = product.provider.providerType === "SCRAPER";
-      const wholesalePriceNum = !isScraper ? parseFloat(wholesalePrice) : NaN;
+      // wholesalePrice solo se manda si el proveedor es no-extraíble y el
+      // usuario ingresó un valor numérico > 0. El backend rechaza el campo en
+      // fuentes automáticas (SCRAPER / WOO_STORE_API), donde lo fija el worker.
+      const isExtractable = isExtractableProvider(product.provider.providerType);
+      const wholesalePriceNum = !isExtractable ? parseFloat(wholesalePrice) : NaN;
       const includeWholesale =
-        !isScraper && Number.isFinite(wholesalePriceNum) && wholesalePriceNum > 0;
+        !isExtractable && Number.isFinite(wholesalePriceNum) && wholesalePriceNum > 0;
 
       const res = await fetch(`/api/catalog/${product.id}`, {
         method: "PATCH",
@@ -770,13 +772,14 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                   discount > 0 &&
                   product.wholesalePrice != null &&
                   effCost != null;
-                const isScraperProvider =
-                  product.provider.providerType === "SCRAPER";
+                const isExtractableProv =
+                  isExtractableProvider(product.provider.providerType);
                 return (
                   <div className="bg-muted/20 border border-border rounded-lg p-3 space-y-2 text-xs">
-                    {/* Costo — editable en proveedores no-SCRAPER, read-only en
-                        SCRAPER (con desglose si tiene listDiscountPercent). */}
-                    {!isScraperProvider ? (
+                    {/* Costo — editable en proveedores no-extraíbles, read-only
+                        en fuentes automáticas SCRAPER / WOO_STORE_API (con
+                        desglose si tiene listDiscountPercent). */}
+                    {!isExtractableProv ? (
                       <div className="space-y-1">
                         <label className="block text-muted-foreground">
                           Precio de costo (mayorista)
