@@ -10,6 +10,7 @@ import {
 } from "../integrations/woocommerce/publication-service";
 import type { PricingRuleForCalc } from "../pricing/pricing-engine";
 import { markPublicationsDrift } from "./mark-publications-drift";
+import { toCatalogUpperCase, toCatalogUpperCaseOrNull } from "./uppercase";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -213,8 +214,8 @@ export async function upsertCatalogProducts(
     // publicationSku ya NO se setea acá (Fase 3 lazy): el SKU comercial se
     // asigna lazy al publicar en publishProductToWoo, vía ProductPublication.sku.
     const supplierDataBase = {
-      supplierName: product.name,
-      supplierDescription: product.description ?? null,
+      supplierName: toCatalogUpperCase(product.name),
+      supplierDescription: toCatalogUpperCaseOrNull(product.description),
       wholesalePrice:
         product.wholesalePrice != null ? Number(product.wholesalePrice) : null,
       stock: product.stock ?? null,
