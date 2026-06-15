@@ -24,7 +24,11 @@ export interface WooStoreApiOptions {
   skuPrefix: string;
   /** Fetch inyectado (no se usa `fetch` global directo). */
   fetchFn: FetchFn;
-  onProgress?: (currentPage: number, totalFound: number) => void | Promise<void>;
+  onProgress?: (
+    currentPage: number,
+    totalPages: number,
+    totalFound: number
+  ) => void | Promise<void>;
   onLog?: (
     level: "DEBUG" | "INFO" | "WARN" | "ERROR",
     message: string,
@@ -135,7 +139,7 @@ export async function extractWooStoreApi(
   const totalPages = Number.isFinite(parsedTotal) && parsedTotal >= 1 ? parsedTotal : 1;
 
   collectPage(await first.json(), products, skuPrefix);
-  await onProgress?.(1, products.length);
+  await onProgress?.(1, totalPages, products.length);
 
   for (let page = 2; page <= totalPages; page++) {
     const url = urlFor(page);
@@ -146,7 +150,7 @@ export async function extractWooStoreApi(
       throw new Error(msg);
     }
     collectPage(await res.json(), products, skuPrefix);
-    await onProgress?.(page, products.length);
+    await onProgress?.(page, totalPages, products.length);
   }
 
   return products;

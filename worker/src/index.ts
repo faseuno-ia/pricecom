@@ -8,7 +8,8 @@
  *   worker/src/queues/job-queue.interface.ts
  */
 import { PrismaClient, Prisma } from "@prisma/client";
-import { ScraperService } from "../../lib/scraper/scraper.service";
+import { ScraperService, type ScrapedProduct } from "../../lib/scraper/scraper.service";
+import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor";
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
@@ -89,16 +90,43 @@ async function processJob(jobId: string) {
     await queue.updateProgress(jobId, progress, totalFoundSoFar);
   };
 
-  const scraper = new ScraperService();
-
   try {
-    const products = await scraper.run({
-      provider,
-      config: provider.scraperConfig,
-      startUrl: job.startUrl,
-      onLog,
-      onProgress,
-    });
+    let products: ScrapedProduct[];
+
+    if (provider.providerType === "WOO_STORE_API") {
+      // Camino Store API (JSON). No usa Playwright ni scraperConfig.
+      // El progreso se basa en el total REAL de páginas (X-WP-TotalPages),
+      // no en maxPages (que es config de scraping HTML y no aplica acá).
+      const onProgressApi = async (
+        currentPage: number,
+        totalPages: number,
+        totalFound: number
+      ) => {
+        const progress = Math.min(
+          Math.round((currentPage / Math.max(totalPages, 1)) * 100),
+          99
+        );
+        await queue.updateProgress(jobId, progress, totalFound);
+      };
+
+      products = await extractWooStoreApi({
+        baseUrl: provider.baseUrl,
+        skuPrefix: provider.skuPrefix,
+        fetchFn: (url) => fetch(url),
+        onProgress: onProgressApi,
+        onLog,
+      });
+    } else {
+      // Camino scraper HTML — IDÉNTICO al flujo previo, sin cambios.
+      const scraper = new ScraperService();
+      products = await scraper.run({
+        provider,
+        config: provider.scraperConfig,
+        startUrl: job.startUrl,
+        onLog,
+        onProgress,
+      });
+    }
 
     // Persistir productos
     if (products.length > 0) {
