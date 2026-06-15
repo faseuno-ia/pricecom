@@ -8,6 +8,151 @@ solución concreta cuando se decida atacarla.
 
 ---
 
+## 2026-06-15 — Extractor Woo: sin retry-with-backoff ante HTTP 202
+
+**Prioridad:** Media — no rompe nada en estado estable, pero hace fallar una
+extracción cuando la caché del proveedor está calentándose.
+
+**Contexto y origen.** El extractor Store API es **fail-loud**: cualquier HTTP ≠ 200
+aborta (correcto para no upsertear listas parciales — ver
+`docs/woo-store-api-extractor-design.md`). Pero algunos sitios Woo devuelven **HTTP
+202** transitorio cuando la caché de la página se está regenerando (observado con
+Haote). El extractor lo trata como fallo terminal y aborta toda la extracción.
+
+**Impacto hoy.** Una extracción puede fallar entera por un 202 transitorio aunque
+el catálogo esté perfecto. Workaround: **reintentar manualmente** la extracción
+(el segundo intento suele pegar 200 con la caché ya caliente).
+
+**Trigger para atacarla.**
+- Extracciones programadas/automáticas (sin humano que reintente) de proveedores Woo.
+- Se observan fallos recurrentes por 202 en alguno de los proveedores.
+
+**Solución cuando importe.** Reintento con backoff acotado ante 202 (y quizá 429/503)
+antes de abortar: N reintentos con espera incremental, y solo después fail-loud.
+Mantener el fail-loud para los errores realmente terminales (4xx no transitorios).
+Contenido al extractor (`lib/extractors/woo-store-api-extractor.ts`).
+
+---
+
+## 2026-06-15 — Auto-categorización `supplierCategory` → categoría Woo (Store API)
+
+**Prioridad:** Baja / deferida — no bloquea publicar; es trabajo de conveniencia.
+
+**Contexto y origen.** El extractor Woo guarda `supplierCategory` = última categoría
+del array de la API (la más específica). Pero el **mapeo a una categoría de la
+tienda Woo es manual** hoy: nadie traduce automáticamente la categoría del proveedor
+a la taxonomía de la tienda del cliente.
+
+**Impacto hoy.** Al publicar, la categoría en la tienda se asigna a mano. Para
+proveedores con cientos de productos (Haote 1551, LEDMOMENTS 543) es tedioso, pero
+no bloquea nada.
+
+**Trigger para atacarla.** Volumen de publicación alto donde categorizar a mano sea
+inviable, o pedido explícito del cliente de categorías automáticas.
+
+**Solución cuando importe.** Tabla/heurística de mapeo `supplierCategory` →
+categoría de la tienda (por proveedor), aplicada en el flujo de publicación.
+Diseño propio cuando se priorice.
+
+---
+
+## 2026-06-15 — Extractor Woo: solo imagen principal (falta multi-imagen + storage R2)
+
+**Prioridad:** Baja — atada al sprint de storage del roadmap.
+
+**Contexto y origen.** El extractor toma solo `images[0].src` (la principal). La API
+de Woo expone el array completo de imágenes del producto, pero las **secundarias se
+descartan**.
+
+**Impacto hoy.** Los productos publicados llevan solo una imagen aunque el proveedor
+tenga varias. Aceptable mientras no haya dónde almacenarlas de forma estable.
+
+**Trigger para atacarla.** El **sprint de storage (Cloudflare R2)** del roadmap: sin
+un lugar propio para alojar imágenes, capturar las secundarias no aporta (dependerían
+de la URL del proveedor, frágil).
+
+**Solución cuando importe.** Capturar `images[].src` y, junto con el sprint de R2,
+descargar/alojar las imágenes (principal + secundarias) en storage propio y
+asociarlas al `CatalogProductImage`. Atado a esa infraestructura.
+
+---
+
+## 2026-06-15 — Updates masivos contra Neon: usar UPDATE server-side único, no N transacciones
+
+**Prioridad:** Media — patrón a respetar en todo script de write masivo; ya causó un
+fallo real (recuperable) en prod.
+
+**Contexto y origen.** La limpieza de los 2094 SKUs contaminados del frente Woo se
+hizo primero **por batches de transacciones secuenciales** (cientos de
+`prisma.$transaction` de updates). A mitad de camino Neon cortó la conexión con
+**`P1017` (Server has closed the connection)** — Neon serverless cierra conexiones
+en operaciones largas con muchos round-trips. El batch en curso rolleó (atomicidad),
+así que no hubo corrupción, pero la corrección quedó a medias (LEDMOMENTS completo,
+JUGUETES ELY 600/1551).
+
+**Impacto hoy.** Cualquier script de mantenimiento que haga muchos writes secuenciales
+contra prod corre riesgo de cortar por `P1017` y quedar a mitad. Recuperable si el
+script es **idempotente** (re-ejecutable), pero frágil.
+
+**Lección / solución.** Para writes masivos homogéneos, preferir **un `UPDATE`
+server-side único por proveedor/scope** (vía `prisma.$executeRaw` con `Prisma.sql`
+parametrizado) en vez de N transacciones desde el cliente: una sola sentencia
+atómica, mínimo tiempo de conexión, sin depender de cientos de round-trips. Así se
+cerró efectivamente la corrección de SKUs. Nota de implementación: castear los
+parámetros numéricos al tipo Postgres correcto (ej. `substring(sku FROM ${n}::int4)`,
+porque Prisma manda los números como `bigint`). Siempre con backup previo + idempotencia.
+
+---
+
+## 2026-06-15 — `provider-form` + `providerSchema` zod no soportan `WOO_STORE_API`
+
+**Prioridad:** Baja — la creación por script funciona; esto solo bloquea el alta/edición por UI.
+
+**Contexto y origen.** Los 2 proveedores Woo se crearon **por script** (asociados al
+`userId` real, con idempotencia y verificación). La UI de proveedores **no** soporta
+`WOO_STORE_API`: el `provider-form` (`components/providers/provider-form.tsx`) no lo
+ofrece en `TYPE_OPTIONS`, y la lógica de "baseUrl requerido / bloque login" hoy cuelga
+de `=== "SCRAPER"`. El `providerSchema` de zod (`lib/utils/schemas.ts`) tiene el enum
+de `providerType` cerrado sin `WOO_STORE_API`, así que `POST/PUT /api/providers`
+tampoco lo aceptaría.
+
+**Impacto hoy.** Nulo mientras la creación de proveedores Woo sea por script. La UI ya
+**muestra y opera** correctamente proveedores Woo existentes (badge "Automático (API)",
+botón Extraer, gating extraíble) — lo único que falta es **crearlos/editarlos por UI**.
+
+**Trigger para atacarla.** Que el cliente quiera dar de alta / editar un proveedor Woo
+desde la UI sin pasar por un script.
+
+**Solución cuando importe.** (a) En `provider-form`: sumar `WOO_STORE_API` a
+`TYPE_OPTIONS`, separar "baseUrl requerido" (sí para Woo) de "muestra bloque login"
+(no para Woo). (b) En `lib/utils/schemas.ts`: agregar `WOO_STORE_API` al enum del zod
+y ajustar el `superRefine` (baseUrl requerido para Woo, sin login). Cambio acotado a
+esos 2 archivos.
+
+---
+
+## 2026-06-15 — Upgrade mayor de Prisma 5 → 7 pendiente
+
+**Prioridad:** Baja — no urgente; aviso recurrente, sin impacto funcional hoy.
+
+**Contexto y origen.** El proyecto corre Prisma `5.22.0`. Cada `prisma generate` /
+deploy imprime el aviso de upgrade mayor disponible (`npm i prisma@latest` +
+`@prisma/client@latest`). Es un salto de versión **mayor** (5 → 7), con posibles
+breaking changes.
+
+**Impacto hoy.** Ninguno funcional — todo opera con 5.22.0. Solo ruido recurrente en
+la salida de los comandos de Prisma.
+
+**Trigger para atacarla.** Necesidad de una feature/fix solo disponible en 6/7, fin de
+soporte de la línea 5, o una ventana de mantenimiento dedicada.
+
+**Solución cuando importe.** Upgrade controlado: leer el changelog/guía de migración
+mayor de Prisma, bumpear `prisma` + `@prisma/client` juntos, regenerar el client,
+correr `tsc --noEmit` + la suite completa, y validar `migrate` contra una branch de
+test antes de tocar prod. No mezclar con otros cambios.
+
+---
+
 ## 2026-06-14 — Los pushes price-only (wrapper) no refrescan el front público de Woo
 
 **Síntoma observado:** tras `updatePriceOnlyInWoo` (8255→8256, producto 10248/TP-480647), el GET directo a
