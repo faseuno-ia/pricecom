@@ -163,3 +163,181 @@ describe("extractWooStoreApi — casos borde", () => {
     expect(p.category).toBeNull();
   });
 });
+
+// ── 7. RETRY con backoff ante 202/429/503 ────────────────────────────────────────
+//
+// Harness SECUENCIAL: varía la response por CONTEO DE LLAMADA a la MISMA url (el
+// retry re-fetchea la misma url). Las responses transitorias (202/429/503) sirven
+// un producto SENTINELA reconocible: si apareciera en el resultado, probaría que el
+// extractor llamó .json()/collect sobre una response que no era 200. El body real
+// se sirve solo en las responses 200. El sleep fake registra los ms y resuelve ya.
+
+// SENTINELA: producto válido (pasaría los filtros si se colectara) → sku "999999".
+const SENTINEL: WooProduct = {
+  id: 999999,
+  name: "SENTINELA-TRANSITORIO",
+  prices: { price: "1", currency_minor_unit: 0 },
+};
+const SENTINEL_SKU = "999999";
+
+const urlForPage = (page: number) =>
+  `${BASE}/wp-json/wc/store/v1/products?per_page=100&page=${page}`;
+
+interface PageSeq {
+  statuses: number[]; // status por nº de llamada a esa url (clamp al último)
+  body: WooProduct[]; // body servido en las responses 200
+}
+
+// Construye fetchFn + sleep fake. pageSeqs[i] = config de la página i+1.
+function makeSeqFetch(pageSeqs: PageSeq[], totalPages?: number) {
+  const calls: string[] = [];
+  const callCount = new Map<string, number>();
+  const sleeps: number[] = [];
+  const tp = totalPages ?? pageSeqs.length;
+
+  const fetchFn: FetchFn = async (url: string) => {
+    calls.push(url);
+    const m = url.match(/[?&]page=(\d+)/);
+    const page = m ? parseInt(m[1], 10) : 1;
+    const n = callCount.get(url) ?? 0;
+    callCount.set(url, n + 1);
+    const seq = pageSeqs[page - 1];
+    const status = seq.statuses[Math.min(n, seq.statuses.length - 1)];
+    const body = status === 200 ? seq.body : [SENTINEL];
+    return {
+      status,
+      headers: {
+        get: (h: string) =>
+          h.toLowerCase() === "x-wp-totalpages" ? String(tp) : null,
+      },
+      json: async () => body,
+    };
+  };
+
+  const sleep = async (ms: number) => {
+    sleeps.push(ms);
+  };
+
+  const fetchesFor = (page: number) =>
+    calls.filter((u) => u === urlForPage(page)).length;
+
+  return { fetchFn, sleep, sleeps, fetchesFor };
+}
+
+const runWithSeq = (h: ReturnType<typeof makeSeqFetch>) =>
+  extractWooStoreApi({ baseUrl: BASE, skuPrefix: "ELY-", fetchFn: h.fetchFn, sleep: h.sleep });
+
+describe("extractWooStoreApi — retry con backoff", () => {
+  it("1. [200] → 1 fetch, 0 sleeps, retorna productos", async () => {
+    const h = makeSeqFetch([{ statuses: [200], body: [byId(31385)] }]);
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(1);
+    expect(h.sleeps).toEqual([]);
+    expect(skus(res)).toContain("31385");
+  });
+
+  it("2. [202,200] → 2 fetches, sleep [500], éxito, sentinela NO aparece, WARN logueado", async () => {
+    const h = makeSeqFetch([{ statuses: [202, 200], body: [byId(31385)] }]);
+    const logs: { level: string; meta?: Record<string, unknown> }[] = [];
+    const res = await extractWooStoreApi({
+      baseUrl: BASE,
+      skuPrefix: "ELY-",
+      fetchFn: h.fetchFn,
+      sleep: h.sleep,
+      onLog: (level, _msg, meta) => {
+        logs.push({ level, meta });
+      },
+    });
+    expect(h.fetchesFor(1)).toBe(2);
+    expect(h.sleeps).toEqual([500]);
+    expect(skus(res)).toContain("31385");
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+    // onLog: al menos un WARN con metadata { status, page, attempt } (sin depender del texto).
+    const warns = logs.filter((l) => l.level === "WARN");
+    expect(warns.length).toBeGreaterThanOrEqual(1);
+    const m = warns.find((w) => w.meta != null)?.meta ?? {};
+    expect(m).toHaveProperty("status", 202);
+    expect(m).toHaveProperty("page", 1);
+    expect(m).toHaveProperty("attempt");
+  });
+
+  it("3. [202,202,200] → 3 fetches, sleep [500,1500], éxito, sentinela NO aparece", async () => {
+    const h = makeSeqFetch([{ statuses: [202, 202, 200], body: [byId(31385)] }]);
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(3);
+    expect(h.sleeps).toEqual([500, 1500]);
+    expect(skus(res)).toContain("31385");
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+  });
+
+  it("4. [202,202,202,202] → 4 fetches, sleep [500,1500,3000], THROW, sin lista parcial", async () => {
+    const h = makeSeqFetch([{ statuses: [202, 202, 202, 202], body: [byId(31385)] }]);
+    await expect(runWithSeq(h)).rejects.toThrow();
+    expect(h.fetchesFor(1)).toBe(4);
+    expect(h.sleeps).toEqual([500, 1500, 3000]);
+  });
+
+  it("5. [429,200] → 2 fetches, sleep [500], éxito (429 reintentable)", async () => {
+    const h = makeSeqFetch([{ statuses: [429, 200], body: [byId(31385)] }]);
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(2);
+    expect(h.sleeps).toEqual([500]);
+    expect(skus(res)).toContain("31385");
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+  });
+
+  it("6. [503,200] → 2 fetches, sleep [500], éxito (503 reintentable)", async () => {
+    const h = makeSeqFetch([{ statuses: [503, 200], body: [byId(31385)] }]);
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(2);
+    expect(h.sleeps).toEqual([500]);
+    expect(skus(res)).toContain("31385");
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+  });
+
+  it("7. [500] → 1 fetch, 0 sleeps, THROW inmediato (500 TERMINAL, no reintenta)", async () => {
+    const h = makeSeqFetch([{ statuses: [500], body: [byId(31385)] }]);
+    await expect(runWithSeq(h)).rejects.toThrow();
+    expect(h.fetchesFor(1)).toBe(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it("8. [404] → 1 fetch, 0 sleeps, THROW inmediato", async () => {
+    const h = makeSeqFetch([{ statuses: [404], body: [byId(31385)] }]);
+    await expect(runWithSeq(h)).rejects.toThrow();
+    expect(h.fetchesFor(1)).toBe(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it("9. Loop: pág1 [200], pág2 [202,200] → pág2 2 fetches, sleep [500], productos de ambas", async () => {
+    const h = makeSeqFetch(
+      [
+        { statuses: [200], body: [byId(31385)] },
+        { statuses: [202, 200], body: [byId(40004)] },
+      ],
+      2
+    );
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(1);
+    expect(h.fetchesFor(2)).toBe(2);
+    expect(h.sleeps).toEqual([500]);
+    expect(skus(res)).toEqual(expect.arrayContaining(["31385", "40004"]));
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+  });
+
+  it("10. Per-página: pág1 [202,200], pág2 [202,200] → sleeps [500,500] (presupuesto propio)", async () => {
+    const h = makeSeqFetch(
+      [
+        { statuses: [202, 200], body: [byId(31385)] },
+        { statuses: [202, 200], body: [byId(40004)] },
+      ],
+      2
+    );
+    const res = await runWithSeq(h);
+    expect(h.fetchesFor(1)).toBe(2);
+    expect(h.fetchesFor(2)).toBe(2);
+    expect(h.sleeps).toEqual([500, 500]); // cada página resetea su backoff, NO [500,1500]
+    expect(skus(res)).toEqual(expect.arrayContaining(["31385", "40004"]));
+    expect(skus(res)).not.toContain(SENTINEL_SKU);
+  });
+});

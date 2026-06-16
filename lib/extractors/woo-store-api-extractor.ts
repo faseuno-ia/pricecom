@@ -17,6 +17,9 @@ export interface FetchLikeResponse {
 /** Fetch inyectado: en prod = `fetch` real; en tests = fake que sirve fixtures. */
 export type FetchFn = (url: string) => Promise<FetchLikeResponse>;
 
+/** Espera inyectable: en prod = setTimeout; en tests = fake que registra delays. */
+export type SleepFn = (ms: number) => Promise<void>;
+
 export interface WooStoreApiOptions {
   /** Base del sitio Woo (ej. "https://importadorahaote.com"). */
   baseUrl: string;
@@ -39,6 +42,11 @@ export interface WooStoreApiOptions {
     message: string,
     meta?: Record<string, unknown>
   ) => void | Promise<void>;
+  /**
+   * Espera entre reintentos. Opcional: default = setTimeout real. En tests se
+   * inyecta un fake que registra los delays sin esperar.
+   */
+  sleep?: SleepFn;
 }
 
 // ── Shape (parcial, defensivo) del producto de la Store API ────────────────────
@@ -68,6 +76,14 @@ interface WooApiProduct {
 }
 
 const PER_PAGE = 100;
+
+// Status transitorios reintentables (cache-warming del proveedor). Todo otro
+// status ≠ 200 es TERMINAL → fail-loud inmediato (incl. 500, a propósito).
+const RETRYABLE_STATUSES = new Set([202, 429, 503]);
+// Backoff fijo y determinístico (sin jitter). El presupuesto de reintentos por
+// página = RETRY_DELAYS_MS.length (no hay número mágico aparte): subirlo = editar
+// este array.
+const RETRY_DELAYS_MS = [500, 1500, 3000];
 
 // ── Filtros de exclusión (DEFAULT para proveedores Woo) ────────────────────────
 // Son criterios de exclusión del extractor. Si un proveedor futuro difiere (ej.
@@ -115,12 +131,56 @@ function collectPage(body: unknown, out: ScrapedProduct[]): void {
   }
 }
 
+// Fetchea `url` y devuelve la response 200 CRUDA (el caller hace headers.get /
+// json()). Ante un status transitorio (202/429/503) reintenta con backoff fijo,
+// hasta agotar RETRY_DELAYS_MS. Cualquier otro status ≠ 200 → throw inmediato
+// (terminal). Reintentables agotados → throw. Nunca colecta de una response
+// no-200 (solo retorna la 200). Presupuesto POR LLAMADA (cada página la suya).
+async function fetchOkWithRetry(
+  url: string,
+  page: number,
+  fetchFn: FetchFn,
+  sleep: SleepFn,
+  onLog?: WooStoreApiOptions["onLog"]
+): Promise<FetchLikeResponse> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchFn(url);
+    if (res.status === 200) return res;
+
+    const msg = `WooStoreApi: HTTP ${res.status} en página ${page} (${url})`;
+    // Terminal: 4xx salvo 429, 5xx salvo 503, etc. Fail-loud inmediato.
+    if (!RETRYABLE_STATUSES.has(res.status)) {
+      await onLog?.("ERROR", msg, { status: res.status, page });
+      throw new Error(msg);
+    }
+    // Reintentable pero sin presupuesto restante → fail-loud.
+    if (attempt >= RETRY_DELAYS_MS.length) {
+      await onLog?.("ERROR", `${msg} — reintentos agotados`, {
+        status: res.status,
+        page,
+        attempts: attempt,
+      });
+      throw new Error(msg);
+    }
+    // Reintentable con presupuesto: log + backoff y reintenta la MISMA url.
+    const delay = RETRY_DELAYS_MS[attempt];
+    await onLog?.("WARN", `${msg} — reintentando en ${delay}ms`, {
+      status: res.status,
+      page,
+      attempt,
+      delay,
+    });
+    await sleep(delay);
+  }
+}
+
 export async function extractWooStoreApi(
   opts: WooStoreApiOptions
 ): Promise<ScrapedProduct[]> {
   // skuPrefix existe en opts pero NO se usa acá (ver comentario en la interfaz):
   // el sku del proveedor es el id pelado; el prefijo se aplica al publicar.
   const { baseUrl, fetchFn, onProgress, onLog } = opts;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const root = baseUrl.replace(/\/+$/, "");
   const urlFor = (page: number) =>
     `${root}/wp-json/wc/store/v1/products?per_page=${PER_PAGE}&page=${page}`;
@@ -128,15 +188,10 @@ export async function extractWooStoreApi(
   const products: ScrapedProduct[] = [];
 
   // Página 1: además del cuerpo, leemos X-WP-TotalPages para saber cuántas hay.
+  // fetchOkWithRetry garantiza 200 o throw (fail-loud): NO devolver lista parcial.
+  // Una extracción incompleta upserteada marcaría faltantes como SUPPLIER_REMOVED.
   const firstUrl = urlFor(1);
-  const first = await fetchFn(firstUrl);
-  if (first.status !== 200) {
-    const msg = `WooStoreApi: HTTP ${first.status} en página 1 (${firstUrl})`;
-    await onLog?.("ERROR", msg, { status: first.status, page: 1 });
-    // Fail-loud: NO devolver lista parcial. Una extracción incompleta upserteada
-    // marcaría productos faltantes como SUPPLIER_REMOVED erróneamente.
-    throw new Error(msg);
-  }
+  const first = await fetchOkWithRetry(firstUrl, 1, fetchFn, sleep, onLog);
   const totalPagesHeader = first.headers.get("X-WP-TotalPages");
   const parsedTotal = parseInt(totalPagesHeader ?? "", 10);
   const totalPages = Number.isFinite(parsedTotal) && parsedTotal >= 1 ? parsedTotal : 1;
@@ -146,12 +201,7 @@ export async function extractWooStoreApi(
 
   for (let page = 2; page <= totalPages; page++) {
     const url = urlFor(page);
-    const res = await fetchFn(url);
-    if (res.status !== 200) {
-      const msg = `WooStoreApi: HTTP ${res.status} en página ${page} (${url})`;
-      await onLog?.("ERROR", msg, { status: res.status, page });
-      throw new Error(msg);
-    }
+    const res = await fetchOkWithRetry(url, page, fetchFn, sleep, onLog);
     collectPage(await res.json(), products);
     await onProgress?.(page, totalPages, products.length);
   }
