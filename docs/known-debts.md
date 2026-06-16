@@ -8,9 +8,19 @@ solución concreta cuando se decida atacarla.
 
 ---
 
-## 2026-06-15 — Extractor Woo: sin retry-with-backoff ante HTTP 202
+## 2026-06-15 — Extractor Woo: sin retry-with-backoff ante HTTP 202 — RESUELTA
 
-**Prioridad:** Media — no rompe nada en estado estable, pero hace fallar una
+**Estado:** ✅ RESUELTA el 2026-06-16 (commit `d6da315`). Se agregó
+retry-with-backoff ante status transitorios {202, 429, 503}: intento inicial + 3
+reintentos POR PÁGINA, backoff fijo y determinístico [500, 1500, 3000] ms, con
+fail-loud preservado para los terminales (4xx salvo 429, 5xx salvo 503, reintentables
+agotados). Contenido a `lib/extractors/woo-store-api-extractor.ts`.
+
+---
+
+**Contenido histórico (pre-resolución, para registro):**
+
+**Prioridad original:** Media — no rompe nada en estado estable, pero hace fallar una
 extracción cuando la caché del proveedor está calentándose.
 
 **Contexto y origen.** El extractor Store API es **fail-loud**: cualquier HTTP ≠ 200
