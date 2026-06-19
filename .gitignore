@@ -25,6 +25,11 @@ tsconfig.tsbuildinfo
 # útiles en git. Gitignored para evitar dejarlos accidentalmente.
 backups/
 
+# Artefactos locales de scripts (backups de fixes, dumps de diagnóstico,
+# JSON crudos de proveedores con precios mayoristas CONFIDENCIALES). El repo
+# es público: NADA de artifacts/ debe versionarse.
+artifacts/
+
 # Excel exports (generados en runtime)
 public/exports/
 /exports/
