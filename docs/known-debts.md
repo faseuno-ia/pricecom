@@ -165,6 +165,22 @@ test antes de tocar prod. No mezclar con otros cambios.
 
 ## 2026-06-14 — Los pushes price-only (wrapper) no refrescan el front público de Woo
 
+**Estado (actualización 2026-06-21 — recon read-only del código):** la deuda sigue **ABIERTA**, pero **NO es
+un bug activo de producción**. `updatePriceOnlyInWoo` **no tiene ningún caller productivo** (demostrado por
+código: aparece solo en `tests/unit/price-only-wrapper.test.ts` + su propia definición; ningún endpoint,
+worker ni script lo invoca). Como `updatePriceOnlyInWoo` no tiene caller productivo, el caso documentado fue
+necesariamente una invocación manual/no-productiva. Los flujos productivos de precio van hoy por
+`publishProductToWoo` (manda `regular_price` **+ `status:"publish"` hardcodeado, siempre**), que sí refresca
+el front; `apply-margin` no pushea a Woo (solo escribe DB + marca drift). Por eso esta deuda **bloquea
+futuros callers price-only**: antes de cablear el wrapper a UI/worker/bulk hay que **resolver primero la
+estrategia de purga/cache**. El **mecanismo causal sigue ABIERTO** (por qué el push con `status:"publish"`
+refresca y el price-only no — no demostrado desde el repo; depende del WP del cliente).
+
+**HIPÓTESIS SECUNDARIA (no demostrada / no observada):** el endpoint de rename de SKU
+(`app/api/catalog/publications/[id]/sku/route.ts:203`) también manda un payload **sin `status`** (`{ sku }`)
+vía `updateProduct`, así que podría caer en la misma familia (front sin refrescar). No está observado ni
+testeado — se anota solo por simetría de payload.
+
 **Síntoma observado:** tras `updatePriceOnlyInWoo` (8255→8256, producto 10248/TP-480647), el GET directo a
 la API de Woo confirmó `regular_price="8256.00"` (el dato canónico se actualizó), pero la página pública de
 la tienda siguió mostrando 8255 por >10min, pese a auto-purga de SpeedyCache configurada. El dato en Woo es
