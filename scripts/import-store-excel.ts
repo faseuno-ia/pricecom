@@ -22,8 +22,16 @@ import {
   parseImportNumber,
   INVALID_SKU_RE,
 } from "../lib/catalog/import-aliases";
+import { resolveImportSalePrice } from "../lib/catalog/import-price";
 
 const prisma = new PrismaClient();
+
+// Dry-run por DEFAULT: sin --apply no se escribe nada (ni backfill, ni update,
+// ni categorías, ni imágenes). --apply es obligatorio para tocar la DB.
+const APPLY = process.argv.includes("--apply");
+// Ruta del Excel: argumento explícito obligatorio (SIN fallback a archivo
+// default — correr sin ruta pisaba datos con un Excel viejo).
+const FILE_ARG = process.argv.slice(2).find((a) => !a.startsWith("--"));
 
 // Mapeo: nombre de proveedor en la columna PROVEEDOR del Excel → nombre del
 // proveedor scrapeado en la DB. Solo lo usamos para scopear el match por
@@ -58,10 +66,12 @@ async function backfillPublicationSku(): Promise<void> {
     for (const p of products) {
       const computed = buildPublicationSku(prefix, p.sku);
       if (computed !== p.publicationSku) {
-        await prisma.catalogProduct.update({
-          where: { id: p.id },
-          data: { publicationSku: computed },
-        });
+        if (APPLY) {
+          await prisma.catalogProduct.update({
+            where: { id: p.id },
+            data: { publicationSku: computed },
+          });
+        }
         updated++;
       }
     }
@@ -70,13 +80,15 @@ async function backfillPublicationSku(): Promise<void> {
 }
 
 async function main() {
-  const filePath =
-    process.argv[2] ??
-    path.join(
-      process.cwd(),
-      "imports",
-      "listado completo impotekno.xlsx"
+  console.log(`[import] modo: ${APPLY ? "--apply (ESCRIBE)" : "--dry (read-only, default)"}`);
+
+  if (!FILE_ARG) {
+    console.error(
+      "✗ Falta la ruta del Excel. Uso: npm run import:store-excel -- <archivo.xlsx> [--apply]"
     );
+    process.exit(1);
+  }
+  const filePath = FILE_ARG;
 
   if (!fs.existsSync(filePath)) {
     console.error(`✗ Archivo no encontrado: ${filePath}`);
@@ -129,17 +141,38 @@ async function main() {
   // Resolver providerId por nombre + prefix.
   const providerIdByName = new Map<string, string>();
   const prefixByProviderId = new Map<string, string | null>();
+  const listDiscountByProviderId = new Map<string, number>();
   const dbProviders = await prisma.provider.findMany({
     where: { userId: user.id },
     select: {
       id: true,
       name: true,
+      listDiscountPercent: true,
       scraperConfig: { select: { imageFilenamePrefix: true } },
     },
   });
   for (const p of dbProviders) {
     providerIdByName.set(p.name.trim().toUpperCase(), p.id);
     prefixByProviderId.set(p.id, p.scraperConfig?.imageFilenamePrefix ?? null);
+    listDiscountByProviderId.set(p.id, Number(p.listDiscountPercent));
+  }
+
+  // Backup pre-imagen ANTES de cualquier write (patrón de cleanup-stale-finalprices).
+  // Snapshot completo de los campos de precio del usuario → reversible por id.
+  if (APPLY) {
+    const snap = await prisma.catalogProduct.findMany({
+      where: { userId: user.id },
+      select: {
+        id: true, sku: true, providerId: true, finalPrice: true,
+        manualMargin: true, wholesalePrice: true, manualSourceNote: true, sourceType: true,
+      },
+    });
+    const dir = path.join(process.cwd(), "artifacts", "backups");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = path.join(dir, `import-store-excel-pre-${ts}.json`);
+    fs.writeFileSync(backupPath, JSON.stringify({ count: snap.length, rows: snap }, null, 2));
+    console.log(`[import] backup pre-imagen: ${backupPath} (${snap.length} filas)\n`);
   }
 
   const report = {
@@ -150,9 +183,12 @@ async function main() {
     updated: 0,
     titlesApplied: 0,
     marginsApplied: 0,
-    pricesApplied: 0,
+    freezesCleared: 0,
     categoriesAssigned: 0,
     categoriesCreated: 0,
+    // Solo dry-run: lo que se HARÍA con --apply (no se escribe nada).
+    categoriesWouldBeCreated: 0,
+    categoriesWouldBeAssigned: 0,
     imagesAdded: 0,
     errors: [] as string[],
     notFoundSkus: [] as string[],
@@ -184,7 +220,7 @@ async function main() {
       const name = pickField(row, "name");
       const commercialName = pickField(row, "commercialName");
       const marginRaw = pickField(row, "margin");
-      const finalPriceRaw = pickField(row, "finalPrice");
+      const salePriceRaw = pickField(row, "salePrice");
       const categoryRaw = pickField(row, "category");
       const imageUrl = pickField(row, "imageUrl");
 
@@ -237,8 +273,27 @@ async function main() {
       report.matched++;
       bump(provLabel, "matched");
 
-      const margin = parseImportMargin(marginRaw);
-      const finalPrice = parseImportNumber(finalPriceRaw);
+      const explicitMargin = parseImportMargin(marginRaw);
+      const webPrice = parseImportNumber(salePriceRaw);
+
+      // Precio de venta del Excel → margen recalculable (default seguro). NO
+      // congela finalPrice; solo limpia un freeze involuntario previo. Margen
+      // explícito (MARGEN WEB) tiene precedencia sobre el derivado.
+      const listDiscount =
+        listDiscountByProviderId.get(catalogProduct.providerId) ?? 0;
+      const resolved = resolveImportSalePrice({
+        webPrice,
+        wholesalePrice: catalogProduct.wholesalePrice ?? null,
+        listDiscountPercent: listDiscount,
+        existing: {
+          finalPrice: catalogProduct.finalPrice,
+          wholesalePrice: catalogProduct.wholesalePrice,
+          manualMargin: catalogProduct.manualMargin,
+          manualSourceNote: catalogProduct.manualSourceNote,
+          sourceType: catalogProduct.sourceType,
+        },
+      });
+      const marginToWrite = explicitMargin ?? resolved.manualMargin;
 
       // Computar publicationSku: el del Excel si vino; si no, derivar con prefix.
       const providerPrefix =
@@ -251,13 +306,13 @@ async function main() {
         updateData.commercialTitle = commercialName;
         report.titlesApplied++;
       }
-      if (margin != null) {
-        updateData.manualMargin = margin;
+      if (marginToWrite != null) {
+        updateData.manualMargin = marginToWrite;
         report.marginsApplied++;
       }
-      if (finalPrice != null) {
-        updateData.finalPrice = finalPrice;
-        report.pricesApplied++;
+      if (resolved.clearFinalPrice) {
+        updateData.finalPrice = null;
+        report.freezesCleared++;
       }
       if (publicationSku && publicationSku !== catalogProduct.publicationSku) {
         updateData.publicationSku = publicationSku;
@@ -267,7 +322,9 @@ async function main() {
         const primary = categoryRaw.split(",")[0].trim();
         if (primary) {
           const key = primary.toUpperCase();
-          let categoryId = categoryCache.get(key);
+          // Solo cacheamos IDs REALES. En dry-run, una categoría inexistente no
+          // se crea ni se cachea (no hay pseudo-ID): se cuenta como "would-be".
+          let categoryId: string | undefined = categoryCache.get(key);
           if (!categoryId) {
             const existing = await prisma.category.findFirst({
               where: { name: { equals: primary, mode: "insensitive" } },
@@ -275,7 +332,7 @@ async function main() {
             });
             if (existing) {
               categoryId = existing.id;
-            } else {
+            } else if (APPLY) {
               const created = await prisma.category.create({
                 data: { name: primary },
                 select: { id: true },
@@ -283,19 +340,30 @@ async function main() {
               categoryId = created.id;
               report.categoriesCreated++;
               console.log(`  ✚ Categoría creada: ${primary}`);
+            } else {
+              // dry-run: la categoría se crearía con --apply; no hay ID real.
+              report.categoriesWouldBeCreated++;
             }
-            categoryCache.set(key, categoryId);
+            if (categoryId) categoryCache.set(key, categoryId);
           }
-          updateData.assignedCategoryId = categoryId;
-          report.categoriesAssigned++;
+          // Solo asignamos si tenemos un ID real. En dry-run sin ID, se contabiliza
+          // como asignación planeada (no se escribe nada).
+          if (categoryId) {
+            updateData.assignedCategoryId = categoryId;
+            report.categoriesAssigned++;
+          } else {
+            report.categoriesWouldBeAssigned++;
+          }
         }
       }
 
       if (Object.keys(updateData).length > 0) {
-        await prisma.catalogProduct.update({
-          where: { id: catalogProduct.id },
-          data: updateData,
-        });
+        if (APPLY) {
+          await prisma.catalogProduct.update({
+            where: { id: catalogProduct.id },
+            data: updateData,
+          });
+        }
         report.updated++;
       }
 
@@ -305,16 +373,18 @@ async function main() {
         imageUrl.startsWith("http") &&
         !catalogProduct.images[0]
       ) {
-        await prisma.catalogProductImage.create({
-          data: {
-            catalogProductId: catalogProduct.id,
-            url: imageUrl,
-            position: 0,
-            isPrimary: true,
-            source: "USER",
-            altText: commercialName || name || null,
-          },
-        });
+        if (APPLY) {
+          await prisma.catalogProductImage.create({
+            data: {
+              catalogProductId: catalogProduct.id,
+              url: imageUrl,
+              position: 0,
+              isPrimary: true,
+              source: "USER",
+              altText: commercialName || name || null,
+            },
+          });
+        }
         report.imagesAdded++;
       }
     } catch (err) {
@@ -340,9 +410,13 @@ async function main() {
   console.log(`Actualizados:           ${report.updated}`);
   console.log(`Títulos aplicados:      ${report.titlesApplied}`);
   console.log(`Márgenes aplicados:     ${report.marginsApplied}`);
-  console.log(`Precios aplicados:      ${report.pricesApplied}`);
+  console.log(`Freezes limpiados:      ${report.freezesCleared}`);
   console.log(`Categorías asignadas:   ${report.categoriesAssigned}`);
   console.log(`Categorías creadas:     ${report.categoriesCreated}`);
+  if (!APPLY) {
+    console.log(`Categorías a crear (would-be):    ${report.categoriesWouldBeCreated}`);
+    console.log(`Categorías a asignar (would-be):  ${report.categoriesWouldBeAssigned}`);
+  }
   console.log(`Imágenes agregadas:     ${report.imagesAdded}`);
   console.log(`Errores:                ${report.errors.length}`);
 

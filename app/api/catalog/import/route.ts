@@ -22,12 +22,26 @@ import {
   parseImportMargin,
   INVALID_SKU_RE,
 } from "@/lib/catalog/import-aliases";
+import { resolveImportSalePrice } from "@/lib/catalog/import-price";
 import { logInfo, logWarning } from "@/lib/events/event-log";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const MAX_ROWS = 5000;
+
+// Pre-imagen de un finalPrice involuntario limpiado por esta importación.
+// Suficiente para revertir manualmente (id + valores previos).
+interface ClearedFreezePreImage {
+  id: string;
+  sku: string;
+  previousFinalPrice: number | null;
+  previousManualMargin: number | null;
+  wholesalePrice: number | null;
+  manualSourceNote: string | null;
+  sourceType: string;
+  provider: string;
+}
 
 interface ImportReport {
   total: number;
@@ -45,6 +59,12 @@ interface ImportReport {
     priceUp: number;
     priceDown: number;
   };
+  // Precio de venta → margen (default seguro, no freeze).
+  marginsDerived: number;
+  involuntaryFreezesCleared: number;
+  notDerivable: number;
+  negativeMargins: number;
+  cleared: ClearedFreezePreImage[];
 }
 
 interface DiffChange {
@@ -128,6 +148,11 @@ export async function POST(req: NextRequest) {
     errors: [],
     importBatchId,
     diff: { new: 0, removed: 0, priceUp: 0, priceDown: 0 },
+    marginsDerived: 0,
+    involuntaryFreezesCleared: 0,
+    notDerivable: 0,
+    negativeMargins: 0,
+    cleared: [],
   };
 
   // Pre-fetch de TODOS los CatalogProduct del provider — 1 query reemplaza
@@ -143,6 +168,12 @@ export async function POST(req: NextRequest) {
       stock: true,
       assignedCategoryId: true,
       supplierStatus: true,
+      // Señales para decidir si un finalPrice previo es un freeze involuntario
+      // que esta importación puede limpiar (predicado compartido).
+      finalPrice: true,
+      manualMargin: true,
+      manualSourceNote: true,
+      sourceType: true,
       _count: { select: { categories: true } },
     },
   });
@@ -194,14 +225,16 @@ export async function POST(req: NextRequest) {
       const commercialName = pickField(r, "commercialName");
       const costRaw = pickField(r, "cost");
       const marginRaw = pickField(r, "margin");
-      const finalPriceRaw = pickField(r, "finalPrice");
+      // Precio de venta del Excel (PRECIO WEB / PRECIO FINAL / ...). NO congela:
+      // se usa para derivar manualMargin recalculable (default seguro).
+      const salePriceRaw = pickField(r, "salePrice");
       const stock = pickField(r, "stock");
       const categoryRaw = pickField(r, "category");
       const imageUrl = pickField(r, "imageUrl");
 
       const wholesalePrice = parseImportNumber(costRaw);
-      const manualMargin = parseImportMargin(marginRaw);
-      const finalPrice = parseImportNumber(finalPriceRaw);
+      const explicitMargin = parseImportMargin(marginRaw);
+      const webPrice = parseImportNumber(salePriceRaw);
       // Si el Excel trae SKU WEB explícito lo respetamos; si no, derivamos del
       // prefijo del proveedor.
       const publicationSku = skuWeb || buildPublicationSku(prefix, sku);
@@ -277,6 +310,43 @@ export async function POST(req: NextRequest) {
         const shouldAssignCategory =
           assignedCategoryId != null && !hasUserCategories;
 
+        // Precio de venta del Excel → margen recalculable (default seguro). NO
+        // congela finalPrice; solo limpia un freeze PREVIO si era involuntario
+        // (predicado compartido). El costo para derivar = nuevo del Excel o el
+        // existente. El margen explícito (MARGEN WEB) tiene precedencia.
+        const effWholesale = wholesalePrice ?? existing.wholesalePrice ?? null;
+        const resolved = resolveImportSalePrice({
+          webPrice,
+          wholesalePrice: effWholesale,
+          listDiscountPercent: Number(provider.listDiscountPercent),
+          existing: {
+            finalPrice: existing.finalPrice,
+            wholesalePrice: existing.wholesalePrice,
+            manualMargin: existing.manualMargin,
+            manualSourceNote: existing.manualSourceNote,
+            sourceType: existing.sourceType,
+          },
+        });
+        const marginToWrite = explicitMargin ?? resolved.manualMargin;
+        if (explicitMargin == null && webPrice != null && webPrice > 0) {
+          if (resolved.derivable) report.marginsDerived++;
+          else report.notDerivable++;
+          if (resolved.negativeMargin) report.negativeMargins++;
+        }
+        if (resolved.clearFinalPrice) {
+          report.involuntaryFreezesCleared++;
+          report.cleared.push({
+            id: existing.id,
+            sku,
+            previousFinalPrice: existing.finalPrice,
+            previousManualMargin: existing.manualMargin,
+            wholesalePrice: existing.wholesalePrice,
+            manualSourceNote: existing.manualSourceNote,
+            sourceType: existing.sourceType,
+            provider: provider.name,
+          });
+        }
+
         await prisma.catalogProduct.update({
           where: { id: existing.id },
           data: {
@@ -289,8 +359,10 @@ export async function POST(req: NextRequest) {
             ...(shouldAssignCategory
               ? { assignedCategoryId }
               : {}),
-            manualMargin: manualMargin ?? undefined,
-            finalPrice: finalPrice ?? undefined,
+            manualMargin: marginToWrite ?? undefined,
+            // Default seguro: NO escribir finalPrice desde el Excel. Solo
+            // limpiar un freeze involuntario previo.
+            ...(resolved.clearFinalPrice ? { finalPrice: null } : {}),
             publicationSku,
             lastSeenAt: new Date(),
           },
@@ -334,6 +406,20 @@ export async function POST(req: NextRequest) {
           else diffPriceDown.push(record);
         }
       } else {
+        // Producto nuevo: derivar margen del precio de venta (sin freeze).
+        // No hay finalPrice previo que limpiar (existing: null).
+        const createResolved = resolveImportSalePrice({
+          webPrice,
+          wholesalePrice,
+          listDiscountPercent: Number(provider.listDiscountPercent),
+          existing: null,
+        });
+        const createMargin = explicitMargin ?? createResolved.manualMargin;
+        if (explicitMargin == null && webPrice != null && webPrice > 0) {
+          if (createResolved.derivable) report.marginsDerived++;
+          else report.notDerivable++;
+          if (createResolved.negativeMargin) report.negativeMargins++;
+        }
         await prisma.catalogProduct.create({
           data: {
             userId: session.user.id,
@@ -346,8 +432,8 @@ export async function POST(req: NextRequest) {
             stock: stock || null,
             imageUrl: imageUrl || null,
             assignedCategoryId,
-            manualMargin,
-            finalPrice,
+            manualMargin: createMargin,
+            // Default seguro: los productos nuevos importados NO se congelan.
             sourceType: "IMPORTED",
             importBatchId,
             supplierStatus: "ACTIVE",
@@ -617,6 +703,13 @@ export async function POST(req: NextRequest) {
       errors: report.errors.length,
       diff: report.diff,
       importBatchId: report.importBatchId,
+      // Precio de venta → margen (default seguro) + reversibilidad del freeze.
+      marginsDerived: report.marginsDerived,
+      involuntaryFreezesCleared: report.involuntaryFreezesCleared,
+      notDerivable: report.notDerivable,
+      negativeMargins: report.negativeMargins,
+      // Pre-imagen suficiente para revertir los finalPrice limpiados.
+      clearedFreezes: report.cleared,
     },
   });
 

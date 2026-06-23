@@ -62,13 +62,17 @@ export const COL_ALIASES: Record<string, string[]> = {
     "margen",
     "margin",
   ],
-  finalPrice: [
+  // Precio de venta del Excel. NO se mapea a finalPrice (que congela el precio
+  // y apaga el motor): el importador lo usa para DERIVAR manualMargin
+  // recalculable (ver lib/catalog/import-price.ts). El freeze explícito por
+  // columna ("PRECIO FIJO") queda para Gate 2B.
+  // Cuidado: "PRECIO WEB (MAYORISTA)" es COSTO (arriba), no precio de venta.
+  salePrice: [
     "PRECIO WEB",
     "Precio final",
     "PRECIO FINAL",
     "Precio venta",
     "PRECIO VENTA",
-    "finalPrice",
   ],
   stock: ["Stock", "STOCK", "stock", "Cantidad", "CANTIDAD"],
   category: ["Categoria", "CATEGORIA", "Categoría", "CATEGORÍA", "category"],

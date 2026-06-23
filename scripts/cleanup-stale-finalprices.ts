@@ -49,9 +49,12 @@ if (!process.env.DATABASE_URL?.includes(PROD_ENDPOINT_ID)) {
   process.exit(1);
 }
 
-import { PrismaClient, type Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
+// Definición central del "freeze involuntario" — compartida con el importador
+// (lib/catalog/import-price.ts) para que cleanup e import no diverjan.
+import { INVOLUNTARY_FREEZE_WHERE } from "../lib/catalog/involuntary-freeze";
 
 const prisma = new PrismaClient();
 
@@ -64,14 +67,9 @@ function parseArgs(): Args {
   return { apply: argv.includes("--apply") };
 }
 
-// El WHERE generalizado, en un solo lugar — se usa idéntico en SELECT, dump y UPDATE.
-const cleanupWhere = {
-  finalPrice: { not: null },
-  wholesalePrice: { not: null },
-  manualMargin: null,
-  manualSourceNote: null,
-  sourceType: { in: ["SCRAPED", "IMPORTED"] as const },
-} as const satisfies Prisma.CatalogProductWhereInput;
+// El WHERE generalizado viene de la definición central compartida con el
+// importador (lib/catalog/involuntary-freeze.ts). Idéntico en SELECT, dump y UPDATE.
+const cleanupWhere = INVOLUNTARY_FREEZE_WHERE;
 
 interface DumpRow {
   id: string;
