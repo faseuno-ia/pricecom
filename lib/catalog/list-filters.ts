@@ -256,8 +256,22 @@ export function buildCatalogListWhere(
       { supplierName: { contains: search, mode: "insensitive" } },
       { commercialTitle: { contains: search, mode: "insensitive" } },
       { commercialName: { contains: search, mode: "insensitive" } },
+      // SKU proveedor (técnico) + publicationSku legacy (Fase 4A/4B → se elimina
+      // en Fase 5; se mantiene mientras exista la columna).
       { sku: { contains: search, mode: "insensitive" } },
       { publicationSku: { contains: search, mode: "insensitive" } },
+      // SKU comercial canónico (ProductPublication.sku) — lo que el cliente ve en
+      // pantalla/drawer post-Fase 4B — y el SKU observado/editado en Woo
+      // (externalSku). DOS `publications.some` SEPARADOS a propósito: con varias
+      // publicaciones, "existe una pub con ese sku O existe una pub con ese
+      // externalSku" — NO un único `some` con OR interno (que exigiría que la
+      // MISMA pub matchee uno u otro).
+      { publications: { some: { sku: { contains: search, mode: "insensitive" } } } },
+      {
+        publications: {
+          some: { externalSku: { contains: search, mode: "insensitive" } },
+        },
+      },
     ];
   }
 
