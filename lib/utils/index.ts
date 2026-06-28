@@ -109,5 +109,11 @@ export function normalizeImageUrl(url: string | null | undefined): string | null
 export function cleanProductName(raw: string | null | undefined): string {
   if (!raw) return "";
   const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
-  return firstLine.replace(/\s*[Cc][oó]d(igo)?\.?\s*\d+\s*$/, "").trim();
+  return firstLine
+    .replace(/\s*[Cc][oó]d(igo)?\.?\s*\d+\s*$/, "")
+    // Basura de guiones de relleno al final (ej. OESTECH: "NOMBRE - -  -  -").
+    // Conservador: solo el trailing. Un guion interno (USB-C, "HDMI - VGA") no
+    // está al final del string, así que se preserva.
+    .replace(/(?:\s*-\s*)+$/, "")
+    .trim();
 }
