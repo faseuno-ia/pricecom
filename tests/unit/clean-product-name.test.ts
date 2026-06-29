@@ -106,3 +106,46 @@ describe("cleanProductName — código entre paréntesis al inicio (OESTECH)", (
     );
   });
 });
+
+describe("cleanProductName — código (CODE)TEXTO SIN espacio (OESTECH)", () => {
+  // Misma guarda, pero el código puede venir pegado al texto (sin espacio tras ')').
+  it("quita (RD-007) pegado", () => {
+    expect(cleanProductName("(RD-007)CAMIONETA CROSS 4X4")).toBe("CAMIONETA CROSS 4X4");
+  });
+  it("quita (ARO30RGB) pegado", () => {
+    expect(cleanProductName("(ARO30RGB)ARO LED RGB 30CM")).toBe("ARO LED RGB 30CM");
+  });
+  it("quita (BA22) pegado", () => {
+    expect(cleanProductName("(BA22)BALANZA PRECISION")).toBe("BALANZA PRECISION");
+  });
+
+  // Negativos obligatorios (sin espacio) — NO debe tocar:
+  it("NO quita (Oferta) pegado (minúscula)", () => {
+    expect(cleanProductName("(Oferta)PRODUCTO")).toBe("(Oferta)PRODUCTO");
+  });
+  it("NO quita (Nuevo) pegado (minúscula)", () => {
+    expect(cleanProductName("(Nuevo)PRODUCTO")).toBe("(Nuevo)PRODUCTO");
+  });
+  it("NO quita (OFERTA) pegado (mayúscula sin dígito/sep)", () => {
+    expect(cleanProductName("(OFERTA)PRODUCTO")).toBe("(OFERTA)PRODUCTO");
+  });
+  it("NO quita (Combo x2) pegado (espacio + minúscula)", () => {
+    expect(cleanProductName("(Combo x2)PRODUCTO")).toBe("(Combo x2)PRODUCTO");
+  });
+  it("NO quita (Pack especial) pegado", () => {
+    expect(cleanProductName("(Pack especial)PRODUCTO")).toBe("(Pack especial)PRODUCTO");
+  });
+  it("NO quita paréntesis no-inicial pegado", () => {
+    expect(cleanProductName("PRODUCTO (RD-007)CAMIONETA")).toBe("PRODUCTO (RD-007)CAMIONETA");
+  });
+  it("NO quita código largo (>20) pegado", () => {
+    expect(cleanProductName("(1234567890123456789012345)PRODUCTO")).toBe(
+      "(1234567890123456789012345)PRODUCTO"
+    );
+  });
+  it("NO quita si no hay texto real después del código", () => {
+    expect(cleanProductName("(RD-007)")).toBe("(RD-007)");
+    // trailing spaces se trimean por contrato, pero el código NO se quita
+    expect(cleanProductName("(RD-007)   ")).toBe("(RD-007)");
+  });
+});

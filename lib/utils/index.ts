@@ -115,7 +115,9 @@ export function cleanProductName(raw: string | null | undefined): string {
   // separador (-._). Esa guarda distingue un código de una palabra comercial:
   // "(Oferta)"/"(Combo x2)" tienen minúscula/espacio y "(OFERTA)" no tiene
   // dígito/guion → no se tocan. Solo se quita si queda texto real después.
-  const paren = name.match(/^\(([A-Z0-9._-]{2,20})\)\s+(\S.*)$/);
+  // \s* (no \s+): el código puede venir pegado al texto, "(RD-007)CAMIONETA".
+  // El (\S.*) exige texto real después → "(RD-007)" o "(RD-007)   " no se tocan.
+  const paren = name.match(/^\(([A-Z0-9._-]{2,20})\)\s*(\S.*)$/);
   if (paren && /[\d._-]/.test(paren[1])) name = paren[2];
   // Basura de guiones de relleno al final (ej. "NOMBRE - -  -  -"). Conservador:
   // solo el trailing; un guion interno (USB-C, "HDMI - VGA") se preserva.
