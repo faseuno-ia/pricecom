@@ -109,11 +109,15 @@ export function normalizeImageUrl(url: string | null | undefined): string | null
 export function cleanProductName(raw: string | null | undefined): string {
   if (!raw) return "";
   const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
-  return firstLine
-    .replace(/\s*[Cc][oó]d(igo)?\.?\s*\d+\s*$/, "")
-    // Basura de guiones de relleno al final (ej. OESTECH: "NOMBRE - -  -  -").
-    // Conservador: solo el trailing. Un guion interno (USB-C, "HDMI - VGA") no
-    // está al final del string, así que se preserva.
-    .replace(/(?:\s*-\s*)+$/, "")
-    .trim();
+  let name = firstLine.replace(/\s*[Cc][oó]d(igo)?\.?\s*\d+\s*$/, "");
+  // Código interno "(CODE) " al inicio (ej. OESTECH: "(BLT-078) CONTROL..."):
+  // CODE en MAYÚSCULAS/dígitos/[-._], 2-20 chars, y CON al menos un dígito o
+  // separador (-._). Esa guarda distingue un código de una palabra comercial:
+  // "(Oferta)"/"(Combo x2)" tienen minúscula/espacio y "(OFERTA)" no tiene
+  // dígito/guion → no se tocan. Solo se quita si queda texto real después.
+  const paren = name.match(/^\(([A-Z0-9._-]{2,20})\)\s+(\S.*)$/);
+  if (paren && /[\d._-]/.test(paren[1])) name = paren[2];
+  // Basura de guiones de relleno al final (ej. "NOMBRE - -  -  -"). Conservador:
+  // solo el trailing; un guion interno (USB-C, "HDMI - VGA") se preserva.
+  return name.replace(/(?:\s*-\s*)+$/, "").trim();
 }
