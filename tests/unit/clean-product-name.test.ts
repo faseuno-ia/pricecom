@@ -4,7 +4,7 @@
 // los proveedores → el fix no debe romper nombres válidos.
 
 import { describe, it, expect } from "vitest";
-import { cleanProductName } from "@/lib/utils";
+import { cleanProductName, fixMojibakeCp1252Utf8 } from "@/lib/utils";
 
 describe("cleanProductName — trailing dashes (OESTECH)", () => {
   it("quita guiones de relleno al final", () => {
@@ -147,5 +147,90 @@ describe("cleanProductName — código (CODE)TEXTO SIN espacio (OESTECH)", () =>
     expect(cleanProductName("(RD-007)")).toBe("(RD-007)");
     // trailing spaces se trimean por contrato, pero el código NO se quita
     expect(cleanProductName("(RD-007)   ")).toBe("(RD-007)");
+  });
+});
+
+// TDD — GATE OESTECH: el mojibake viene del ORIGEN (UTF-8 servido, pero el HTML
+// crudo trae bytes UTF-8 mal interpretados como Windows-1252 y re-codificados).
+// cleanProductName corrige nombres/descripciones; NUNCA se aplica a SKU.
+describe("cleanProductName — mojibake CP1252/UTF-8 (OESTECH)", () => {
+  it("corrige ° mal codificado (Â°)", () => {
+    expect(
+      cleanProductName("SOPORTE PROFESIONAL SEGUIMIENTO 360Â°")
+    ).toBe("SOPORTE PROFESIONAL SEGUIMIENTO 360°");
+  });
+  it("corrige ° dentro de un nombre largo", () => {
+    expect(
+      cleanProductName("ESPEJO BASE 180Â° ZOOM X2 + X3 LUZ")
+    ).toBe("ESPEJO BASE 180° ZOOM X2 + X3 LUZ");
+  });
+  it("corrige Ñ mal codificada (Ã‘) — DISEÑOS", () => {
+    expect(
+      cleanProductName("PACK VENTILADOR INFANTIL MANUAL X20 UNID DISEÃ‘OS")
+    ).toBe("PACK VENTILADOR INFANTIL MANUAL X20 UNID DISEÑOS");
+  });
+  it("corrige Ñ mal codificada (Ã‘) — DISEÑO", () => {
+    expect(
+      cleanProductName("RELOJ LED TACTIL INFANTIL C/ DISEÃ‘O SILICONA")
+    ).toBe("RELOJ LED TACTIL INFANTIL C/ DISEÑO SILICONA");
+  });
+  it("corrige Ñ mal codificada (Ã‘) — NIÑOS", () => {
+    expect(
+      cleanProductName("RELOJ SMARTWATCH NIÃ‘OS GPS S.O.S CAMARA SIM CARD")
+    ).toBe("RELOJ SMARTWATCH NIÑOS GPS S.O.S CAMARA SIM CARD");
+  });
+  it("corrige Ñ mal codificada (Ã‘) — MOÑO", () => {
+    expect(
+      cleanProductName("POP IT MOÃ‘O JUEGO VELOCIDAD")
+    ).toBe("POP IT MOÑO JUEGO VELOCIDAD");
+  });
+});
+
+describe("cleanProductName — NO rompe nombres ya correctos (guarda U+FFFD)", () => {
+  it("no toca Ñ ya correcta (test crítico)", () => {
+    expect(cleanProductName("DISEÑO INFANTIL")).toBe("DISEÑO INFANTIL");
+  });
+  it("no toca Ñ ya correcta — NIÑOS", () => {
+    expect(cleanProductName("NIÑOS GPS")).toBe("NIÑOS GPS");
+  });
+  it("no toca ° ya correcto", () => {
+    expect(cleanProductName("ESPEJO 180°")).toBe("ESPEJO 180°");
+  });
+  it("no toca comillas de pulgadas", () => {
+    expect(cleanProductName('PARLANTE 3" BT + USB')).toBe('PARLANTE 3" BT + USB');
+  });
+  it("no toca rango de pulgadas", () => {
+    expect(cleanProductName('SOPORTE TV 14"-42"')).toBe('SOPORTE TV 14"-42"');
+  });
+  it("no toca +PICOS", () => {
+    expect(cleanProductName("COMPRESOR +PICOS")).toBe("COMPRESOR +PICOS");
+  });
+  it("no toca un nombre ASCII normal", () => {
+    expect(cleanProductName("PRODUCTO NORMAL")).toBe("PRODUCTO NORMAL");
+  });
+});
+
+// Tests directos del helper — aísla las dos guardas obligatorias.
+describe("fixMojibakeCp1252Utf8 — helper puro", () => {
+  it("corrige Ã‘ → Ñ", () => {
+    expect(fixMojibakeCp1252Utf8("DISEÃ‘O")).toBe("DISEÑO");
+  });
+  it("corrige Â° → °", () => {
+    expect(fixMojibakeCp1252Utf8("180Â°")).toBe("180°");
+  });
+  it("guarda U+FFFD: texto ya correcto con Ñ vuelve intacto", () => {
+    expect(fixMojibakeCp1252Utf8("DISEÑO INFANTIL")).toBe("DISEÑO INFANTIL");
+  });
+  it("guarda U+FFFD: ° ya correcto vuelve intacto", () => {
+    expect(fixMojibakeCp1252Utf8("180°")).toBe("180°");
+  });
+  it("no representable en CP1252: devuelve original (emoji)", () => {
+    expect(fixMojibakeCp1252Utf8("PRODUCTO 😀")).toBe("PRODUCTO 😀");
+  });
+  it("string ASCII vuelve igual", () => {
+    expect(fixMojibakeCp1252Utf8("PRODUCTO NORMAL")).toBe("PRODUCTO NORMAL");
+  });
+  it("string vacío", () => {
+    expect(fixMojibakeCp1252Utf8("")).toBe("");
   });
 });
