@@ -511,6 +511,13 @@ model CatalogProduct {
   productUrl      String?
   identityHash    String? // hash(name + providerId) como fallback
 
+  /// Identidad técnica canónica (Gate 2). Se completa en 3B+; hoy inerte.
+  sourceIdentityKey String?
+  /// ID externo del producto padre en la fuente (ej. TiendaNube product_id). Inerte hoy.
+  externalProductId String?
+  /// ID externo de la variante en la fuente (ej. TiendaNube variant id). Inerte hoy.
+  externalVariantId String?
+
   /// De dónde provino esta fila: scrape automático, alta manual o import por archivo.
   sourceType       CatalogSourceType @default(SCRAPED)
   /// Nota libre para productos cargados manualmente (referencia, contacto, etc.).
