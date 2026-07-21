@@ -21,6 +21,11 @@ export interface ScrapedProduct {
   productUrl: string | null;
   imageUrl: string | null;
   rawData: Record<string, unknown>;
+  /// IDs externos crudos de la fuente (ej. TiendaNube product_id / variant id). Opcionales:
+  /// ningún scraper existente los emite aún. Los normaliza el módulo central de identidad
+  /// (lib/catalog/source-identity) en gates posteriores. Inertes hoy.
+  externalProductId?: string | number | bigint | null;
+  externalVariantId?: string | number | bigint | null;
 }
 
 export interface ScraperOptions {
