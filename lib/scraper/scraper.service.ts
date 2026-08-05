@@ -5,9 +5,21 @@ import * as cheerio from "cheerio";
 // como tipo del parámetro `card` porque `cards.each((_, el) => $(el))` retorna
 // Cheerio<AnyNode>.
 import type { AnyNode } from "domhandler";
-import { ProviderScraperConfig, Provider } from "@prisma/client";
+import type { ProviderScraperConfig, Provider } from "@prisma/client";
 import { parsePrice, cleanProductName } from "../utils/index";
 import { decrypt } from "../utils/crypto";
+import { resolveExtractionMode } from "./tiendanube-sku-first";
+import { runSkuFirstWalk, type WalkerDeps, type RawLsPagePayload } from "./tiendanube-walker";
+// G1 — completitud SKU-first por cobertura de sitemap (fail-closed, dos snapshots).
+import { fetchSitemapSnapshot, type SitemapFetchFn, type SitemapSnapshot } from "./runtime-sitemap-reference";
+import { resolveTwoSnapshotCompleteness } from "./sitemap-two-snapshot";
+import { acceptedCaptureUrl } from "./walk-set-capture";
+// Error class + orden START-antes-de-login viven en un seam puro (sin Playwright), reexportado acá.
+import { SkuFirstCompletenessError, prepareSkuFirstStartSnapshot } from "./sku-first-start";
+export { SkuFirstCompletenessError, sanitizeSkuFirstCompletenessDiagnostics } from "./sku-first-start";
+
+/** Piso absoluto de fichas estables plausibles para Different Touch (referencia SM0). */
+export const DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS = 700;
 
 export interface ScrapedProduct {
   sku: string | null;
@@ -35,6 +47,28 @@ export interface ScraperOptions {
   onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string, meta?: Record<string, unknown>) => Promise<void>;
   /** Llamado al terminar cada página con (paginaActual, totalProductosEncontradosHastaAhora) */
   onProgress: (currentPage: number, totalFoundSoFar: number) => Promise<void>;
+  /**
+   * Modo de extracción alternativo. Por defecto (undefined) corre el flujo legacy
+   * basado en tarjetas del DOM. `TIENDANUBE_LS_VARIANTS_SKU_FIRST` activa el
+   * extractor SKU-first de TiendaNube (lee window.LS.variants y agrupa por
+   * sku.trim()). Se activa SOLO por esta config explícita: ningún Provider,
+   * dominio, providerId ni ProviderType lo detecta automáticamente. No es una
+   * columna de DB ni un enum Prisma; vive únicamente en las opciones del run.
+   */
+  extractionMode?: "TIENDANUBE_LS_VARIANTS_SKU_FIRST";
+  /**
+   * G1 — URL de login validada (resolveLoginUrl). Si está presente, `performLogin` navega
+   * a ella antes de llenar el form; si es null/undefined, performLogin NO navega
+   * (comportamiento histórico exacto). NUNCA se lee `config.loginUrl` crudo.
+   */
+  effectiveLoginUrl?: string | null;
+  /**
+   * G1 — fetch HTTP inyectado para la referencia de sitemap del gate de completitud SKU-first.
+   * Requerido SOLO en modo SKU-first; ausente en legacy (fetchFn calls = 0).
+   */
+  sitemapFetchFn?: SitemapFetchFn;
+  /** G1 — piso absoluto de fichas estables (Different Touch: 700). */
+  sitemapMinExpectedProducts?: number;
 }
 
 const USER_AGENT =
@@ -127,6 +161,18 @@ function bestFromSrcset(srcset: string | undefined): string | undefined {
   return isValidImageUrl(bestUrl) ? bestUrl : undefined;
 }
 
+/**
+ * Shape mínimo que `performLogin` realmente consume del Provider (solo
+ * `username` + `encryptedPassword`). El `Provider` de Prisma es estructuralmente
+ * compatible, así que los callers productivos siguen pasando el Provider completo
+ * sin cambios. Permite además construir un Provider EFÍMERO en memoria (A4.1)
+ * sin persistir credenciales ni tocar la DB.
+ */
+export interface LoginProviderInput {
+  username: string | null;
+  encryptedPassword: string | null;
+}
+
 export class ScraperService {
   private browser: Browser | null = null;
   private page: Page | null = null;
@@ -171,12 +217,20 @@ export class ScraperService {
       await onLog("INFO", `Navegando a ${targetUrl}`);
       await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
+      // G1 — orden SKU-first: la referencia de sitemap (SITEMAP_START) se captura ANTES del login.
+      // Un START inválido (fetch/estructura/vacío) lanza acá e IMPIDE el intento de login. Para
+      // legacy devuelve null SIN llamar a sitemapFetchFn (fetchFn calls = 0). START se fetchea 1 vez.
+      const skuFirstStartSnapshot = await prepareSkuFirstStartSnapshot({
+        extractionMode: options.extractionMode,
+        sitemapFetchFn: options.sitemapFetchFn,
+      });
+
       // Login si es requerido. Algunos sitios (Impotekno) solo piden contraseña,
       // así que username queda opcional. Tras login confiamos en el redirect del
       // form para llegar al catálogo (no forzamos re-navegación al targetUrl).
       if (provider.requiresLogin && provider.encryptedPassword) {
         await onLog("INFO", "Realizando login...");
-        await this.performLogin(page, provider, config, onLog);
+        await this.performLogin(page, provider, config, onLog, options.effectiveLoginUrl);
       }
 
       // Esperar selector inicial si está configurado
@@ -202,6 +256,16 @@ export class ScraperService {
         }
         const initialCount = await this.waitForProductsToStabilize(page, config.productCardSelector);
         await onLog("DEBUG", `Página inicial: ${initialCount} tarjetas tras estabilizar`);
+      }
+
+      // Dispatch de modo de extracción. El resolver es explícito: solo el valor
+      // exacto activa el modo SKU-first; cualquier otro cae a legacy (con warning).
+      // Reusa el login/nav/wait ya hechos arriba. No toca el flujo legacy de
+      // tarjetas: retorna antes de llegar a él.
+      const resolvedMode = resolveExtractionMode(options.extractionMode);
+      if (resolvedMode.warning) await onLog("WARN", resolvedMode.warning);
+      if (resolvedMode.mode === "TIENDANUBE_LS_VARIANTS_SKU_FIRST") {
+        return await this.runTiendaNubeSkuFirst(page, options, skuFirstStartSnapshot);
       }
 
       // Modo iteración por categorías URL: sitios sin paginación clásica que dividen
@@ -431,7 +495,7 @@ export class ScraperService {
             page.url().includes("login") || page.url() === provider.baseUrl;
           if (redirectedToLogin && provider.requiresLogin && provider.encryptedPassword) {
             await onLog("INFO", "Contexto reiniciado sin sesión, re-autenticando...");
-            await this.performLogin(page, provider, config, onLog);
+            await this.performLogin(page, provider, config, onLog, options.effectiveLoginUrl);
             await page.goto(currentUrl, { waitUntil: "domcontentloaded" });
           }
         }
@@ -474,12 +538,186 @@ export class ScraperService {
     }
   }
 
-  private async performLogin(
+  /**
+   * Adapter window.LS (Paso 12). Lee `window.LS.variants` + `window.LS.product`
+   * de la FICHA actual y las etiquetas de opción del DOM. Serializa SOLO datos
+   * JSON-safe (nunca funciones, nodos ni cookies). NO mapea ni agrupa: el mapper
+   * puro corre en Node dentro del walker. Lanza si `page.evaluate` falla (para
+   * habilitar el retry del walker).
+   */
+  private async captureLsPayload(page: Page): Promise<RawLsPagePayload> {
+    return (await page.evaluate(`(function () {
+      var LS = (typeof window !== "undefined" && window.LS) || {};
+      var product = LS.product || {};
+      var variants = Array.isArray(LS.variants) ? LS.variants : [];
+      function coerceName(n) {
+        if (n == null) return null;
+        if (typeof n === "string") return n;
+        if (typeof n === "object") { return n.es || n.pt || n.en || Object.values(n)[0] || null; }
+        return null;
+      }
+      var labels = Array.prototype.slice
+        .call(document.querySelectorAll("[data-option-name], .form-label, label[for^='variation']"))
+        .map(function (el) { return (el.textContent || "").trim(); })
+        .filter(function (t) { return t.length > 0; });
+      return {
+        productName: coerceName(product.name),
+        productUrl: (product.canonical_url || (typeof location !== "undefined" ? location.href : null)) || null,
+        domLabels: labels,
+        variants: variants.map(function (v) {
+          return {
+            id: v.id, product_id: v.product_id, sku: v.sku,
+            option0: v.option0, option1: v.option1, option2: v.option2,
+            price_short: v.price_short, price_long: v.price_long,
+            price_number: v.price_number, price_number_raw: v.price_number_raw,
+            price_without_taxes: v.price_without_taxes,
+            promotional_price_number: v.promotional_price_number,
+            stock: v.stock, available: v.available, image: v.image, image_url: v.image_url,
+          };
+        }),
+      };
+    })()`)) as RawLsPagePayload;
+  }
+
+  /**
+   * Modo SKU-first de TiendaNube (Pasos 4/5). Construye las dependencias del
+   * walker de DOS FASES a partir de la Page real y delega en `runSkuFirstWalk`:
+   *   Fase A (discovery): recorre listados, extrae URLs de ficha (reusando
+   *     `extractProductsFromPage`), resuelve/deduplica y avanza SOLO con
+   *     `goToNextPage`.
+   *   Fase B (captura): visita cada ficha, detecta redirección a login y
+   *     re-autentica con `performLogin`, lee window.LS con retry, mapea y agrupa
+   *     al final. NUNCA pagina dentro de una ficha.
+   * Reusa login, paginación, re-login y logging/progreso del flujo legacy. El
+   * flujo legacy queda intacto: este método solo corre cuando el modo está activo.
+   */
+  private async runTiendaNubeSkuFirst(page: Page, options: ScraperOptions, startSnapshot: SitemapSnapshot | null): Promise<ScrapedProduct[]> {
+    const { provider, config, onLog, onProgress, sitemapFetchFn } = options;
+    const baseUrl = provider.baseUrl;
+    const minExpectedProducts = options.sitemapMinExpectedProducts ?? DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS;
+
+    // SITEMAP_START ya fue capturado y validado ANTES del login (prepareSkuFirstStartSnapshot).
+    // Defensa: sin snapshot POPULATED o sin fetchFn (para END), fail-closed (no debería ocurrir por el orden).
+    if (!startSnapshot || startSnapshot.kind !== "POPULATED" || !sitemapFetchFn) {
+      throw new SkuFirstCompletenessError("R2_SITEMAP_START_PRECONDITION_MISSING", { snapshot: "START" });
+    }
+    // WALK_SET: SOLO fichas capturadas y ACEPTADAS (payload con variantes + identidad coherente).
+    const walkSet = new Set<string>();
+    const nextPageSelector =
+      config?.nextPageSelector || "a[rel='next'], .next-page, [aria-label='Siguiente'], .pagination-next";
+    const productCardSelector = config?.productCardSelector ?? null;
+
+    const deps: WalkerDeps = {
+      maxListingPages: config?.maxPages ?? 10,
+      maxProductRetries: 2,
+      now: () => new Date().toISOString(),
+      // ScraperOptions no expone hoy una señal de cancelación; el walker ya está
+      // listo para recibirla (A3+ puede inyectar un AbortSignal sin tocar la lógica).
+      isCancelled: () => false,
+      onLog,
+      onProgress: async (stats) => {
+        await onProgress(stats.productsVisited, stats.variantsCaptured);
+      },
+
+      // ── Fase A: discovery ──
+      extractListingProductUrls: async () => {
+        const html = await page.content();
+        const { products } = await this.extractProductsFromPage(html, page, config, baseUrl, onLog, 0);
+        return products.map((p) => p.productUrl).filter((u): u is string => !!u);
+      },
+      resolveUrl: (href) => {
+        try {
+          const abs = new URL(href, page.url()).toString();
+          // Solo fichas de producto de TiendaNube (criterio de Gate 1C: /productos/).
+          return /\/productos\//.test(abs) ? abs.split("#")[0] : null;
+        } catch {
+          return null;
+        }
+      },
+      goToNextListing: async () => {
+        const next = await this.goToNextPage(page, nextPageSelector, productCardSelector, onLog);
+        return next.ok;
+      },
+
+      // ── Fase B: captura de fichas ──
+      navigateToProduct: async (url) => {
+        await page.goto(url, { waitUntil: "domcontentloaded" });
+        const redirectedToLogin = page.url().includes("login") || page.url() === baseUrl;
+        return { redirectedToLogin };
+      },
+      reLogin: async () => {
+        if (provider.requiresLogin && provider.encryptedPassword) {
+          await onLog("INFO", "[SKU-first] Ficha redirigió a login, re-autenticando...");
+          await this.performLogin(page, provider, config, onLog, options.effectiveLoginUrl);
+        }
+      },
+      captureLsPayload: async () => {
+        // La captura ACEPTADA (payload con ≥1 variante = lo que el walker mapea a filas) es la
+        // única que entra al WALK_SET. Un throw (timeout/404/redirect-a-login/payload inválido)
+        // no llega acá → no se registra. Auditoría offline: las 877 fichas estables tienen ≥1 variante.
+        const payload = await this.captureLsPayload(page);
+        this.recordAcceptedCapture(walkSet, payload, page.url());
+        return payload;
+      },
+    };
+
+    // 4 · walk SKU-first. El WALK_SET se llena por el wrapper de captureLsPayload (capturas aceptadas).
+    const { products } = await runSkuFirstWalk(deps);
+
+    // 6-7 · SITEMAP_END después del walk, antes de decidir completitud/persistencia.
+    const endSnapshot = await fetchSitemapSnapshot({ fetchFn: sitemapFetchFn });
+
+    // 8-13 · autoridad de completitud = COBERTURA de la referencia estable con piso absoluto.
+    const completeness = resolveTwoSnapshotCompleteness({
+      start: startSnapshot,
+      end: endSnapshot,
+      walkSet: [...walkSet],
+      minExpectedProducts,
+    });
+    const d = completeness.diagnostics;
+    await onLog(
+      "INFO",
+      `[SKU-first] Completitud: start=${d.sitemapStartCount} end=${d.sitemapEndCount} blocking=${d.blockingSetCount} ` +
+        `min=${d.minExpectedProducts} walk=${d.walkSetCount} missing=${d.blockingMissingCount} added=${d.addedDuringRunCount} ` +
+        `removed=${d.removedDuringRunCount} → ${completeness.complete ? "COMPLETE" : "FAIL_CLOSED:" + completeness.reasonCode}`,
+    );
+
+    // 14 · fail-closed: SOLO se devuelven productos si la cobertura es COMPLETE. Cualquier otro
+    // resultado lanza → sale de run() → catch del worker → markFailed → CERO persistencia.
+    if (!completeness.complete) {
+      throw new SkuFirstCompletenessError(completeness.reasonCode, completeness.diagnostics);
+    }
+    return products;
+  }
+
+  /**
+   * G1 — registra en `walkSet` una ficha SOLO si la captura fue ACEPTADA: payload con ≥1 variante
+   * (lo que el walker mapea a filas) e identidad de URL coherente (§6):
+   *   ambas válidas y equivalentes → registra el normalizado;
+   *   solo una válida → la válida;
+   *   ambas válidas pero distintas → identity mismatch → NO registra (fail-closed vía cobertura).
+   * La URL debe pasar el predicado de producto y normalizar no-null. Nunca registra login/404/intento.
+   */
+  private recordAcceptedCapture(walkSet: Set<string>, payload: RawLsPagePayload, pageUrl: string): void {
+    const chosen = acceptedCaptureUrl(payload, pageUrl);
+    if (chosen !== null) walkSet.add(chosen);
+  }
+
+  // Público (seam A4.1): reutilizable con un Provider EFÍMERO en memoria para
+  // reconocimiento autenticado read-only. Solo lee username/encryptedPassword.
+  async performLogin(
     page: Page,
-    provider: Provider,
+    provider: LoginProviderInput,
     config: ProviderScraperConfig | null,
-    onLog: ScraperOptions["onLog"]
+    onLog: ScraperOptions["onLog"],
+    effectiveLoginUrl?: string | null
   ) {
+    // G1: con loginUrl validada, navegar a ella antes del login histórico. Con null/undefined
+    // NO se navega (comportamiento pre-G1 exacto: performLogin nunca navegó). Callers de 4 args
+    // (recon) → effectiveLoginUrl undefined → sin navegación. No se lee config.loginUrl crudo.
+    if (effectiveLoginUrl) {
+      await page.goto(effectiveLoginUrl, { waitUntil: "domcontentloaded" });
+    }
     try {
       const password = decrypt(provider.encryptedPassword!);
       const userSelector = config?.loginUsernameSelector || 'input[type="email"], input[name="username"], input[name="email"], #username, #email';
