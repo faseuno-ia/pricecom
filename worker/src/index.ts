@@ -8,7 +8,16 @@
  *   worker/src/queues/job-queue.interface.ts
  */
 import { PrismaClient, Prisma } from "@prisma/client";
-import { ScraperService, type ScrapedProduct } from "../../lib/scraper/scraper.service";
+import {
+  ScraperService,
+  DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS,
+  SkuFirstCompletenessError,
+  sanitizeSkuFirstCompletenessDiagnostics,
+  type ScrapedProduct,
+} from "../../lib/scraper/scraper.service";
+import { selectFailureMessage } from "../../lib/scraper/sku-first-start";
+import { mapScrapedToExtractedProductInput } from "../../lib/scraper/extracted-product-input";
+import { buildProviderRuntimeConfig } from "../../lib/scraper/provider-runtime-config";
 import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor";
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
@@ -117,7 +126,15 @@ async function processJob(jobId: string) {
         onLog,
       });
     } else {
-      // Camino scraper HTML — IDÉNTICO al flujo previo, sin cambios.
+      // Camino scraper HTML. La config efectiva se construye desde el scraperConfig de Prisma
+      // con el builder puro. G1: effectiveExtractionMode → ScraperOptions.extractionMode;
+      // effectiveLoginUrl → performLogin legacy (navega a la loginUrl validada antes del form).
+      // loginFlowStrategy sigue SIN conectarse al ejecutor DOCUMENT_REDIRECT (permanece LEGACY;
+      // A3_LOGIN_EXECUTOR_CONFIG_DRIVEN = false).
+      const runtimeConfig = buildProviderRuntimeConfig({
+        provider: { baseUrl: provider.baseUrl },
+        scraperConfig: provider.scraperConfig,
+      });
       const scraper = new ScraperService();
       products = await scraper.run({
         provider,
@@ -125,29 +142,35 @@ async function processJob(jobId: string) {
         startUrl: job.startUrl,
         onLog,
         onProgress,
+        extractionMode:
+          runtimeConfig.effectiveExtractionMode === "TIENDANUBE_LS_VARIANTS_SKU_FIRST"
+            ? "TIENDANUBE_LS_VARIANTS_SKU_FIRST"
+            : undefined,
+        effectiveLoginUrl: runtimeConfig.effectiveLoginUrl,
+        // G1: referencia pública de sitemap para el gate de completitud fail-closed (solo se usa
+        // en SKU-first; en legacy no se invoca). Adapta `fetch` global al contrato HttpResponseLike.
+        sitemapFetchFn: async (url) => {
+          // GUARD_1: redirect "manual" → un 3xx vuelve como respuesta 3xx (sin seguir Location,
+          // sin segunda request). La validación de host/estado la hace runtime-sitemap-reference.
+          const res = await fetch(url, { redirect: "manual" });
+          return {
+            status: res.status,
+            text: await res.text(),
+            finalUrl: res.url,
+            header: (n: string) => res.headers.get(n),
+          };
+        },
+        sitemapMinExpectedProducts: DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS,
       });
     }
 
     // Persistir productos
     if (products.length > 0) {
       await prisma.extractedProduct.createMany({
-        data: products.map((p) => ({
-          jobId,
-          providerId: provider.id,
-          sku:            p.sku,
-          name:           p.name || "Sin nombre",
-          description:    p.description,
-          wholesalePrice: p.wholesalePrice,
-          oldPrice:       p.oldPrice,
-          stock:          p.stock,
-          category:       p.category,
-          brand:          p.brand,
-          productUrl:     p.productUrl,
-          imageUrl:       p.imageUrl,
-          // rawData del scraper es Record<string, unknown> por API genérica.
-          // Cast al InputJsonValue de Prisma para el boundary de persistencia.
-          rawData:        p.rawData as Prisma.InputJsonValue,
-        })),
+        // Mapping extraído a una función pura (lib/scraper/extracted-product-input)
+        // para poder testear la preservación de rawData sin DB. Byte-equivalente
+        // al map inline previo.
+        data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)),
       });
 
       // Sincronizar el catálogo persistente. Aislado en try/catch porque su
@@ -254,15 +277,34 @@ async function processJob(jobId: string) {
   } catch (err) {
     const errorMsg = (err as Error).message;
     await onLog("ERROR", `✗ Job fallido: ${errorMsg}`);
-    await queue.markFailed(jobId, errorMsg);
-    await logError({
-      source: "EXTRACTION",
-      type: "EXTRACTION_FAILED",
-      title: "Extracción fallida",
-      description: errorMsg,
-      jobId,
-      metadata: { error: errorMsg },
-    });
+    // G1c: markFailed es el registro AUTORITATIVO del job fallido. Para SkuFirstCompletenessError
+    // lleva el mensaje bounded (reasonCode + counts + SHA + sample≤20); para cualquier error legacy
+    // lleva EXACTAMENTE error.message histórico. Los diagnósticos de completitud ya no dependen solo
+    // del EventLog: sobreviven en el propio registro autoritativo del job.
+    const failureMessage = selectFailureMessage(err);
+    // Resiliencia mutua: el fallo de markFailed no debe ocultar el error original (ya emitido por
+    // onLog) ni impedir el EventLog; el fallo del EventLog no debe impedir markFailed (va primero).
+    try {
+      await queue.markFailed(jobId, failureMessage);
+    } catch (markErr) {
+      console.error(`[worker] markFailed falló para job ${jobId} (no oculta el error original):`, markErr);
+    }
+    // EventLog = evidencia SUPLEMENTARIA (no única copia). reasonCode + counts + sample≤20 + SHA;
+    // nunca listas completas/precios/HTML/cookies/tokens.
+    const skuFirstCompleteness =
+      err instanceof SkuFirstCompletenessError ? sanitizeSkuFirstCompletenessDiagnostics(err) : undefined;
+    try {
+      await logError({
+        source: "EXTRACTION",
+        type: "EXTRACTION_FAILED",
+        title: "Extracción fallida",
+        description: errorMsg,
+        jobId,
+        metadata: skuFirstCompleteness ? { error: errorMsg, skuFirstCompleteness } : { error: errorMsg },
+      });
+    } catch (logErr) {
+      console.error(`[worker] logError falló para job ${jobId} (markFailed ya intentado):`, logErr);
+    }
   }
 }
 

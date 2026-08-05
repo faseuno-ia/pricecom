@@ -105,6 +105,9 @@ model ProviderScraperConfig {
   /// scraper navega explícitamente acá después del login y antes de buscar
   /// el `categoryParamSelector`.
   catalogUrl            String?
+  extractionMode    String?
+  loginUrl          String?
+  loginFlowStrategy String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }
