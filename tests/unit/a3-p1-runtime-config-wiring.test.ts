@@ -1,13 +1,13 @@
-// A3-P1 — wiring real hasta el builder (§11.5), congelados intactos y protección de alcance.
+// A3-P1 — wiring real hasta el builder (§11.5) y protección de alcance.
+// NOTA (2A-R1): las aserciones de SHA sobre los ejecutores congelados A41 (lib/ops/a41-*)
+// se removieron: eran A41_ONLY y esos archivos no forman parte del commit G1 (rompían el
+// checkout limpio de CI). La cobertura pura del builder/wiring G1 queda intacta.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createHash } from "node:crypto";
 import { buildProviderRuntimeConfig } from "@/lib/scraper/provider-runtime-config";
 
 const root = process.cwd();
-const sha = (rel: string) => createHash("sha256").update(readFileSync(resolve(root, rel))).digest("hex");
-const FROZEN_EXECUTORS = ["lib/ops/a41-document-redirect-login.ts", "lib/ops/a41-login-flow.ts"];
 
 // Réplica EXACTA del mapeo del worker (worker/src/index.ts) de effectiveExtractionMode a
 // ScraperOptions.extractionMode. Si el worker cambia el mapeo, este test debe actualizarse.
@@ -15,8 +15,6 @@ const toScraperOptionExtractionMode = (m: string) =>
   m === "TIENDANUBE_LS_VARIANTS_SKU_FIRST" ? "TIENDANUBE_LS_VARIANTS_SKU_FIRST" : undefined;
 
 describe("§11.5 — wiring real: config DT completa → builder → ScraperOptions.extractionMode", () => {
-  const preExecutorShas = FROZEN_EXECUTORS.map(sha);
-
   const rc = buildProviderRuntimeConfig({
     provider: { baseUrl: "https://differenttouch.com.ar/" },
     scraperConfig: {
@@ -42,10 +40,6 @@ describe("§11.5 — wiring real: config DT completa → builder → ScraperOpti
       scraperConfig: { extractionMode: null, loginUrl: null, loginFlowStrategy: null },
     });
     expect(toScraperOptionExtractionMode(legacy.effectiveExtractionMode)).toBeUndefined();
-  });
-  it("los ejecutores de login congelados NO cambian durante el wiring/build (SHA pre==post)", () => {
-    const postExecutorShas = FROZEN_EXECUTORS.map(sha);
-    expect(postExecutorShas).toEqual(preExecutorShas);
   });
   it("el builder NO importa ni referencia los ejecutores de login (consumo diferido a P2/P3)", () => {
     const src = readFileSync(resolve(root, "lib/scraper/provider-runtime-config.ts"), "utf8");
