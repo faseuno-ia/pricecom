@@ -15,22 +15,38 @@ const B5_PATH = resolve(process.cwd(), "lib/scraper/extracted-product-input.ts")
 const SCRAPER_SERVICE_PATH = resolve(process.cwd(), "lib/scraper/scraper.service.ts");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BLOQUE 1 — INMUTABLES B4/B5 (RUNTIME_REQUIRED_FROZEN_CONTENT)
+// BLOQUE 1 — B5 inmutable + B4 sucesión firmada
 //
-// B4 y B5 son inmutables firmados. Un cambio de SHA es un DEFECTO hasta que exista
-// una decisión explícita que descongele el archivo. No actualizar estas constantes
-// como reacción automática a un fallo de CI.
+// B5 (extracted-product-input) permanece INMUTABLE firmado: un cambio de SHA es un
+// DEFECTO hasta una decisión explícita de descongelamiento.
+//
+// B4 (tiendanube-walker) FUE descongelado por decisión explícita en 2G-R3
+// (SITEMAP_DRIVEN_DISCOVERY). Delta autorizado y acotado:
+//   + WalkerDeps.seedProductUrls?: string[]   (semilla sitemap-driven)
+//   + collectProductUrlsFromSeed(...)          (canonicaliza/valida/deduplica el seed)
+//   ~ runSkuFirstWalk: Fase A ramifica a seed cuando está presente; SIN seed = legacy.
+//   = Fase B / captura / mapper / agrupación / cuarentena / completitud: SIN cambios.
+// El ACCEPTED_WALK_SET (autoridad de completitud) sigue llenándose SOLO con capturas
+// aceptadas en Fase B, nunca con el seed. Predecesor 1db776ad → sucesor abajo.
+//
+// RE-FREEZE (2G-R3): el descongelamiento fue PUNTUAL. Tras esta sucesión, B4 vuelve a
+// régimen INMUTABLE en el nuevo SHA: cualquier cambio futuro es un DEFECTO hasta un nuevo
+// descongelamiento explícito. No actualizar estos SHA como reacción automática a CI.
 // ─────────────────────────────────────────────────────────────────────────────
-const B4_SIGNED_SHA256 = "1db776adb0d2e642ab815032073f113d07513e1bb1f79a8c395ef564bb719cb7";
 const B5_SIGNED_SHA256 = "5091077200502b36f538d9b626ae2ea2f0e30e935cc685fb8b79a657aa1cb9b0";
+const B4_G1_FROZEN_SHA256 = "1db776adb0d2e642ab815032073f113d07513e1bb1f79a8c395ef564bb719cb7";
+const B4_2GR3_SUCCESSOR_SHA256 = "e8d53e3be901db0b8783ffae6576752e54a4a17bf451441915541e359804bf2e";
 
-describe("G1 — inmutables B4/B5 (RUNTIME_REQUIRED_FROZEN_CONTENT)", () => {
-  it("preserva B4 tiendanube-walker como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
-    expect(sha256File(B4_PATH)).toBe(B4_SIGNED_SHA256);
-  });
-
+describe("B5 inmutable + B4 sucesión firmada 2G-R3", () => {
   it("preserva B5 extracted-product-input como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
     expect(sha256File(B5_PATH)).toBe(B5_SIGNED_SHA256);
+  });
+
+  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R3 (descongelado de G1)", () => {
+    const actual = sha256File(B4_PATH);
+    // El estado frozen de G1 fue sucedido deliberadamente por el fix sitemap-driven.
+    expect(actual).not.toBe(B4_G1_FROZEN_SHA256);
+    expect(actual).toBe(B4_2GR3_SUCCESSOR_SHA256);
   });
 });
 
@@ -51,15 +67,21 @@ describe("G1 — inmutables B4/B5 (RUNTIME_REQUIRED_FROZEN_CONTENT)", () => {
 // scraper.service.ts es un target activo; cada cambio autorizado crea una NUEVA sucesión
 // firmada, no una excepción al guard.
 // ─────────────────────────────────────────────────────────────────────────────
+// Sucesión: I0 (histórico) → G1-B6 → 2G-R3 (sitemap-driven wiring).
+// Delta 2G-R3 en scraper.service.ts: runTiendaNubeSkuFirst reconstruye startSnapshot.urls
+// como URLs absolutas y las pasa como deps.seedProductUrls (discovery sitemap-driven).
+// Predecesor G1-B6 b2eae9c9 → sucesor 2G-R3 abajo.
 const SCRAPER_I0_SHA256 = "0d3c8a54e5ed64737a1782ac160fa92dab85328d28930905f425ca1e08cbb0d0";
-const SCRAPER_G1_B6_SUCCESSOR_SHA256 = "b2eae9c9fc870c2a0d1aac5b85dc7774d79eb24fa361eb677531ade1b481eb4e";
+const SCRAPER_G1_B6_SHA256 = "b2eae9c9fc870c2a0d1aac5b85dc7774d79eb24fa361eb677531ade1b481eb4e";
+const SCRAPER_2GR3_SUCCESSOR_SHA256 = "632448096364554e980973613e4c7e77289b9a5925978849865cec8a50bb8989";
 
-describe("G1 — sucesión firmada de scraper.service.ts", () => {
-  it("mantiene scraper.service.ts en el sucesor firmado G1-B6", () => {
+describe("G1/2G — sucesión firmada de scraper.service.ts", () => {
+  it("mantiene scraper.service.ts en el sucesor firmado 2G-R3", () => {
     const actual = sha256File(SCRAPER_SERVICE_PATH);
-    // I0 fue sucedido deliberadamente: el estado actual NO es el antecedente histórico.
+    // Antecedentes deliberadamente sucedidos.
     expect(actual).not.toBe(SCRAPER_I0_SHA256);
+    expect(actual).not.toBe(SCRAPER_G1_B6_SHA256);
     // Guard real del estado autorizado vigente.
-    expect(actual).toBe(SCRAPER_G1_B6_SUCCESSOR_SHA256);
+    expect(actual).toBe(SCRAPER_2GR3_SUCCESSOR_SHA256);
   });
 });
