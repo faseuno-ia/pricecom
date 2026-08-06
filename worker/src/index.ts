@@ -22,6 +22,10 @@ import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
+import {
+  analyzePreWritePriceRegression,
+  assertNoPreWritePriceRegression,
+} from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 import { logInfo, logError } from "../../lib/events/event-log";
@@ -162,6 +166,45 @@ async function processJob(jobId: string) {
         },
         sitemapMinExpectedProducts: DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS,
       });
+    }
+
+    // 2G-R5D — BARRERA PRE-WRITE contra regresión de precios (priced→null). Corre DESPUÉS de la
+    // extracción y ANTES de cualquier escritura comercial (createMany/upsert/lastExtractionAt/
+    // comparison). Lee el estado existente read-only y lanza un error tipado que el catch de abajo
+    // convierte en markFailed → cero escrituras comerciales. Genérica (sin lógica por providerId).
+    if (products.length > 0 && job.userId) {
+      const incomingSkus = products
+        .map((p) => (typeof p.sku === "string" ? p.sku.trim() : ""))
+        .filter((s) => s.length > 0);
+      const existing = incomingSkus.length
+        ? await prisma.catalogProduct.findMany({
+            where: { userId: job.userId, providerId: provider.id, sku: { in: incomingSkus } },
+            select: { id: true, sku: true, wholesalePrice: true },
+          })
+        : [];
+      const ownChildren = existing.length
+        ? await prisma.catalogProduct.findMany({
+            where: { sourceCatalogProductId: { in: existing.map((e) => e.id) }, stockSource: "OWN" },
+            select: { id: true, sourceCatalogProductId: true, wholesalePrice: true },
+          })
+        : [];
+      const priceAnalysis = analyzePreWritePriceRegression({
+        existing,
+        ownChildren,
+        incoming: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
+      });
+      const wouldFail =
+        priceAnalysis.pricedToNullCount > 0 ||
+        (provider.requiresLogin && priceAnalysis.incomingRowCount > 0 && priceAnalysis.incomingValidPriceCount === 0);
+      await onLog(
+        "INFO",
+        `[PreWritePriceGuard] existingPriced=${priceAnalysis.existingPricedCount} incomingRows=${priceAnalysis.incomingRowCount} ` +
+          `incomingValidPrice=${priceAnalysis.incomingValidPriceCount} incomingNullPrice=${priceAnalysis.incomingInvalidOrNullPriceCount} ` +
+          `directPricedToNull=${priceAnalysis.directPricedToNullCount} propagatedPricedToNull=${priceAnalysis.propagatedOwnChildPricedToNullCount} ` +
+          `newNullSku=${priceAnalysis.newSkuWithNullPriceCount} decision=${wouldFail ? "FAIL" : "PASS"}`,
+      );
+      // Lanza (fail-closed) ANTES de createMany si hay regresión priced→null o extracción login-gated sin precios.
+      assertNoPreWritePriceRegression(priceAnalysis, provider.requiresLogin, { providerId: provider.id, jobId });
     }
 
     // Persistir productos
