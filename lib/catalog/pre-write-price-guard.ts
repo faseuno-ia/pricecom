@@ -177,7 +177,26 @@ export function assertNoPreWritePriceRegression(
 /** Lector read-only del catálogo (inyectable: prisma en el worker, mock en tests). */
 export interface PreWriteCatalogReader {
   findExisting: (userId: string, providerId: string, skus: string[]) => Promise<ExistingCatalogRow[]>;
-  findOwnChildren: (existingIds: string[]) => Promise<OwnChildRow[]>;
+}
+
+// §5 (R2) — La propagación a hijos OWN del upsert real SÓLO escribe con precio != null
+// (upsert-catalog-products.ts:378) ⇒ un null NUNCA produce priced→null en un hijo OWN.
+// `NULL_PROPAGATION_TO_OWN_CHILDREN_POSSIBLE = false`. Por eso el camino productivo NO consulta
+// hijos OWN (evita un query potencialmente grande sin transición posible); el analizador mantiene
+// el parámetro `ownChildren` sólo para congelar esa conclusión en tests.
+export const NULL_PROPAGATION_TO_OWN_CHILDREN_POSSIBLE = false;
+
+/** Error de resolución de tenant (userId) — fail-closed antes de cualquier escritura comercial. */
+export class PreWriteGuardTenantError extends Error {
+  readonly code: "PRE_WRITE_PRICE_GUARD_USER_ID_MISSING" | "EXTRACTION_JOB_PROVIDER_USER_MISMATCH";
+  constructor(
+    code: "PRE_WRITE_PRICE_GUARD_USER_ID_MISSING" | "EXTRACTION_JOB_PROVIDER_USER_MISMATCH",
+    ctx: { providerId: string; jobId: string },
+  ) {
+    super(`${code} providerId=${ctx.providerId} jobId=${ctx.jobId}`);
+    this.name = "PreWriteGuardTenantError";
+    this.code = code;
+  }
 }
 
 /**
@@ -205,8 +224,8 @@ export async function assertNoPreWritePriceRegressionForExtraction(
     new Set(incoming.map((p) => (typeof p.sku === "string" ? p.sku.trim() : "")).filter((s) => s.length > 0)),
   );
   const existing = args.userId && skus.length ? await reader.findExisting(args.userId, args.providerId, skus) : [];
-  const ownChildren = existing.length ? await reader.findOwnChildren(existing.map((e) => e.id)) : [];
-  const analysis = analyzePreWritePriceRegression({ existing, ownChildren, incoming });
+  // ownChildren=[] a propósito: la propagación nunca escribe null (ver NULL_PROPAGATION_TO_OWN_CHILDREN_POSSIBLE).
+  const analysis = analyzePreWritePriceRegression({ existing, ownChildren: [], incoming });
   if (args.onLog) {
     const wouldFail =
       analysis.pricedToNullCount > 0 ||
