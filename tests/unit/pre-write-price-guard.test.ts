@@ -6,12 +6,15 @@ import { resolve } from "node:path";
 import {
   analyzePreWritePriceRegression,
   assertNoPreWritePriceRegression,
+  assertNoPreWritePriceRegressionForExtraction,
   isValidWholesalePrice,
   PreWritePriceGuardError,
   type ExistingCatalogRow,
   type OwnChildRow,
   type IncomingProductRow,
+  type PreWriteCatalogReader,
 } from "@/lib/catalog/pre-write-price-guard";
+import { vi } from "vitest";
 
 const ex = (id: string, sku: string, wp: number | null): ExistingCatalogRow => ({ id, sku, wholesalePrice: wp });
 const child = (id: string, parentId: string, wp: number | null): OwnChildRow => ({ id, sourceCatalogProductId: parentId, wholesalePrice: wp });
@@ -115,20 +118,75 @@ describe("2G-R5D · analyzePreWritePriceRegression (casos §8)", () => {
   });
 });
 
+// §5 — comportamiento del write barrier en el worker (reader inyectable, sin refactor amplio).
+const reader = (existing: ExistingCatalogRow[], children: OwnChildRow[] = []): PreWriteCatalogReader => ({
+  findExisting: vi.fn(async () => existing),
+  findOwnChildren: vi.fn(async () => children),
+});
+const CTX2 = { providerId: "prov1", jobId: "job1" };
+const commercialWriteWouldHappen = async (fn: () => Promise<unknown>) => {
+  // Si el guard lanza, el worker nunca alcanza createMany (probado estructuralmente abajo).
+  let threw = false, code = "";
+  try { await fn(); } catch (e: any) { threw = true; code = e?.code ?? ""; }
+  return { threw, code };
+};
+
+describe("2G-R5D · §5 write barrier conductual (reader inyectable)", () => {
+  it("A · priced→null directo → lanza PRE_WRITE_PRICE_REGRESSION_DETECTED (⇒ worker no escribe comercial)", async () => {
+    const r = commercialWriteWouldHappen(() =>
+      assertNoPreWritePriceRegressionForExtraction(reader([ex("a", "S1", 100)]), {
+        userId: "u1", ...CTX2, requiresLogin: false, products: [inc("S1", null)],
+      }));
+    expect(await r).toEqual({ threw: true, code: "PRE_WRITE_PRICE_REGRESSION_DETECTED" });
+  });
+  it("B · login-gated sin precios → lanza LOGIN_GATED_EXTRACTION_HAS_ZERO_VALID_PRICES", async () => {
+    const r = commercialWriteWouldHappen(() =>
+      assertNoPreWritePriceRegressionForExtraction(reader([]), {
+        userId: "u1", ...CTX2, requiresLogin: true, products: [inc("N1", null), inc("N2", null)],
+      }));
+    expect(await r).toEqual({ threw: true, code: "LOGIN_GATED_EXTRACTION_HAS_ZERO_VALID_PRICES" });
+  });
+  it("C · PASS → no lanza; el reader fue consultado (flujo comercial continúa)", async () => {
+    const rd = reader([ex("a", "S1", 100)]);
+    const analysis = await assertNoPreWritePriceRegressionForExtraction(rd, {
+      userId: "u1", ...CTX2, requiresLogin: true, products: [inc("S1", 120)],
+    });
+    expect(analysis.pricedToNullCount).toBe(0);
+    expect(rd.findExisting).toHaveBeenCalledTimes(1);
+  });
+  it("D · falta userId → NO se saltea el guard: la regla login-gated igual corre (fail-closed) sin leer catálogo", async () => {
+    const rd = reader([ex("a", "S1", 100)]);
+    const r = commercialWriteWouldHappen(() =>
+      assertNoPreWritePriceRegressionForExtraction(rd, {
+        userId: null, ...CTX2, requiresLogin: true, products: [inc("S1", null)],
+      }));
+    expect(await r).toEqual({ threw: true, code: "LOGIN_GATED_EXTRACTION_HAS_ZERO_VALID_PRICES" });
+    expect(rd.findExisting).not.toHaveBeenCalled(); // sin userId no consulta catálogo, pero NO bypassa el guard
+  });
+  it("D.2 · falta userId + precios válidos → no lanza (el upsert no escribe catálogo sin userId; guard igual corrió)", async () => {
+    const rd = reader([]);
+    await expect(assertNoPreWritePriceRegressionForExtraction(rd, {
+      userId: undefined, ...CTX2, requiresLogin: true, products: [inc("S1", 50)],
+    })).resolves.toBeDefined();
+    expect(rd.findExisting).not.toHaveBeenCalled();
+  });
+});
+
 describe("2G-R5D · write barrier del worker (estructural, CI-safe)", () => {
   const src = readFileSync(resolve(process.cwd(), "worker/src/index.ts"), "utf8");
-  it("el guard corre ANTES de extractedProduct.createMany", () => {
-    const guardIdx = src.indexOf("assertNoPreWritePriceRegression(");
+  it("el guard (assertNoPreWritePriceRegressionForExtraction) corre ANTES de extractedProduct.createMany", () => {
+    const guardIdx = src.indexOf("assertNoPreWritePriceRegressionForExtraction(");
     const createManyIdx = src.indexOf("prisma.extractedProduct.createMany");
     expect(guardIdx).toBeGreaterThan(-1);
     expect(createManyIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(createManyIdx);
   });
-  it("el guard corre ANTES de la llamada a upsertCatalogProducts(...)", () => {
-    const guardIdx = src.indexOf("assertNoPreWritePriceRegression(");
-    // Última ocurrencia de la LLAMADA al upsert (no el import) debe estar después del guard.
+  it("el guard corre ANTES de la llamada a upsertCatalogProducts(...) y NO tiene bifurcación por userId", () => {
+    const guardIdx = src.indexOf("assertNoPreWritePriceRegressionForExtraction(");
     const upsertCallIdx = src.lastIndexOf("await upsertCatalogProducts(");
     expect(upsertCallIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(upsertCallIdx);
+    // La bifurcación permisiva `&& job.userId` ya no debe existir alrededor del guard.
+    expect(src).not.toMatch(/products\.length > 0 && job\.userId/);
   });
 });

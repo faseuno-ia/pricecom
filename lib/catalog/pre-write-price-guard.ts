@@ -173,3 +173,52 @@ export function assertNoPreWritePriceRegression(
     throw new PreWritePriceGuardError("LOGIN_GATED_EXTRACTION_HAS_ZERO_VALID_PRICES", analysis, ctx);
   }
 }
+
+/** Lector read-only del catálogo (inyectable: prisma en el worker, mock en tests). */
+export interface PreWriteCatalogReader {
+  findExisting: (userId: string, providerId: string, skus: string[]) => Promise<ExistingCatalogRow[]>;
+  findOwnChildren: (existingIds: string[]) => Promise<OwnChildRow[]>;
+}
+
+/**
+ * Orquestación del guard para el worker: lee el estado existente (read-only), analiza y ASERTA
+ * fail-closed. Corre SIEMPRE que haya productos entrantes (sin bifurcación permisiva por userId):
+ *   - el userId se resuelve con la MISMA autoridad que el upsert (`job.userId`);
+ *   - si falta userId, el upsert productivo no escribe catálogo (upsert-catalog-products.ts:64),
+ *     así que la regla priced→null es inaplicable, pero la regla login-gated (sólo mira el incoming)
+ *     IGUAL corre ⇒ el guard NUNCA se saltea para un job ejecutable.
+ * Lanza PreWritePriceGuardError si hay regresión; el caller (worker) lo convierte en markFailed.
+ */
+export async function assertNoPreWritePriceRegressionForExtraction(
+  reader: PreWriteCatalogReader,
+  args: {
+    userId: string | null | undefined;
+    providerId: string;
+    requiresLogin: boolean;
+    jobId: string;
+    products: IncomingProductRow[];
+    onLog?: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string) => Promise<void> | void;
+  },
+): Promise<PreWritePriceAnalysis> {
+  const incoming = args.products ?? [];
+  const skus = Array.from(
+    new Set(incoming.map((p) => (typeof p.sku === "string" ? p.sku.trim() : "")).filter((s) => s.length > 0)),
+  );
+  const existing = args.userId && skus.length ? await reader.findExisting(args.userId, args.providerId, skus) : [];
+  const ownChildren = existing.length ? await reader.findOwnChildren(existing.map((e) => e.id)) : [];
+  const analysis = analyzePreWritePriceRegression({ existing, ownChildren, incoming });
+  if (args.onLog) {
+    const wouldFail =
+      analysis.pricedToNullCount > 0 ||
+      (args.requiresLogin && analysis.incomingRowCount > 0 && analysis.incomingValidPriceCount === 0);
+    await args.onLog(
+      "INFO",
+      `[PreWritePriceGuard] existingPriced=${analysis.existingPricedCount} incomingRows=${analysis.incomingRowCount} ` +
+        `incomingValidPrice=${analysis.incomingValidPriceCount} incomingNullPrice=${analysis.incomingInvalidOrNullPriceCount} ` +
+        `directPricedToNull=${analysis.directPricedToNullCount} propagatedPricedToNull=${analysis.propagatedOwnChildPricedToNullCount} ` +
+        `newNullSku=${analysis.newSkuWithNullPriceCount} decision=${wouldFail ? "FAIL" : "PASS"}`,
+    );
+  }
+  assertNoPreWritePriceRegression(analysis, args.requiresLogin, { providerId: args.providerId, jobId: args.jobId });
+  return analysis;
+}

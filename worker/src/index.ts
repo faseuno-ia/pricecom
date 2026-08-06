@@ -22,10 +22,7 @@ import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
-import {
-  analyzePreWritePriceRegression,
-  assertNoPreWritePriceRegression,
-} from "../../lib/catalog/pre-write-price-guard";
+import { assertNoPreWritePriceRegressionForExtraction } from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 import { logInfo, logError } from "../../lib/events/event-log";
@@ -172,39 +169,31 @@ async function processJob(jobId: string) {
     // extracción y ANTES de cualquier escritura comercial (createMany/upsert/lastExtractionAt/
     // comparison). Lee el estado existente read-only y lanza un error tipado que el catch de abajo
     // convierte en markFailed → cero escrituras comerciales. Genérica (sin lógica por providerId).
-    if (products.length > 0 && job.userId) {
-      const incomingSkus = products
-        .map((p) => (typeof p.sku === "string" ? p.sku.trim() : ""))
-        .filter((s) => s.length > 0);
-      const existing = incomingSkus.length
-        ? await prisma.catalogProduct.findMany({
-            where: { userId: job.userId, providerId: provider.id, sku: { in: incomingSkus } },
-            select: { id: true, sku: true, wholesalePrice: true },
-          })
-        : [];
-      const ownChildren = existing.length
-        ? await prisma.catalogProduct.findMany({
-            where: { sourceCatalogProductId: { in: existing.map((e) => e.id) }, stockSource: "OWN" },
-            select: { id: true, sourceCatalogProductId: true, wholesalePrice: true },
-          })
-        : [];
-      const priceAnalysis = analyzePreWritePriceRegression({
-        existing,
-        ownChildren,
-        incoming: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
-      });
-      const wouldFail =
-        priceAnalysis.pricedToNullCount > 0 ||
-        (provider.requiresLogin && priceAnalysis.incomingRowCount > 0 && priceAnalysis.incomingValidPriceCount === 0);
-      await onLog(
-        "INFO",
-        `[PreWritePriceGuard] existingPriced=${priceAnalysis.existingPricedCount} incomingRows=${priceAnalysis.incomingRowCount} ` +
-          `incomingValidPrice=${priceAnalysis.incomingValidPriceCount} incomingNullPrice=${priceAnalysis.incomingInvalidOrNullPriceCount} ` +
-          `directPricedToNull=${priceAnalysis.directPricedToNullCount} propagatedPricedToNull=${priceAnalysis.propagatedOwnChildPricedToNullCount} ` +
-          `newNullSku=${priceAnalysis.newSkuWithNullPriceCount} decision=${wouldFail ? "FAIL" : "PASS"}`,
+    // Sin bifurcación permisiva: corre SIEMPRE que haya productos (el userId se resuelve con la
+    // misma autoridad que el upsert; la regla login-gated corre aunque falte userId).
+    if (products.length > 0) {
+      await assertNoPreWritePriceRegressionForExtraction(
+        {
+          findExisting: (userId, providerId, skus) =>
+            prisma.catalogProduct.findMany({
+              where: { userId, providerId, sku: { in: skus } },
+              select: { id: true, sku: true, wholesalePrice: true },
+            }),
+          findOwnChildren: (existingIds) =>
+            prisma.catalogProduct.findMany({
+              where: { sourceCatalogProductId: { in: existingIds }, stockSource: "OWN" },
+              select: { id: true, sourceCatalogProductId: true, wholesalePrice: true },
+            }),
+        },
+        {
+          userId: job.userId,
+          providerId: provider.id,
+          requiresLogin: provider.requiresLogin,
+          jobId,
+          products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
+          onLog,
+        },
       );
-      // Lanza (fail-closed) ANTES de createMany si hay regresión priced→null o extracción login-gated sin precios.
-      assertNoPreWritePriceRegression(priceAnalysis, provider.requiresLogin, { providerId: provider.id, jobId });
     }
 
     // Persistir productos
