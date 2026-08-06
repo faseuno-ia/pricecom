@@ -39,6 +39,15 @@ export interface WalkStats {
 
 export interface WalkerDeps {
   // ── Fase A ──────────────────────────────────────────────────────────────
+  /**
+   * Semilla de discovery sitemap-driven (2G-R3). Cuando está presente y no vacía,
+   * la Fase A NO recorre listados: usa estas URLs canónicas (típicamente el
+   * `startSnapshot.urls` del sitemap START, la misma autoridad de completitud) como
+   * conjunto de discovery. Se re-validan/canonicalizan con `resolveUrl` y se deduplican.
+   * Motivo: el listado del storefront demostró ser INCOMPLETO (817<877 en DT), mientras
+   * el sitemap ya es la autoridad de completitud. Si está ausente/vacía → Fase A legacy.
+   */
+  seedProductUrls?: string[];
   /** Extrae los href de producto del listado actual (crudos, sin resolver). */
   extractListingProductUrls: () => Promise<string[]>;
   /** Resuelve/valida un href; devolver null descarta la URL. */
@@ -87,6 +96,30 @@ export async function collectProductUrlsFromListings(
     if (!advanced) break;
   }
   return { urls, listingPages };
+}
+
+/**
+ * Fase A sitemap-driven (2G-R3): canonicaliza/valida/deduplica el seed sin recorrer
+ * listados. Reusa `resolveUrl` (mismo predicado de producto + canonicalización que la
+ * Fase A de listados) para que una URL basura del sitemap no entre al discovery. NO
+ * garantiza captura: cada URL entra recién al ACCEPTED_WALK_SET si la Fase B la acepta.
+ */
+export function collectProductUrlsFromSeed(
+  seed: string[],
+  deps: WalkerDeps,
+): { urls: string[]; rejected: number; duplicates: number } {
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  let rejected = 0;
+  let duplicates = 0;
+  for (const href of seed) {
+    const resolved = deps.resolveUrl(href);
+    if (!resolved) { rejected++; continue; }
+    if (seen.has(resolved)) { duplicates++; continue; }
+    seen.add(resolved);
+    urls.push(resolved);
+  }
+  return { urls, rejected, duplicates };
 }
 
 /** Mapea el payload de una ficha a filas reducidas (una por variante). */
@@ -149,8 +182,29 @@ export async function captureProductRows(
 export async function runSkuFirstWalk(
   deps: WalkerDeps,
 ): Promise<GroupResult & { stats: WalkStats }> {
-  await deps.onLog("INFO", "[SKU-first] Fase A: discovery de URLs de producto en listados");
-  const { urls, listingPages } = await collectProductUrlsFromListings(deps);
+  // Fase A. Sitemap-driven (2G-R3) cuando hay seed: NO recorre listados (el listado del
+  // storefront es incompleto); usa el START_SET como conjunto de discovery. Sin seed →
+  // discovery legacy por listados. En AMBOS casos el ACCEPTED_WALK_SET (autoridad de
+  // completitud) se llena SOLO con capturas aceptadas en Fase B, nunca con el seed.
+  let urls: string[];
+  let listingPages: number;
+  if (deps.seedProductUrls && deps.seedProductUrls.length > 0) {
+    await deps.onLog("INFO", "[SKU-first] Fase A: discovery desde sitemap START_SET");
+    const seeded = collectProductUrlsFromSeed(deps.seedProductUrls, deps);
+    urls = seeded.urls;
+    listingPages = 0;
+    await deps.onLog(
+      "INFO",
+      `[SKU-first] Fase A: ${urls.length} URLs canónicas sembradas desde sitemap ` +
+        `(raw=${deps.seedProductUrls.length}, rechazadas=${seeded.rejected}, duplicadas=${seeded.duplicates})`,
+    );
+  } else {
+    await deps.onLog("INFO", "[SKU-first] Fase A: discovery de URLs de producto en listados");
+    const collected = await collectProductUrlsFromListings(deps);
+    urls = collected.urls;
+    listingPages = collected.listingPages;
+    await deps.onLog("INFO", `[SKU-first] Fase A: ${urls.length} URLs únicas en ${listingPages} listados`);
+  }
 
   const stats: WalkStats = {
     listingPagesProcessed: listingPages,
@@ -159,7 +213,6 @@ export async function runSkuFirstWalk(
     productsFailed: 0,
     variantsCaptured: 0,
   };
-  await deps.onLog("INFO", `[SKU-first] Fase A: ${urls.length} URLs únicas en ${listingPages} listados`);
 
   const allRows: TnReducedRow[] = [];
   await deps.onLog("INFO", "[SKU-first] Fase B: captura de fichas individuales");

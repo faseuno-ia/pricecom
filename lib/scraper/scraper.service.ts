@@ -607,7 +607,14 @@ export class ScraperService {
       config?.nextPageSelector || "a[rel='next'], .next-page, [aria-label='Siguiente'], .pagination-next";
     const productCardSelector = config?.productCardSelector ?? null;
 
+    // 2G-R3 · discovery sitemap-driven: el START_SET (misma autoridad de completitud) es la
+    // semilla de navegación. `startSnapshot.urls` viene canonicalizado (host+path, sin esquema);
+    // se reconstruye a URL absoluta navegable. El listado del storefront quedó probado INCOMPLETO
+    // (817<877), por eso NO se usa como fuente de discovery. maxPages queda inerte en este modo.
+    const seedProductUrls = startSnapshot.urls.map((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`));
+
     const deps: WalkerDeps = {
+      seedProductUrls,
       maxListingPages: config?.maxPages ?? 10,
       maxProductRetries: 2,
       now: () => new Date().toISOString(),
