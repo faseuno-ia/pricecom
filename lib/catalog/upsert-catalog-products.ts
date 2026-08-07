@@ -11,6 +11,7 @@ import {
 import type { PricingRuleForCalc } from "../pricing/pricing-engine";
 import { markPublicationsDrift } from "./mark-publications-drift";
 import { toCatalogUpperCase, toCatalogUpperCaseOrNull } from "./uppercase";
+import { resolveCatalogWriteMode, resolvePriceOnlyUpdate } from "./catalog-write-mode";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -66,6 +67,14 @@ export async function upsertCatalogProducts(
   const userId = job.userId;
   const providerId = job.providerId;
   const lastSeenAt = new Date();
+
+  // 2G-R7.2 · Autoridad de escritura config-driven (genérica). null/""/whitespace/"FULL" → FULL
+  // (conducta histórica); "PRICE_ONLY" → path angosto; valor inválido → resolver fail-loud (throw).
+  const scraperConfig = await prismaClient.providerScraperConfig.findUnique({
+    where: { providerId },
+    select: { catalogWriteMode: true },
+  });
+  const catalogWriteMode = resolveCatalogWriteMode(scraperConfig?.catalogWriteMode);
 
   // Fase 3 lazy SKU: el worker NO genera publicationSku ni asigna SKU
   // comercial. El SKU se asigna lazy al publicar en publishProductToWoo,
@@ -191,6 +200,38 @@ export async function upsertCatalogProducts(
         metadata: { sku: pre.sku, supplierName: pre.supplierName },
       });
     }
+  }
+
+  // 2G-R7.2 · PRICE_ONLY — path ANGOSTO fail-closed. Sólo actualiza wholesalePrice + lastSeenAt +
+  // latestExtractedProductId de SKUs YA existentes; PRESERVA todo lo demás (supplierName/description/
+  // category/imageUrl/productUrl/stock/supplierStatus/internalStatus/pausedBySystem) y NO ejecuta
+  // removal / auto-pause / reactivación / markPublicationsDrift / publications / Woo. SKU nuevo →
+  // PriceOnlyNewSkuError (fail-closed). SKU existente ausente del incoming → intacto (no se toca:
+  // la autoridad de lifecycle está deshabilitada). D (pre-write price guard) corre ANTES en el
+  // worker y NO se bypassa. Retorna antes de todo el path histórico FULL.
+  if (catalogWriteMode === "PRICE_ONLY") {
+    for (const product of job.products) {
+      const sku = typeof product.sku === "string" ? product.sku.trim() : "";
+      const existing = sku
+        ? await prismaClient.catalogProduct.findUnique({
+            where: { userId_providerId_sku: { userId, providerId, sku } },
+            select: { id: true },
+          })
+        : null;
+      const upd = resolvePriceOnlyUpdate(existing, {
+        sku: product.sku,
+        wholesalePrice: product.wholesalePrice != null ? Number(product.wholesalePrice) : null,
+      });
+      await prismaClient.catalogProduct.update({
+        where: { id: upd.catalogProductId },
+        data: {
+          wholesalePrice: upd.wholesalePrice,
+          lastSeenAt,
+          latestExtractedProductId: product.id,
+        },
+      });
+    }
+    return;
   }
 
   // Acumulamos los cps cuyo wholesalePrice cambió respecto al valor previo.

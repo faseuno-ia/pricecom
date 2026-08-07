@@ -108,6 +108,10 @@ model ProviderScraperConfig {
   extractionMode    String?
   loginUrl          String?
   loginFlowStrategy String?
+  /// 2G-R7.2 · Autoridad de escritura del catálogo (config-driven, genérico). null → FULL
+  /// (histórico). "PRICE_ONLY" → sólo wholesalePrice + lastSeenAt + latestExtractedProductId;
+  /// preserva metadata/lifecycle/publications/Woo. Resolver fail-loud ante valores inválidos.
+  catalogWriteMode  String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }
