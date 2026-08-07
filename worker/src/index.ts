@@ -22,7 +22,7 @@ import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
-import { finalizeSuccessfulExtraction, handleJobFailure } from "./finalize-extraction";
+import { assertNoPreWritePriceRegressionForExtraction } from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 import { logInfo, logError } from "../../lib/events/event-log";
@@ -165,84 +165,172 @@ async function processJob(jobId: string) {
       });
     }
 
-    // 2G-R5D-R2 — Persistencia post-extracción extraída a `finalizeSuccessfulExtraction` (unidad
-    // real testeable con deps inyectables). Resuelve el userId FAIL-CLOSED, corre el guard pre-write
-    // (priced→null / login-gated) ANTES de cualquier escritura comercial, y sólo entonces persiste.
-    // Si el userId falta/difiere o el guard detecta regresión, LANZA → el catch de abajo hace
-    // markFailed → cero escrituras comerciales.
-    await finalizeSuccessfulExtraction(
-      {
-        findExistingCatalog: (userId, providerId, skus) =>
-          prisma.catalogProduct.findMany({
-            where: { userId, providerId, sku: { in: skus } },
-            select: { id: true, sku: true, wholesalePrice: true },
-          }),
-        createExtractedProducts: async (prods) => {
-          await prisma.extractedProduct.createMany({
-            data: prods.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)),
-          });
+    // Persistir productos
+    if (products.length > 0) {
+      // 2G-R5D — Barrera pre-write FAIL-CLOSED, inmediatamente antes de la PRIMERA escritura
+      // comercial (createMany). Exige job.userId (misma autoridad de tenant que el upsert), verifica
+      // consistencia con provider.userId (sólo testigo, no reemplaza), lee el catálogo existente
+      // read-only y lanza ante priced→null o extracción login-gated sin precios. SIN try/catch
+      // local: se propaga al catch histórico del job (→ markFailed). No reordena ni envuelve el
+      // resto del success path.
+      await assertNoPreWritePriceRegressionForExtraction(
+        {
+          findExisting: (userId, providerId, skus) =>
+            prisma.catalogProduct.findMany({
+              where: { userId, providerId, sku: { in: skus } },
+              select: { id: true, sku: true, wholesalePrice: true },
+            }),
         },
-        upsertCatalog: () => upsertCatalogProducts(jobId, prisma),
-        generateAndAttachExcel: async () => {
-          await onLog("INFO", "Generando archivo Excel...");
-          const fullProducts = await prisma.extractedProduct.findMany({ where: { jobId } });
-          const result = await generateExcel(fullProducts, provider, jobId);
-          await onLog("INFO", `Excel generado (${(result.buffer.byteLength / 1024).toFixed(0)} KB) — ${result.filename}`);
-          return { fileUrl: result.fileUrl, name: result.filename, data: result.buffer };
+        {
+          userId: job.userId,
+          providerUserId: provider.userId,
+          providerId: provider.id,
+          requiresLogin: provider.requiresLogin,
+          jobId,
+          products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
+          onLog,
         },
-        updateProviderLastExtraction: async () => {
-          await prisma.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
+      );
+
+      await prisma.extractedProduct.createMany({
+        // Mapping extraído a una función pura (lib/scraper/extracted-product-input)
+        // para poder testear la preservación de rawData sin DB. Byte-equivalente
+        // al map inline previo.
+        data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)),
+      });
+
+      // Sincronizar el catálogo persistente. Aislado en try/catch porque su
+      // fallo no debe abortar la extracción (Excel, comparación, etc. siguen).
+      try {
+        await upsertCatalogProducts(jobId, prisma);
+        await onLog("DEBUG", "CatalogProduct upsert completado");
+      } catch (err) {
+        await onLog("WARN", "Error en upsert de CatalogProduct — no rompe la extracción", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Estadísticas
+    const withPrice    = products.filter((p) => p.wholesalePrice !== null).length;
+    const withoutPrice = products.length - withPrice;
+    const withoutSku   = products.filter((p) => !p.sku).length;
+
+    // Generar Excel y persistirlo en DB (no en filesystem — Railway es efímero).
+    let excelFileUrl: string | null = null;
+    let excelName: string | null = null;
+    let excelData: Buffer | null = null;
+
+    if (products.length > 0) {
+      await onLog("INFO", "Generando archivo Excel...");
+      const fullProducts = await prisma.extractedProduct.findMany({ where: { jobId } });
+      const result = await generateExcel(fullProducts, provider, jobId);
+      excelFileUrl = result.fileUrl;
+      excelName = result.filename;
+      excelData = result.buffer;
+      await onLog(
+        "INFO",
+        `Excel generado (${(result.buffer.byteLength / 1024).toFixed(0)} KB) — ${result.filename}`
+      );
+    }
+
+    // Actualizar timestamp del proveedor
+    await prisma.provider.update({
+      where: { id: provider.id },
+      data:  { lastExtractionAt: new Date() },
+    });
+
+    await queue.markCompleted(jobId, {
+      totalProducts:       products.length,
+      productsWithPrice:   withPrice,
+      productsWithoutPrice: withoutPrice,
+      productsWithoutSku:  withoutSku,
+      // excelFilePath queda null para los nuevos jobs — el Excel vive en
+      // excelData (DB) y la UI lo descarga por excelFileUrl.
+      excelFilePath:       null,
+      excelFileUrl,
+      excelData,
+      excelName,
+    });
+
+    await onLog("INFO", `✓ Completado — ${products.length} productos procesados.`);
+
+    // Comparar contra la extracción COMPLETED anterior del mismo proveedor.
+    // En try/catch propio: si la comparación falla, el job ya está COMPLETED
+    // y no queremos romper el worker.
+    let comparisonStats: {
+      newProducts: number;
+      removedProducts: number;
+      priceUp: number;
+      priceDown: number;
+      stockChanged: number;
+    } | null = null;
+    try {
+      // Pasamos la instancia del worker para no abrir una segunda conexión.
+      await compareWithPreviousExtraction(jobId, prisma);
+      await onLog("INFO", "Comparación con extracción anterior generada.");
+      const comp = await prisma.extractionComparison.findUnique({
+        where: { jobId },
+        select: {
+          newProducts: true,
+          removedProducts: true,
+          priceUp: true,
+          priceDown: true,
+          stockChanged: true,
         },
-        markCompleted: (stats) => queue.markCompleted(jobId, stats),
-        runComparison: async () => {
-          try {
-            await compareWithPreviousExtraction(jobId, prisma);
-            await onLog("INFO", "Comparación con extracción anterior generada.");
-            return await prisma.extractionComparison.findUnique({
-              where: { jobId },
-              select: { newProducts: true, removedProducts: true, priceUp: true, priceDown: true, stockChanged: true },
-            });
-          } catch (err) {
-            console.error("[comparison] Error al comparar:", err);
-            await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
-            return null;
-          }
-        },
-        logCompleted: (info) =>
-          logInfo({
-            source: "EXTRACTION",
-            type: "EXTRACTION_COMPLETED",
-            title: `Extracción completada — ${provider.name}`,
-            providerId: provider.id,
-            jobId,
-            metadata: {
-              totalProducts: info.totalProducts,
-              productsWithPrice: info.productsWithPrice,
-              productsWithoutPrice: info.productsWithoutPrice,
-              productsWithoutSku: info.productsWithoutSku,
-              ...(info.comparison ?? {}),
-            },
-          }),
-        onLog,
+      });
+      comparisonStats = comp;
+    } catch (err) {
+      console.error("[comparison] Error al comparar:", err);
+      await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
+    }
+
+    await logInfo({
+      source: "EXTRACTION",
+      type: "EXTRACTION_COMPLETED",
+      title: `Extracción completada — ${provider.name}`,
+      providerId: provider.id,
+      jobId,
+      metadata: {
+        totalProducts: products.length,
+        productsWithPrice: withPrice,
+        productsWithoutPrice: withoutPrice,
+        productsWithoutSku: withoutSku,
+        ...(comparisonStats ?? {}),
       },
-      { products, job, provider, jobId },
-    );
+    });
 
   } catch (err) {
-    // 2G-R5D-R2 — handler exterior extraído: markFailed (autoritativo, 1×) + EventLog suplementario.
-    // Incluye errores del guard pre-write / tenant (fail-closed) y de la extracción (completitud, etc.).
-    await handleJobFailure(
-      {
-        onLog,
-        selectFailureMessage,
-        markFailed: (jid, msg) => queue.markFailed(jid, msg),
-        sanitizeCompleteness: (e) =>
-          e instanceof SkuFirstCompletenessError ? sanitizeSkuFirstCompletenessDiagnostics(e) : undefined,
-        logError: (args) => logError(args as Parameters<typeof logError>[0]),
-      },
-      { jobId },
-      err,
-    );
+    const errorMsg = (err as Error).message;
+    await onLog("ERROR", `✗ Job fallido: ${errorMsg}`);
+    // G1c: markFailed es el registro AUTORITATIVO del job fallido. Para SkuFirstCompletenessError
+    // lleva el mensaje bounded (reasonCode + counts + SHA + sample≤20); para cualquier error legacy
+    // lleva EXACTAMENTE error.message histórico. Los diagnósticos de completitud ya no dependen solo
+    // del EventLog: sobreviven en el propio registro autoritativo del job.
+    const failureMessage = selectFailureMessage(err);
+    // Resiliencia mutua: el fallo de markFailed no debe ocultar el error original (ya emitido por
+    // onLog) ni impedir el EventLog; el fallo del EventLog no debe impedir markFailed (va primero).
+    try {
+      await queue.markFailed(jobId, failureMessage);
+    } catch (markErr) {
+      console.error(`[worker] markFailed falló para job ${jobId} (no oculta el error original):`, markErr);
+    }
+    // EventLog = evidencia SUPLEMENTARIA (no única copia). reasonCode + counts + sample≤20 + SHA;
+    // nunca listas completas/precios/HTML/cookies/tokens.
+    const skuFirstCompleteness =
+      err instanceof SkuFirstCompletenessError ? sanitizeSkuFirstCompletenessDiagnostics(err) : undefined;
+    try {
+      await logError({
+        source: "EXTRACTION",
+        type: "EXTRACTION_FAILED",
+        title: "Extracción fallida",
+        description: errorMsg,
+        jobId,
+        metadata: skuFirstCompleteness ? { error: errorMsg, skuFirstCompleteness } : { error: errorMsg },
+      });
+    } catch (logErr) {
+      console.error(`[worker] logError falló para job ${jobId} (markFailed ya intentado):`, logErr);
+    }
   }
 }
 

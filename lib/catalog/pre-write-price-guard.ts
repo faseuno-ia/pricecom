@@ -200,18 +200,27 @@ export class PreWriteGuardTenantError extends Error {
 }
 
 /**
- * Orquestación del guard para el worker: lee el estado existente (read-only), analiza y ASERTA
- * fail-closed. Corre SIEMPRE que haya productos entrantes (sin bifurcación permisiva por userId):
- *   - el userId se resuelve con la MISMA autoridad que el upsert (`job.userId`);
- *   - si falta userId, el upsert productivo no escribe catálogo (upsert-catalog-products.ts:64),
- *     así que la regla priced→null es inaplicable, pero la regla login-gated (sólo mira el incoming)
- *     IGUAL corre ⇒ el guard NUNCA se saltea para un job ejecutable.
- * Lanza PreWritePriceGuardError si hay regresión; el caller (worker) lo convierte en markFailed.
+ * Orquestación del guard para el worker (una única llamada, inline antes de la primera escritura
+ * comercial). Resuelve el tenant FAIL-CLOSED, lee el estado existente read-only, analiza y ASERTA:
+ *
+ *   TENANT (§2 · autoridad = job.userId; provider.userId es SÓLO testigo de consistencia):
+ *     - si falta job.userId (null/undefined/blank) → PRE_WRITE_PRICE_GUARD_USER_ID_MISSING;
+ *     - si provider.userId existe y difiere de job.userId → EXTRACTION_JOB_PROVIDER_USER_MISMATCH;
+ *     - effectiveUserId = job.userId (SIN fallback a provider.userId).
+ *   El catálogo se lee con effectiveUserId, la MISMA autoridad que usa upsertCatalogProducts.
+ *
+ *   PRECIO (dos reglas independientes): priced→null y login-gated sin precios (ver
+ *   assertNoPreWritePriceRegression). Los checks de tenant corren ANTES de leer el catálogo, así
+ *   que un tenant inválido lanza sin tocar la DB.
+ *
+ * Lanza PreWriteGuardTenantError / PreWritePriceGuardError; el caller (worker) lo propaga a su
+ * catch histórico → markFailed. Nunca ejecuta escrituras comerciales.
  */
 export async function assertNoPreWritePriceRegressionForExtraction(
   reader: PreWriteCatalogReader,
   args: {
-    userId: string | null | undefined;
+    userId: string | null | undefined; // job.userId — ÚNICA autoridad de tenant
+    providerUserId?: string | null; // provider.userId — SÓLO testigo de consistencia (no reemplaza)
     providerId: string;
     requiresLogin: boolean;
     jobId: string;
@@ -219,11 +228,21 @@ export async function assertNoPreWritePriceRegressionForExtraction(
     onLog?: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string) => Promise<void> | void;
   },
 ): Promise<PreWritePriceAnalysis> {
+  const ctx = { providerId: args.providerId, jobId: args.jobId };
+  // 1 · Tenant FAIL-CLOSED. job.userId es la autoridad; provider.userId es sólo testigo (no fallback).
+  const jobUserId = typeof args.userId === "string" ? args.userId.trim() : "";
+  if (!jobUserId) throw new PreWriteGuardTenantError("PRE_WRITE_PRICE_GUARD_USER_ID_MISSING", ctx);
+  const providerUserId = typeof args.providerUserId === "string" ? args.providerUserId.trim() : "";
+  if (providerUserId && providerUserId !== jobUserId) {
+    throw new PreWriteGuardTenantError("EXTRACTION_JOB_PROVIDER_USER_MISMATCH", ctx);
+  }
+  const effectiveUserId = jobUserId; // NO se hace fallback a provider.userId.
+
   const incoming = args.products ?? [];
   const skus = Array.from(
     new Set(incoming.map((p) => (typeof p.sku === "string" ? p.sku.trim() : "")).filter((s) => s.length > 0)),
   );
-  const existing = args.userId && skus.length ? await reader.findExisting(args.userId, args.providerId, skus) : [];
+  const existing = skus.length ? await reader.findExisting(effectiveUserId, args.providerId, skus) : [];
   // ownChildren=[] a propósito: la propagación nunca escribe null (ver NULL_PROPAGATION_TO_OWN_CHILDREN_POSSIBLE).
   const analysis = analyzePreWritePriceRegression({ existing, ownChildren: [], incoming });
   if (args.onLog) {

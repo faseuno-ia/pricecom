@@ -1,6 +1,13 @@
-// 2G-R5D — tests del guard pre-write de regresión de precios. Puros (sin DB) + estructural del
-// write barrier del worker (el guard corre ANTES de la primera escritura comercial).
-import { describe, it, expect } from "vitest";
+// 2G-R5D — tests del guard pre-write de regresión de precios. Puros (sin DB) + wired del
+// entrypoint del worker (tenant fail-closed + análisis) + estructural del write barrier inline.
+//
+// R3: revertido el refactor del finalizador (finalize-extraction.ts eliminado). El guard vuelve a
+// ser una barrera INLINE única en worker/src/index.ts, inmediatamente antes de createMany. No hay
+// "pipeline behavioral test" porque no se reorganiza el success path productivo; la evidencia del
+// write barrier son: (1) tests puros del analizador, (2) tests de rechazo tipado del entrypoint
+// (tenant + precio), (3) test estructural del orden en worker/src/index.ts, (4) el catch histórico
+// intacto.
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -16,14 +23,6 @@ import {
   type IncomingProductRow,
   type PreWriteCatalogReader,
 } from "@/lib/catalog/pre-write-price-guard";
-import {
-  finalizeSuccessfulExtraction,
-  resolveEffectiveUserId,
-  handleJobFailure,
-  type FinalizeExtractionDeps,
-  type JobFailureDeps,
-} from "../../worker/src/finalize-extraction";
-import { vi } from "vitest";
 
 const ex = (id: string, sku: string, wp: number | null): ExistingCatalogRow => ({ id, sku, wholesalePrice: wp });
 const child = (id: string, parentId: string, wp: number | null): OwnChildRow => ({ id, sourceCatalogProductId: parentId, wholesalePrice: wp });
@@ -127,8 +126,8 @@ describe("2G-R5D · analyzePreWritePriceRegression (casos §8)", () => {
   });
 });
 
-// §5 (R2) — la propagación null a hijos OWN es imposible (freeze): el analizador la modela en 0.
-describe("2G-R5D-R2 · §5 propagación null a hijos OWN imposible (freeze)", () => {
+// §5 — la propagación null a hijos OWN es imposible (freeze): el analizador la modela en 0.
+describe("2G-R5D · §5 propagación null a hijos OWN imposible (freeze)", () => {
   it("parent null + child OWN priced + incoming parent null → propagatedPricedToNull=0 (upsert no propaga null)", () => {
     const a = analyze([ex("p", "P", null)], [child("c", "p", 100)], [inc("P", null)]);
     expect(a.propagatedOwnChildPricedToNullCount).toBe(0);
@@ -139,123 +138,104 @@ describe("2G-R5D-R2 · §5 propagación null a hijos OWN imposible (freeze)", ()
   });
 });
 
-// §1 — resolución de tenant FAIL-CLOSED.
-describe("2G-R5D-R2 · §1 resolveEffectiveUserId (fail-closed)", () => {
-  const CTX = { providerId: "prov1", jobId: "job1" };
-  it("job.userId presente → lo usa", () => {
-    expect(resolveEffectiveUserId({ userId: "u1" }, { userId: "u1" }, CTX)).toBe("u1");
-  });
-  it("job.userId ausente + provider.userId presente → fallback a provider.userId", () => {
-    expect(resolveEffectiveUserId({ userId: null }, { userId: "u9" }, CTX)).toBe("u9");
-  });
-  it("ambos ausentes → lanza PRE_WRITE_PRICE_GUARD_USER_ID_MISSING", () => {
-    try { resolveEffectiveUserId({ userId: null }, { userId: null }, CTX); throw new Error("no lanzó"); }
-    catch (e: any) { expect(e).toBeInstanceOf(PreWriteGuardTenantError); expect(e.code).toBe("PRE_WRITE_PRICE_GUARD_USER_ID_MISSING"); }
-  });
-  it("job.userId ≠ provider.userId → lanza EXTRACTION_JOB_PROVIDER_USER_MISMATCH", () => {
-    try { resolveEffectiveUserId({ userId: "u1" }, { userId: "u2" }, CTX); throw new Error("no lanzó"); }
-    catch (e: any) { expect(e.code).toBe("EXTRACTION_JOB_PROVIDER_USER_MISMATCH"); }
-  });
-});
-
-// §2/§3 — pipeline REAL de orquestación (finalizeSuccessfulExtraction) con deps inyectables.
-const spOf = (sku: string | null, wp: number | null) =>
-  ({ sku, name: "n", description: null, wholesalePrice: wp, oldPrice: null, stock: null, category: null, brand: null, productUrl: null, imageUrl: null, rawData: {} }) as any;
-function mockFinalizeDeps(existing: ExistingCatalogRow[] = []) {
-  const calls = { createMany: 0, upsert: 0, providerUpdate: 0, markCompleted: 0, comparison: 0, excel: 0, logCompleted: 0 };
-  const deps: FinalizeExtractionDeps = {
-    findExistingCatalog: vi.fn(async () => existing),
-    createExtractedProducts: vi.fn(async () => { calls.createMany++; }),
-    upsertCatalog: vi.fn(async () => { calls.upsert++; }),
-    generateAndAttachExcel: vi.fn(async () => { calls.excel++; return { fileUrl: null, name: null, data: null }; }),
-    updateProviderLastExtraction: vi.fn(async () => { calls.providerUpdate++; }),
-    markCompleted: vi.fn(async () => { calls.markCompleted++; }),
-    runComparison: vi.fn(async () => { calls.comparison++; return null; }),
-    logCompleted: vi.fn(async () => { calls.logCompleted++; }),
-    onLog: vi.fn(async () => {}),
-  };
-  return { deps, calls };
+// §2 — TENANT fail-closed en el entrypoint único (job.userId es autoridad; provider.userId testigo).
+function mockReader(existing: ExistingCatalogRow[] = []) {
+  const findExisting = vi.fn(async (_u: string, _p: string, _s: string[]) => existing);
+  return { reader: { findExisting } as PreWriteCatalogReader, findExisting };
 }
-const prov = (over: Record<string, unknown> = {}) => ({ id: "prov1", requiresLogin: false, userId: "u1", ...over });
-const jobOf = (over: Record<string, unknown> = {}) => ({ userId: "u1", ...over });
-const noCommercialWrites = (c: ReturnType<typeof mockFinalizeDeps>["calls"]) =>
-  c.createMany === 0 && c.upsert === 0 && c.providerUpdate === 0 && c.markCompleted === 0 && c.comparison === 0;
+const baseArgs = (over: Record<string, unknown> = {}) => ({
+  userId: "u1" as string | null | undefined,
+  providerUserId: "u1" as string | null | undefined,
+  providerId: "prov1",
+  requiresLogin: false,
+  jobId: "job1",
+  products: [inc("S1", 120)],
+  ...over,
+});
 
-describe("2G-R5D-R2 · §3 pipeline: guard/tenant fallan cerrado ⇒ CERO escrituras comerciales", () => {
-  it("A · priced→null → lanza y no ejecuta ninguna operación comercial", async () => {
-    const { deps, calls } = mockFinalizeDeps([ex("a", "S1", 100)]);
-    await expect(finalizeSuccessfulExtraction(deps, { products: [spOf("S1", null)], job: jobOf(), provider: prov(), jobId: "j1" }))
-      .rejects.toBeInstanceOf(PreWritePriceGuardError);
-    expect(noCommercialWrites(calls)).toBe(true);
-  });
-  it("B · login-gated sin precios → lanza y cero escrituras comerciales", async () => {
-    const { deps, calls } = mockFinalizeDeps([]);
-    await expect(finalizeSuccessfulExtraction(deps, { products: [spOf("N1", null)], job: jobOf(), provider: prov({ requiresLogin: true }), jobId: "j1" }))
-      .rejects.toBeInstanceOf(PreWritePriceGuardError);
-    expect(noCommercialWrites(calls)).toBe(true);
-  });
-  it("C · userId ausente → lanza USER_ID_MISSING antes de leer catálogo o escribir", async () => {
-    const { deps, calls } = mockFinalizeDeps([]);
-    await expect(finalizeSuccessfulExtraction(deps, { products: [spOf("S1", 50)], job: jobOf({ userId: null }), provider: prov({ userId: null }), jobId: "j1" }))
+describe("2G-R5D-R3 · §2 tenant fail-closed en assertNoPreWritePriceRegressionForExtraction", () => {
+  it("job.userId ausente (null) → lanza USER_ID_MISSING; NO lee catálogo", async () => {
+    const { reader, findExisting } = mockReader([ex("a", "S1", 100)]);
+    await expect(assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ userId: null })))
       .rejects.toBeInstanceOf(PreWriteGuardTenantError);
-    expect(noCommercialWrites(calls)).toBe(true);
-    expect(deps.findExistingCatalog).not.toHaveBeenCalled();
+    expect(findExisting).not.toHaveBeenCalled();
   });
-  it("D · userId inconsistente → lanza MISMATCH y cero escrituras", async () => {
-    const { deps, calls } = mockFinalizeDeps([]);
-    await expect(finalizeSuccessfulExtraction(deps, { products: [spOf("S1", 50)], job: jobOf({ userId: "u1" }), provider: prov({ userId: "u2" }), jobId: "j1" }))
-      .rejects.toBeInstanceOf(PreWriteGuardTenantError);
-    expect(noCommercialWrites(calls)).toBe(true);
+  it("job.userId blank ('   ') → lanza USER_ID_MISSING (fail-closed en blank)", async () => {
+    const { reader, findExisting } = mockReader();
+    try { await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ userId: "   " })); throw new Error("no lanzó"); }
+    catch (e: any) { expect(e).toBeInstanceOf(PreWriteGuardTenantError); expect(e.code).toBe("PRE_WRITE_PRICE_GUARD_USER_ID_MISSING"); }
+    expect(findExisting).not.toHaveBeenCalled();
   });
-  it("E · PASS → cada operación comercial se ejecuta exactamente una vez", async () => {
-    const { deps, calls } = mockFinalizeDeps([ex("a", "S1", 100)]);
-    await finalizeSuccessfulExtraction(deps, { products: [spOf("S1", 120)], job: jobOf(), provider: prov(), jobId: "j1" });
-    expect(calls).toEqual({ createMany: 1, upsert: 1, providerUpdate: 1, markCompleted: 1, comparison: 1, excel: 1, logCompleted: 1 });
+  it("provider.userId ≠ job.userId → lanza MISMATCH; NO lee catálogo", async () => {
+    const { reader, findExisting } = mockReader([ex("a", "S1", 100)]);
+    try { await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ userId: "u1", providerUserId: "u2" })); throw new Error("no lanzó"); }
+    catch (e: any) { expect(e.code).toBe("EXTRACTION_JOB_PROVIDER_USER_MISMATCH"); }
+    expect(findExisting).not.toHaveBeenCalled();
+  });
+  it("job.userId presente → el catálogo se lee con job.userId (provider NO lo reemplaza)", async () => {
+    const { reader, findExisting } = mockReader([ex("a", "S1", 100)]);
+    await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ userId: "u1", providerUserId: "u1" }));
+    expect(findExisting).toHaveBeenCalledTimes(1);
+    expect(findExisting.mock.calls[0][0]).toBe("u1"); // primer arg = userId
+  });
+  it("provider.userId ausente + job.userId presente → usa job.userId (sin fallback a provider)", async () => {
+    const { reader, findExisting } = mockReader([]);
+    await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ userId: "u7", providerUserId: null }));
+    expect(findExisting).toHaveBeenCalledTimes(1);
+    expect(findExisting.mock.calls[0][0]).toBe("u7");
   });
 });
 
-// §4 — handler exterior: markFailed exactamente una vez, no continúa el flujo.
-describe("2G-R5D-R2 · §4 handleJobFailure", () => {
-  function mockFailureDeps() {
-    const c = { markFailed: 0, logError: 0 };
-    const deps: JobFailureDeps = {
-      onLog: vi.fn(async () => {}),
-      selectFailureMessage: (e: any) => (e instanceof Error ? e.message : String(e)),
-      markFailed: vi.fn(async () => { c.markFailed++; }),
-      sanitizeCompleteness: () => undefined,
-      logError: vi.fn(async () => { c.logError++; }),
-    };
-    return { deps, c };
-  }
-  it("markFailed 1× + logError 1× ante un error del guard", async () => {
-    const { deps, c } = mockFailureDeps();
-    await handleJobFailure(deps, { jobId: "j1" }, new PreWritePriceGuardError("PRE_WRITE_PRICE_REGRESSION_DETECTED", analyze([ex("a", "S1", 100)], [], [inc("S1", null)]), { providerId: "p", jobId: "j1" }));
-    expect(c.markFailed).toBe(1);
-    expect(c.logError).toBe(1);
+// §3/§5 — el entrypoint único analiza y ASERTA (priced→null / login-gated) tras resolver tenant.
+describe("2G-R5D-R3 · assertNoPreWritePriceRegressionForExtraction (wired, tenant OK)", () => {
+  it("priced→null (existing 100, incoming null) → rechaza PreWritePriceGuardError PRICE_REGRESSION", async () => {
+    const { reader } = mockReader([ex("a", "S1", 100)]);
+    try { await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ products: [inc("S1", null)] })); throw new Error("no lanzó"); }
+    catch (e: any) { expect(e).toBeInstanceOf(PreWritePriceGuardError); expect(e.code).toBe("PRE_WRITE_PRICE_REGRESSION_DETECTED"); }
   });
-  it("compuesto: finalize lanza (guard) → catch → handleJobFailure markFailed 1×, cero escrituras comerciales", async () => {
-    const { deps: fdeps, calls } = mockFinalizeDeps([ex("a", "S1", 100)]);
-    const { deps: jf, c } = mockFailureDeps();
-    try { await finalizeSuccessfulExtraction(fdeps, { products: [spOf("S1", null)], job: jobOf(), provider: prov(), jobId: "j1" }); }
-    catch (e) { await handleJobFailure(jf, { jobId: "j1" }, e); }
-    expect(noCommercialWrites(calls)).toBe(true);
-    expect(c.markFailed).toBe(1);
+  it("login-gated (requiresLogin, incoming todos null, sin existing) → rechaza LOGIN_GATED", async () => {
+    const { reader } = mockReader([]);
+    try { await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ requiresLogin: true, products: [inc("N1", null)] })); throw new Error("no lanzó"); }
+    catch (e: any) { expect(e.code).toBe("LOGIN_GATED_EXTRACTION_HAS_ZERO_VALID_PRICES"); }
+  });
+  it("PASS (existing 100, incoming 120) → resuelve, devuelve análisis con pricedToNull=0", async () => {
+    const { reader } = mockReader([ex("a", "S1", 100)]);
+    const analysis = await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ products: [inc("S1", 120)] }));
+    expect(analysis.pricedToNullCount).toBe(0);
+    expect(analysis.incomingValidPriceCount).toBe(1);
+  });
+  it("SKU nuevo con null + sin login → PASS (no es regresión)", async () => {
+    const { reader } = mockReader([]);
+    const analysis = await assertNoPreWritePriceRegressionForExtraction(reader, baseArgs({ requiresLogin: false, products: [inc("NEW", null)] }));
+    expect(analysis.newSkuWithNullPriceCount).toBe(1);
+    expect(analysis.pricedToNullCount).toBe(0);
   });
 });
 
-describe("2G-R5D-R2 · orden en la unidad extraída (estructural, CI-safe)", () => {
-  const src = readFileSync(resolve(process.cwd(), "worker/src/finalize-extraction.ts"), "utf8");
+// §5 (R3) — estructural del write barrier INLINE en worker/src/index.ts (CI-safe: lee un tracked file).
+describe("2G-R5D-R3 · write barrier inline en worker/src/index.ts (estructural)", () => {
   const workerSrc = readFileSync(resolve(process.cwd(), "worker/src/index.ts"), "utf8");
-  it("resolveEffectiveUserId y el guard corren ANTES de createExtractedProducts en la unidad", () => {
-    const userIdIdx = src.indexOf("resolveEffectiveUserId(");
-    const guardIdx = src.indexOf("assertNoPreWritePriceRegressionForExtraction(");
-    const createIdx = src.indexOf("deps.createExtractedProducts(");
-    expect(userIdIdx).toBeGreaterThan(-1);
-    expect(userIdIdx).toBeLessThan(guardIdx);
+  it("existe EXACTAMENTE una llamada al guard (PRE_WRITE_GUARD_CALL_COUNT_IN_WORKER=1)", () => {
+    const calls = workerSrc.match(/assertNoPreWritePriceRegressionForExtraction\(/g) ?? [];
+    expect(calls.length).toBe(1);
+  });
+  it("el guard corre ANTES de la primera escritura comercial (createMany)", () => {
+    const guardIdx = workerSrc.indexOf("assertNoPreWritePriceRegressionForExtraction(");
+    const createIdx = workerSrc.indexOf("prisma.extractedProduct.createMany(");
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(createIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(createIdx);
   });
-  it("el worker delega en finalizeSuccessfulExtraction y no tiene la bifurcación `&& job.userId`", () => {
-    expect(workerSrc.indexOf("finalizeSuccessfulExtraction(")).toBeGreaterThan(-1);
+  it("el guard usa job.userId como autoridad y provider.userId sólo como testigo", () => {
+    expect(workerSrc).toMatch(/userId:\s*job\.userId/);
+    expect(workerSrc).toMatch(/providerUserId:\s*provider\.userId/);
+  });
+  it("NO existe el finalizador extraído ni la bifurcación permisiva `&& job.userId`", () => {
+    expect(workerSrc).not.toMatch(/finalizeSuccessfulExtraction/);
     expect(workerSrc).not.toMatch(/products\.length > 0 && job\.userId/);
+  });
+  it("el catch histórico del job sigue intacto (selectFailureMessage + queue.markFailed)", () => {
+    expect(workerSrc).toMatch(/selectFailureMessage\(err\)/);
+    expect(workerSrc).toMatch(/queue\.markFailed\(/);
   });
 });
