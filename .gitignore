@@ -30,6 +30,10 @@ backups/
 # es público: NADA de artifacts/ debe versionarse.
 artifacts/
 
+# Salidas locales de harnesses de diagnóstico (JSON con conteos + URLs de producto,
+# sin precios/secretos). No se versionan: son artefactos de corrida, no del repo.
+tmp/
+
 # Excel exports (generados en runtime)
 public/exports/
 /exports/
