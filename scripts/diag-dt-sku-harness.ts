@@ -12,9 +12,10 @@ import { prepareSkuFirstStartSnapshot } from "../lib/scraper/sku-first-start";
 import { runArm, zeroReplay, sessionCheckpoint, type LsReader, type ArmResult } from "../lib/diag/dt-harness";
 import { computeVerdict, type DtArmAgg, type DtZeroReplayAgg } from "../lib/diag/dt-verdict";
 
-// Overridables por entorno para portabilidad (el harness es una herramienta local reutilizable).
+// Overridables por entorno (herramienta local; el repo es PÚBLICO → sin rutas personales default).
 const DT_ID = process.env.DT_HARNESS_PROVIDER_ID || "cms8554bw0002cxz7qm3buvwm";
-const PENV = process.env.DT_HARNESS_ENV_FILE || "C:/Users/Daniel/Proyectos/Mayoristas/.env";
+const PENV = process.env.DT_HARNESS_ENV_FILE; // requerido: ruta al .env con DIRECT_URL + ENCRYPTION_KEY
+if (!PENV) { console.error("Falta DT_HARNESS_ENV_FILE (ruta al .env con DIRECT_URL y ENCRYPTION_KEY)."); process.exit(2); }
 const SKU_FIRST_MODE = "TIENDANUBE_LS_VARIANTS_SKU_FIRST";
 
 function loadEnv(p: string) {
@@ -50,7 +51,7 @@ async function main() {
   const SCALE = opt("scale", 40);
   const PAUSED_DELAY = opt("delay", 400); // §13: comprobar el probe lento previo (~400ms) antes de usar
 
-  const env = loadEnv(PENV);
+  const env = loadEnv(PENV!);
   const prisma = new PrismaClient({ datasources: { db: { url: env.DIRECT_URL } } });
   const scraper = new ScraperService();
   let exitCode = 0;
@@ -83,27 +84,28 @@ async function main() {
     const SAMPLE_SHA = writeJson(OUT, "sample.json", sampleObj);
     console.log(`SAMPLE_SIZE=${cohort.length} START_SET=${all877.length} SAMPLE_SHA256=${SAMPLE_SHA}`);
     const probeUrl = cohort[0].canonicalUrl;
-    const checkpointOrdinals = [10, 20, 30, 40].filter((n) => n <= cohort.length).concat(
-      Array.from({ length: Math.floor(cohort.length / 25) }, (_, k) => (k + 1) * 25).filter((n) => n > 40 && n <= cohort.length),
-    );
+    const HIGH_FAILURE_PROD_MS_PER_PRODUCT = 240; // baseline RUN_A/RUN_B (fase B, ~246/234)
+    const fidelity = (mean: number) => { const r = mean / HIGH_FAILURE_PROD_MS_PER_PRODUCT; const cls = r >= 0.85 && r <= 1.15 ? "HIGH" : r > 1.3 ? "FAILED_TOO_SLOW" : r < 0.7 ? "FAILED_TOO_FAST" : "AMBIGUOUS"; return { ratio: r.toFixed(2), cls }; };
 
     // ── Contexto autenticado FRESCO por brazo (§13/§14): cada brazo cierra el anterior,
     //    re-inicia el browser y re-loguea. Serial, nunca dos browsers concurrentes. ──
     const onLog = async (_l: string, _m: string) => {};
-    const openCtx = async (label: string): Promise<{ page: import("playwright").Page; reader: LsReader; authEstablished: boolean; decryptOk: boolean }> => {
+    const openCtx = async (label: string): Promise<{ page: import("playwright").Page; reader: LsReader; reLogin: () => Promise<void>; authEstablished: boolean; decryptOk: boolean }> => {
       await scraper.close().catch(() => {});
       await scraper.init();
       const page = (scraper as any).page as import("playwright").Page;
       const reader: LsReader = { capture: () => (scraper as any).captureLsPayload(page) };
+      const reLogin = async () => { await scraper.performLogin(page, provider as any, provider.scraperConfig, onLog as any, rc.effectiveLoginUrl); };
       await page.goto(provider.baseUrl, { waitUntil: "domcontentloaded" });
       let decryptOk = false;
       if (provider.requiresLogin && provider.encryptedPassword) {
-        try { await scraper.performLogin(page, provider as any, provider.scraperConfig, onLog as any, rc.effectiveLoginUrl); decryptOk = true; }
+        try { await reLogin(); decryptOk = true; }
         catch (e) { console.log(`[${label}] LOGIN_THREW=${(e as Error).message.slice(0, 60)}`); }
       }
+      // Checkpoint de sesión PRE-brazo (navega el probe; fuera del loop de cadencia).
       const authEstablished = await sessionCheckpoint(page, reader, probeUrl, provider.baseUrl);
       console.log(`[${label}] CREDENTIAL_DECRYPT_SUCCEEDED=${decryptOk} AUTH_ESTABLISHED=${authEstablished}`);
-      return { page, reader, authEstablished, decryptOk };
+      return { page, reader, reLogin, authEstablished, decryptOk };
     };
 
     const toDtAgg = (a: ArmResult["agg"]): DtArmAgg => ({ ...a });
@@ -111,15 +113,18 @@ async function main() {
     let zeroAgg: DtZeroReplayAgg | null = null;
     let fastAuthEstablished = false;
 
-    // ── FAST (baseline exacto del worker) — contexto fresco ──
+    // ── FAST (baseline exacto del worker: captureProductRows, delay 0) — contexto fresco ──
     if (doFast || doCandidate) {
-      console.log(`\n=== FAST arm (scale=${cohort.length}, delay=0, immediate read) ===`);
+      console.log(`\n=== FAST arm (scale=${cohort.length}, delay=0, productive captureProductRows) ===`);
       const ctx = await openCtx("FAST");
       fastAuthEstablished = ctx.authEstablished;
-      fast = await runArm(ctx.page, ctx.reader, cohort, { interProductDelayMs: 0, baseUrl: provider.baseUrl, probeUrl, checkpointOrdinals,
-        onProgress: (i, r) => { if (i % 10 === 0 || r.initialVariantCount === 0) console.log(`  #${i} zero=${r.initialVariantCount === 0} variants=${r.initialVariantCount} price=${r.validPriceVariantCount} nav=${r.navStatus} err=${r.errorClass ?? "-"}`); } });
-      writeJson(OUT, "fast.json", { authEstablished: ctx.authEstablished, agg: fast.agg, checkpoints: fast.checkpoints, records: fast.records });
+      fast = await runArm(ctx.page, ctx.reader, ctx.reLogin, cohort, { interProductDelayMs: 0, baseUrl: provider.baseUrl,
+        onProgress: (i, r) => { if (i % 25 === 0 || r.initialVariantCount === 0 || r.errorClass) console.log(`  #${i} zero=${r.errorClass === null && r.initialVariantCount === 0} variants=${r.initialVariantCount} price=${r.validPriceVariantCount} nav=${r.navStatus} err=${r.errorClass ?? "-"} ${r.elapsedMs}ms`); } });
+      const sessFinal = await sessionCheckpoint(ctx.page, ctx.reader, probeUrl, provider.baseUrl);
+      const fid = fidelity(fast.cadence.meanMsPerProduct);
+      writeJson(OUT, "fast.json", { authEstablished: ctx.authEstablished, sessionFinalOk: sessFinal, cadence: fast.cadence, cadenceFidelity: fid, agg: fast.agg, records: fast.records });
       console.log(`FAST initialZero=${fast.agg.initialZeroVariantCount}/${fast.agg.urlCount} variantTotal=${fast.agg.variantTotal} validPrice=${fast.agg.validPriceVariantCount} sessLoss=${fast.agg.sessionLossCount} 429=${fast.agg.http429Count} reset=${fast.agg.connectionResetCount} firstZeroOrd=${fast.agg.firstZeroOrdinal}`);
+      console.log(`FAST cadence mean=${fast.cadence.meanMsPerProduct.toFixed(0)}ms median=${fast.cadence.medianMsPerProduct}ms wall=${fast.cadence.wallClockMs}ms → FIDELITY ratio=${fid.ratio} ${fid.cls} (baseline ${HIGH_FAILURE_PROD_MS_PER_PRODUCT}ms)  sessionFinalOk=${sessFinal}`);
     }
 
     // ── ZERO-REPLAY (control puro de timing) sobre el zero-set de FAST — contexto FRESCO ──
@@ -141,9 +146,10 @@ async function main() {
     if (doPaused && fast && fast.agg.initialZeroVariantCount > 0) {
       console.log(`\n=== PAUSED arm (scale=${cohort.length}, delay=${PAUSED_DELAY}ms, fresh ctx) ===`);
       const ctx = await openCtx("PAUSED");
-      paused = await runArm(ctx.page, ctx.reader, cohort, { interProductDelayMs: PAUSED_DELAY, baseUrl: provider.baseUrl, probeUrl, checkpointOrdinals });
-      writeJson(OUT, "paused.json", { delayMs: PAUSED_DELAY, authEstablished: ctx.authEstablished, agg: paused.agg, checkpoints: paused.checkpoints, records: paused.records });
-      console.log(`PAUSED initialZero=${paused.agg.initialZeroVariantCount}/${paused.agg.urlCount} variantTotal=${paused.agg.variantTotal} validPrice=${paused.agg.validPriceVariantCount} sessLoss=${paused.agg.sessionLossCount}`);
+      paused = await runArm(ctx.page, ctx.reader, ctx.reLogin, cohort, { interProductDelayMs: PAUSED_DELAY, baseUrl: provider.baseUrl });
+      const sessFinal = await sessionCheckpoint(ctx.page, ctx.reader, probeUrl, provider.baseUrl);
+      writeJson(OUT, "paused.json", { delayMs: PAUSED_DELAY, authEstablished: ctx.authEstablished, sessionFinalOk: sessFinal, cadence: paused.cadence, agg: paused.agg, records: paused.records });
+      console.log(`PAUSED initialZero=${paused.agg.initialZeroVariantCount}/${paused.agg.urlCount} variantTotal=${paused.agg.variantTotal} validPrice=${paused.agg.validPriceVariantCount} sessLoss=${paused.agg.sessionLossCount} cadence mean=${paused.cadence.meanMsPerProduct.toFixed(0)}ms`);
     } else if (doPaused && fast) {
       console.log("\n=== PAUSED skipped: FAST reprodujo 0 fallos (no hay fenómeno que controlar) ===");
     }
