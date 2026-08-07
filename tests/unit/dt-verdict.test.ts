@@ -86,9 +86,9 @@ describe("R6-R1.1 epistemic guards", () => {
     expect(v.captureRootCause).toBe("UNPROVEN"); // asociación ≠ causa
   });
 
-  it("captureRootCause default de asociación = STRONGLY_SUPPORTED cuando no se pasa", () => {
+  it("R7 §12: default de asociación = UNPROVEN cuando no se pasa (no un claim fuerte)", () => {
     const v = computeVerdict(input({ fast: arm({ urlCount: 10, initialZeroVariantCount: 0 }) }));
-    expect(v.historicalProductionLatencyCaptureAssociation).toBe("STRONGLY_SUPPORTED");
+    expect(v.historicalProductionLatencyCaptureAssociation).toBe("UNPROVEN");
   });
 
   it("captureRootCause sólo se atribuye con controles falsables ejecutados (timing+pacing)", () => {
