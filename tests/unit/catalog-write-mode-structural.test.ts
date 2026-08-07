@@ -43,7 +43,21 @@ describe("2G-R7.2 · PRICE_ONLY enforcement (estructural)", () => {
     expect(block).toMatch(/wholesalePrice:/);
     expect(block).toMatch(/lastSeenAt/);
     expect(block).toMatch(/latestExtractedProductId/);
-    expect(block).toMatch(/resolvePriceOnlyUpdate\(/);
+  });
+
+  it("R7.2-R1 · PREVALIDACIÓN dos fases: existencia SET-BASED + resolvePriceOnlyBatch ANTES del loop de update", () => {
+    const branch = idx('if (catalogWriteMode === "PRICE_ONLY")');
+    const end = idx("const WHOLESALE_TOLERANCE");
+    const block = src.slice(branch, end);
+    // existencia set-based (findMany ... sku: { in: ... }), NO findUnique por producto (sin N+1)
+    expect(block).toMatch(/findMany\(/);
+    expect(block).toMatch(/sku:\s*\{\s*in:/);
+    expect(block).not.toMatch(/findUnique\(/);
+    // PHASE 1 (resolvePriceOnlyBatch) ocurre ANTES de PHASE 2 (catalogProduct.update)
+    const batchIdx = block.indexOf("resolvePriceOnlyBatch(");
+    const updateIdx = block.indexOf("catalogProduct.update(");
+    expect(batchIdx).toBeGreaterThan(-1);
+    expect(updateIdx).toBeGreaterThan(batchIdx);
   });
 
   it("D (pre-write-price-guard) no se importa ni se modifica desde upsert (D corre en el worker)", () => {
