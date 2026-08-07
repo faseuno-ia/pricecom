@@ -1,10 +1,17 @@
 // 2G-R6 / R6-R1 — Harness diagnóstico READ-ONLY para la captura SKU-first autenticada de DT.
 //
-// FIDELIDAD (R6-R1): el brazo FAST ejecuta la ORQUESTACIÓN productiva por ficha — el mismo
-// `captureProductRows` del walker (lib/scraper/tiendanube-walker.ts) — inyectando deps que
-// reutilizan la navegación (page.goto domcontentloaded), el re-login real y el lector real
-// window.LS (ScraperService.captureLsPayload). NO copia el loop; NO agrega waits/polls/probe-navs
-// dentro del brazo (la observación de sesión es side-effect-free: pre/post + derivada de records).
+// FIDELIDAD (R6-R1 / R6-R1.1): el brazo FAST usa la UNIDAD PRODUCTIVA DE CAPTURA POR FICHA — el
+// `captureProductRows` del walker (lib/scraper/tiendanube-walker.ts) — dentro de un LOOP DIAGNÓSTICO
+// (no ejecuta el `runSkuFirstWalk` completo). Nomenclatura exacta:
+//   FAST_PRODUCT_CAPTURE_SEQUENCE = PRODUCTIVE_CAPTURE_PRODUCT_ROWS  (PRODUCT_CAPTURE_PATH_FIDELITY=HIGH)
+//   FAST_INTER_PRODUCT_ORCHESTRATION = DIAGNOSTIC_LOOP               (FULL_WALK_ORCHESTRATION_FIDELITY=PARTIAL)
+// Inyecta deps que reutilizan navegación (page.goto domcontentloaded), re-login real y el lector real
+// window.LS (ScraperService.captureLsPayload). Sin waits/polls/probe-navs dentro del brazo (sesión
+// side-effect-free: checkpoints pre/post + señal intermedia derivada de records).
+//
+// ROL: FUNCTIONAL_VALIDATION_NOT_PRODUCTION_REGIME_REPRODUCTION. El wall-clock LOCAL (Windows) NO es
+// comparable causalmente con la ejecución histórica en Railway; un 0/N local NO refuta un defecto
+// productivo, y la diferencia de ms/producto es DESCRIPTIVA, sin significado causal.
 //
 // CERO writes DB/Provider/Job/Woo. Un solo browser, red serial. Output sólo conteos (nunca
 // precios/cookies/tokens/HTML).

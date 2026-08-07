@@ -84,8 +84,10 @@ async function main() {
     const SAMPLE_SHA = writeJson(OUT, "sample.json", sampleObj);
     console.log(`SAMPLE_SIZE=${cohort.length} START_SET=${all877.length} SAMPLE_SHA256=${SAMPLE_SHA}`);
     const probeUrl = cohort[0].canonicalUrl;
-    const HIGH_FAILURE_PROD_MS_PER_PRODUCT = 240; // baseline RUN_A/RUN_B (fase B, ~246/234)
-    const fidelity = (mean: number) => { const r = mean / HIGH_FAILURE_PROD_MS_PER_PRODUCT; const cls = r >= 0.85 && r <= 1.15 ? "HIGH" : r > 1.3 ? "FAILED_TOO_SLOW" : r < 0.7 ? "FAILED_TOO_FAST" : "AMBIGUOUS"; return { ratio: r.toFixed(2), cls }; };
+    // Baseline histórico Railway (fase B RUN_A/RUN_B, ~246/234). El ratio local-vs-Railway es
+    // DESCRIPTIVO: distinto entorno (Windows local vs Railway) → NO comparable causalmente (R6-R1.1 §5).
+    const HIGH_FAILURE_PROD_MS_PER_PRODUCT = 240;
+    const fidelity = (mean: number) => { const r = mean / HIGH_FAILURE_PROD_MS_PER_PRODUCT; const cls = r >= 0.85 && r <= 1.15 ? "HIGH" : r > 1.3 ? "LOCAL_SLOWER_THAN_HISTORICAL_RAILWAY" : r < 0.7 ? "LOCAL_FASTER_THAN_HISTORICAL_RAILWAY" : "AMBIGUOUS"; return { ratio: r.toFixed(2), cls, meaning: "DESCRIPTIVE_ONLY_NO_CAUSAL_MEANING" }; };
 
     // ── Contexto autenticado FRESCO por brazo (§13/§14): cada brazo cierra el anterior,
     //    re-inicia el browser y re-loguea. Serial, nunca dos browsers concurrentes. ──
@@ -124,7 +126,7 @@ async function main() {
       const fid = fidelity(fast.cadence.meanMsPerProduct);
       writeJson(OUT, "fast.json", { authEstablished: ctx.authEstablished, sessionFinalOk: sessFinal, cadence: fast.cadence, cadenceFidelity: fid, agg: fast.agg, records: fast.records });
       console.log(`FAST initialZero=${fast.agg.initialZeroVariantCount}/${fast.agg.urlCount} variantTotal=${fast.agg.variantTotal} validPrice=${fast.agg.validPriceVariantCount} sessLoss=${fast.agg.sessionLossCount} 429=${fast.agg.http429Count} reset=${fast.agg.connectionResetCount} firstZeroOrd=${fast.agg.firstZeroOrdinal}`);
-      console.log(`FAST cadence mean=${fast.cadence.meanMsPerProduct.toFixed(0)}ms median=${fast.cadence.medianMsPerProduct}ms wall=${fast.cadence.wallClockMs}ms → FIDELITY ratio=${fid.ratio} ${fid.cls} (baseline ${HIGH_FAILURE_PROD_MS_PER_PRODUCT}ms)  sessionFinalOk=${sessFinal}`);
+      console.log(`FAST cadence mean=${fast.cadence.meanMsPerProduct.toFixed(0)}ms median=${fast.cadence.medianMsPerProduct}ms wall=${fast.cadence.wallClockMs}ms → ratio=${fid.ratio} ${fid.cls} [${fid.meaning}] (baseline ${HIGH_FAILURE_PROD_MS_PER_PRODUCT}ms Railway)  sessionFinalOk=${sessFinal}`);
     }
 
     // ── ZERO-REPLAY (control puro de timing) sobre el zero-set de FAST — contexto FRESCO ──
@@ -163,7 +165,9 @@ async function main() {
         paused: paused ? toDtAgg(paused.agg) : null,
         zeroReplay: zeroAgg,
         pausedDelayMs: paused ? PAUSED_DELAY : null,
+        historicalLatencyAssociation: "STRONGLY_SUPPORTED", // control de causalidad inversa (R6-R1.1 §3)
       });
+      console.log(`harnessRole=${verdict.harnessRole} reproducedLocally=${verdict.captureFailureReproducedLocally} rootCause=${verdict.captureRootCause} crossEnvComparable=${verdict.crossEnvironmentCadenceComparable}`);
       writeJson(OUT, "verdict.json", verdict);
       console.log(`\n=== VERDICT ===\n${JSON.stringify(verdict.evidence, null, 2)}\nrecommendedCaptureRemediation=${verdict.recommendedCaptureRemediation}`);
       if (verdict.recommendedCaptureRemediation === "INSUFFICIENT_EVIDENCE" || verdict.evidence.reproductionAtAdequateScale === "UNPROVEN") exitCode = 2;

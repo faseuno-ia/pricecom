@@ -46,9 +46,24 @@ export interface DtVerdictInput {
   paused: DtArmAgg | null; // null if not executed
   zeroReplay: DtZeroReplayAgg | null; // null if not executed
   pausedDelayMs: number | null;
+  // Asociación histórica (Railway) latencia-end-to-end ↔ captura, establecida por el control de
+  // causalidad inversa (R6-R1.1 §3). Es un hecho histórico de ENTRADA — NO se deriva de datos
+  // locales. Default STRONGLY_SUPPORTED. NUNCA implica una causa (server/network/pacing) demostrada.
+  historicalLatencyAssociation?: "STRONGLY_SUPPORTED" | "SUPPORTED" | "UNPROVEN";
 }
 
+// R6-R1.1: el harness local es VALIDACIÓN FUNCIONAL, no reproducción del régimen productivo.
+// Estas constantes hacen imposible que el verdict local se lea como evidencia cross-environment.
+export const LOCAL_HARNESS_ROLE = "FUNCTIONAL_VALIDATION_NOT_PRODUCTION_REGIME_REPRODUCTION" as const;
+export const CROSS_ENVIRONMENT_CADENCE_COMPARABLE = false as const;
+
 export interface DtVerdict {
+  // --- R6-R1.1 · límites epistémicos explícitos (auto-documentan la NO-autoridad cross-environment) ---
+  harnessRole: typeof LOCAL_HARNESS_ROLE;
+  captureFailureReproducedLocally: boolean;
+  captureRootCause: "UNPROVEN" | "TIMING_RACE" | "PACING" | "TIMING_AND_PACING";
+  historicalProductionLatencyCaptureAssociation: "STRONGLY_SUPPORTED" | "SUPPORTED" | "UNPROVEN";
+  crossEnvironmentCadenceComparable: typeof CROSS_ENVIRONMENT_CADENCE_COMPARABLE;
   historical: {
     distribution: string;
     firstFailureApproxOrdinal: number | null;
@@ -233,7 +248,26 @@ export function computeVerdict(input: DtVerdictInput): DtVerdict {
     recommendedCaptureRemediation = "OTHER";
   }
 
+  // --- R6-R1.1 · campos epistémicos explícitos ---
+  // captureRootCause SÓLO puede atribuir timing/pacing con sus controles falsables ejecutados;
+  // NUNCA server/network, y NUNCA se vuelve conocido por 0 fallos locales o por cadencia local.
+  const captureFailureReproducedLocally = fast.initialZeroVariantCount > 0;
+  let captureRootCause: DtVerdict["captureRootCause"] = "UNPROVEN";
+  if (captureFailureReproducedLocally) {
+    const timingKnown = timingRaceExists === "DEMONSTRATED";
+    const pacingKnown = pacingEffect === "DEMONSTRATED" || pacingEffect === "SUPPORTED";
+    if (timingKnown && pacingKnown) captureRootCause = "TIMING_AND_PACING";
+    else if (timingKnown) captureRootCause = "TIMING_RACE";
+    else if (pacingEffect === "DEMONSTRATED") captureRootCause = "PACING";
+    else captureRootCause = "UNPROVEN";
+  }
+
   return {
+    harnessRole: LOCAL_HARNESS_ROLE,
+    captureFailureReproducedLocally,
+    captureRootCause,
+    historicalProductionLatencyCaptureAssociation: input.historicalLatencyAssociation ?? "STRONGLY_SUPPORTED",
+    crossEnvironmentCadenceComparable: CROSS_ENVIRONMENT_CADENCE_COMPARABLE,
     historical: {
       distribution: historical.distribution,
       firstFailureApproxOrdinal: historical.firstFailureApproxOrdinal,

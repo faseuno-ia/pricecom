@@ -61,6 +61,55 @@ function input(overrides: Partial<DtVerdictInput> = {}): DtVerdictInput {
   };
 }
 
+// ---- R6-R1.1 · límites epistémicos: local no refuta ni atribuye causa ----
+
+describe("R6-R1.1 epistemic guards", () => {
+  it("harnessRole + crossEnvironmentCadenceComparable son constantes fijas (no derivadas de datos)", () => {
+    const clean = computeVerdict(input({ fast: arm({ urlCount: 200, initialZeroVariantCount: 0, variantTotal: 285, validPriceVariantCount: 276 }) }));
+    expect(clean.harnessRole).toBe("FUNCTIONAL_VALIDATION_NOT_PRODUCTION_REGIME_REPRODUCTION");
+    expect(clean.crossEnvironmentCadenceComparable).toBe(false);
+  });
+
+  it("0 fallos locales → NO reproducido, causa UNPROVEN, timing UNPROVEN (no REFUTED), pacing UNPROVEN", () => {
+    // FAST limpio, sin zero-replay ni paused (no hay zero-set): el motor NO puede refutar nada.
+    const v = computeVerdict(input({ fast: arm({ urlCount: 200, initialZeroVariantCount: 0 }), historical: hist({ scaleAdequate: true }) }));
+    expect(v.captureFailureReproducedLocally).toBe(false);
+    expect(v.captureRootCause).toBe("UNPROVEN");
+    expect(v.evidence.timingRaceExists).toBe("UNPROVEN"); // NUNCA REFUTED por 0 fallos locales
+    expect(v.evidence.pacingEffect).toBe("UNPROVEN");
+    expect(v.recommendedCaptureRemediation).toBe("INSUFFICIENT_EVIDENCE");
+  });
+
+  it("la asociación histórica puede ser STRONGLY_SUPPORTED sin ninguna causa demostrada", () => {
+    const v = computeVerdict(input({ fast: arm({ urlCount: 200, initialZeroVariantCount: 0 }), historicalLatencyAssociation: "STRONGLY_SUPPORTED" }));
+    expect(v.historicalProductionLatencyCaptureAssociation).toBe("STRONGLY_SUPPORTED");
+    expect(v.captureRootCause).toBe("UNPROVEN"); // asociación ≠ causa
+  });
+
+  it("captureRootCause default de asociación = STRONGLY_SUPPORTED cuando no se pasa", () => {
+    const v = computeVerdict(input({ fast: arm({ urlCount: 10, initialZeroVariantCount: 0 }) }));
+    expect(v.historicalProductionLatencyCaptureAssociation).toBe("STRONGLY_SUPPORTED");
+  });
+
+  it("captureRootCause sólo se atribuye con controles falsables ejecutados (timing+pacing)", () => {
+    // reproducido + zero-replay demuestra timing + paused demuestra pacing → TIMING_AND_PACING
+    const v = computeVerdict(input({
+      fast: arm({ urlCount: 40, initialZeroVariantCount: 8 }),
+      zeroReplay: zeroReplay({ urlCount: 8, recoveredWithoutReloadCount: 8, maxRecoveryMs: 1000 }),
+      paused: arm({ urlCount: 40, initialZeroVariantCount: 0, sessionLossCount: 0 }),
+      pausedDelayMs: 400,
+    }));
+    expect(v.captureFailureReproducedLocally).toBe(true);
+    expect(v.captureRootCause).toBe("TIMING_AND_PACING");
+  });
+
+  it("reproducido pero sin controles → causa UNPROVEN (no se inventa)", () => {
+    const v = computeVerdict(input({ fast: arm({ urlCount: 40, initialZeroVariantCount: 8 }) }));
+    expect(v.captureFailureReproducedLocally).toBe(true);
+    expect(v.captureRootCause).toBe("UNPROVEN");
+  });
+});
+
 // ---- REPRODUCTION ----
 
 describe("reproductionAtAdequateScale", () => {
