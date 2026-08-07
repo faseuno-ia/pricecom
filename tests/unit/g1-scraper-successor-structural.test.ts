@@ -36,17 +36,24 @@ const SCRAPER_SERVICE_PATH = resolve(process.cwd(), "lib/scraper/scraper.service
 const B5_SIGNED_SHA256 = "5091077200502b36f538d9b626ae2ea2f0e30e935cc685fb8b79a657aa1cb9b0";
 const B4_G1_FROZEN_SHA256 = "1db776adb0d2e642ab815032073f113d07513e1bb1f79a8c395ef564bb719cb7";
 const B4_2GR3_SUCCESSOR_SHA256 = "e8d53e3be901db0b8783ffae6576752e54a4a17bf451441915541e359804bf2e";
+// 2G-R7: sucesión firmada de B4. Delta autorizado y acotado (observabilidad §7):
+//   + WalkerDeps.nowMs? / onProductObserved?  (OPCIONALES, inertes si ausentes)
+//   + WalkerProductObservation (tipo)
+//   ~ Fase B: mide elapsedMs por ficha y llama onProductObserved (NO altera captureProductRows ni
+//     la agrupación/completitud). Predecesor 2G-R3 e8d53e3b → sucesor R7 abajo.
+const B4_R7_SUCCESSOR_SHA256 = "bff05f87d5691427cb73896586337d11b719d3be29b75bc8b1336035c380674d";
 
-describe("B5 inmutable + B4 sucesión firmada 2G-R3", () => {
+describe("B5 inmutable + B4 sucesión firmada 2G-R7", () => {
   it("preserva B5 extracted-product-input como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
     expect(sha256File(B5_PATH)).toBe(B5_SIGNED_SHA256);
   });
 
-  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R3 (descongelado de G1)", () => {
+  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R7 (observabilidad)", () => {
     const actual = sha256File(B4_PATH);
-    // El estado frozen de G1 fue sucedido deliberadamente por el fix sitemap-driven.
+    // Estados anteriores deliberadamente sucedidos (G1 frozen → 2G-R3 sitemap → 2G-R7 observabilidad).
     expect(actual).not.toBe(B4_G1_FROZEN_SHA256);
-    expect(actual).toBe(B4_2GR3_SUCCESSOR_SHA256);
+    expect(actual).not.toBe(B4_2GR3_SUCCESSOR_SHA256);
+    expect(actual).toBe(B4_R7_SUCCESSOR_SHA256);
   });
 });
 
@@ -74,14 +81,21 @@ describe("B5 inmutable + B4 sucesión firmada 2G-R3", () => {
 const SCRAPER_I0_SHA256 = "0d3c8a54e5ed64737a1782ac160fa92dab85328d28930905f425ca1e08cbb0d0";
 const SCRAPER_G1_B6_SHA256 = "b2eae9c9fc870c2a0d1aac5b85dc7774d79eb24fa361eb677531ade1b481eb4e";
 const SCRAPER_2GR3_SUCCESSOR_SHA256 = "632448096364554e980973613e4c7e77289b9a5925978849865cec8a50bb8989";
+// 2G-R7: sucesión firmada de scraper.service.ts. Delta autorizado (A login fail-closed §4-§5 +
+// observabilidad de cadencia/zero-variant §7-§10): witness de sesión (probe ≤3 fichas) antes del
+// walk que lanza SkuFirstLoginError; wiring de nowMs/onProductObserved + navSink; emisión de
+// [SkuFirstCadence]/[SkuFirstZeroVariant]/[SkuFirstCaptureFailure]. NO toca D/upsert/Woo/stock/
+// completeness. Predecesor 2G-R3 63244809 → sucesor R7 abajo.
+const SCRAPER_R7_SUCCESSOR_SHA256 = "c0e20e99afd99b5be0a009c0fb36eee7f2aad807ff220d201ff305d8502aea3d";
 
 describe("G1/2G — sucesión firmada de scraper.service.ts", () => {
-  it("mantiene scraper.service.ts en el sucesor firmado 2G-R3", () => {
+  it("mantiene scraper.service.ts en el sucesor firmado 2G-R7", () => {
     const actual = sha256File(SCRAPER_SERVICE_PATH);
-    // Antecedentes deliberadamente sucedidos.
+    // Antecedentes deliberadamente sucedidos (I0 → G1-B6 → 2G-R3 → 2G-R7).
     expect(actual).not.toBe(SCRAPER_I0_SHA256);
     expect(actual).not.toBe(SCRAPER_G1_B6_SHA256);
+    expect(actual).not.toBe(SCRAPER_2GR3_SUCCESSOR_SHA256);
     // Guard real del estado autorizado vigente.
-    expect(actual).toBe(SCRAPER_2GR3_SUCCESSOR_SHA256);
+    expect(actual).toBe(SCRAPER_R7_SUCCESSOR_SHA256);
   });
 });

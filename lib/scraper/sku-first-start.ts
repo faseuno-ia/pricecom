@@ -27,6 +27,51 @@ export interface SkuFirstStartOptions {
   sitemapFetchFn?: SitemapFetchFn;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2G-R7 · A — LOGIN FAIL-CLOSED (witness de sesión autenticada, SKU-first).
+// El defecto: performLogin puede volver sin excepción tras el submit SIN que exista sesión
+// autenticada (el sitio queda en /login con el form visible y sin precios). "submit no lanzó"
+// NO es witness. En DT los precios están gated por login, así que la CAPACIDAD DE PRECIO en una
+// ficha (≥1 variante con price_number finito > 0) + no estar redirigido a login ES el witness de
+// AUTH_SESSION_ESTABLISHED. Predicado PURO (sin Playwright) para testear la decisión sin browser.
+// ─────────────────────────────────────────────────────────────────────────────
+export function isVisiblePrice(v: unknown): boolean {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
+export interface SkuFirstAuthWitnessInput {
+  finalUrl: string;
+  baseUrl: string;
+  variants: Array<{ price_number?: unknown }>;
+}
+export interface SkuFirstAuthWitness {
+  established: boolean;
+  redirectedToLogin: boolean;
+  pricedVariantCount: number;
+}
+/**
+ * Evalúa el witness de sesión sobre una ficha de prueba ya capturada. established = NO redirigido
+ * a login Y ≥1 variante con precio visible (pricing gated ⇒ prueba de autenticación).
+ */
+export function evaluateSkuFirstAuthWitness(input: SkuFirstAuthWitnessInput): SkuFirstAuthWitness {
+  const redirectedToLogin = input.finalUrl.includes("login") || input.finalUrl === input.baseUrl;
+  const pricedVariantCount = (input.variants ?? []).filter((v) => isVisiblePrice(v?.price_number)).length;
+  return { established: !redirectedToLogin && pricedVariantCount > 0, redirectedToLogin, pricedVariantCount };
+}
+
+/**
+ * Error tipado de login SKU-first fail-closed. Sale de run() → catch del worker → markFailed →
+ * CERO persistencia (nunca llega a discovery/walk). El mensaje es estable y sin secretos.
+ */
+export class SkuFirstLoginError extends Error {
+  readonly reasonCode: string;
+  constructor(reasonCode = "PROVIDER_LOGIN_NOT_ESTABLISHED", detail?: Record<string, unknown>) {
+    super(detail ? `${reasonCode} ${JSON.stringify(detail)}` : reasonCode);
+    this.name = "SkuFirstLoginError";
+    this.reasonCode = reasonCode;
+  }
+}
+
 /**
  * Para SKU-first: exige `sitemapFetchFn`, fetchea SITEMAP_START y lo clasifica ANTES del login.
  *   FETCH_FAILED       → throw (impide login).

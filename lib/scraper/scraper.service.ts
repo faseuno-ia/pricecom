@@ -15,8 +15,11 @@ import { fetchSitemapSnapshot, type SitemapFetchFn, type SitemapSnapshot } from 
 import { resolveTwoSnapshotCompleteness } from "./sitemap-two-snapshot";
 import { acceptedCaptureUrl } from "./walk-set-capture";
 // Error class + orden START-antes-de-login viven en un seam puro (sin Playwright), reexportado acá.
-import { SkuFirstCompletenessError, prepareSkuFirstStartSnapshot } from "./sku-first-start";
+import { SkuFirstCompletenessError, prepareSkuFirstStartSnapshot, evaluateSkuFirstAuthWitness, SkuFirstLoginError } from "./sku-first-start";
 export { SkuFirstCompletenessError, sanitizeSkuFirstCompletenessDiagnostics } from "./sku-first-start";
+export { SkuFirstLoginError } from "./sku-first-start";
+import { summarizeCadence, type ProductObservation } from "./sku-first-cadence";
+import { normalizeCatalogUrl } from "./url-normalization";
 
 /** Piso absoluto de fichas estables plausibles para Different Touch (referencia SM0). */
 export const DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS = 700;
@@ -613,6 +616,48 @@ export class ScraperService {
     // (817<877), por eso NO se usa como fuente de discovery. maxPages queda inerte en este modo.
     const seedProductUrls = startSnapshot.urls.map((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`));
 
+    // ── 2G-R7 · A: LOGIN FAIL-CLOSED (witness de sesión ANTES del walk) ──
+    // "performLogin no lanzó" NO es witness. Se prueba AUTH_SESSION_ESTABLISHED capturando hasta 3
+    // fichas de prueba: si ninguna muestra precio (pricing gated por login) → la sesión no está
+    // establecida → abortar SIN discovery/walk (fail-closed). Solo cuando el provider requiere login.
+    if (provider.requiresLogin) {
+      const probeUrls = seedProductUrls.slice(0, 3);
+      let witnessEstablished = false;
+      let lastPriced = 0;
+      let lastRedirected = false;
+      for (const probeUrl of probeUrls) {
+        try {
+          await page.goto(probeUrl, { waitUntil: "domcontentloaded" });
+          await page
+            .waitForFunction(
+              `(function(){var LS=(typeof window!=="undefined"&&window.LS)||{};return Array.isArray(LS.variants)&&LS.variants.length>0;})()`,
+              { timeout: 5000 },
+            )
+            .catch(() => {});
+          const payload = await this.captureLsPayload(page);
+          const w = evaluateSkuFirstAuthWitness({ finalUrl: page.url(), baseUrl, variants: payload.variants ?? [] });
+          lastPriced = w.pricedVariantCount;
+          lastRedirected = w.redirectedToLogin;
+          if (w.established) { witnessEstablished = true; break; }
+        } catch {
+          // navegación/probe falló → sigue con el próximo probe
+        }
+      }
+      await onLog(
+        "INFO",
+        `[SKU-first] Auth witness: established=${witnessEstablished} pricedVariants=${lastPriced} redirectedToLogin=${lastRedirected} probes=${probeUrls.length}`,
+      );
+      if (!witnessEstablished) {
+        // LOGIN_SUBMIT_SUCCEEDED (performLogin no lanzó) ≠ AUTH_SESSION_ESTABLISHED.
+        throw new SkuFirstLoginError("PROVIDER_LOGIN_NOT_ESTABLISHED", { probes: probeUrls.length, redirectedToLogin: lastRedirected });
+      }
+    }
+
+    // ── 2G-R7 · Observabilidad de cadencia/zero-variant (no invasiva) ──
+    const observations: ProductObservation[] = [];
+    const elapsedByOrdinal: number[] = [];
+    let navSink: { status: number | null; redirectedToLogin: boolean } = { status: null, redirectedToLogin: false };
+
     const deps: WalkerDeps = {
       seedProductUrls,
       maxListingPages: config?.maxPages ?? 10,
@@ -648,8 +693,9 @@ export class ScraperService {
 
       // ── Fase B: captura de fichas ──
       navigateToProduct: async (url) => {
-        await page.goto(url, { waitUntil: "domcontentloaded" });
+        const resp = await page.goto(url, { waitUntil: "domcontentloaded" });
         const redirectedToLogin = page.url().includes("login") || page.url() === baseUrl;
+        navSink = { status: resp?.status() ?? null, redirectedToLogin }; // R7: telemetría (última nav de la ficha)
         return { redirectedToLogin };
       },
       reLogin: async () => {
@@ -666,10 +712,40 @@ export class ScraperService {
         this.recordAcceptedCapture(walkSet, payload, page.url());
         return payload;
       },
+
+      // ── 2G-R7 · observabilidad por ficha (inerte para el resultado de la captura) ──
+      nowMs: () => Date.now(),
+      onProductObserved: async (obs) => {
+        observations.push({ ordinal: obs.ordinal, elapsedMs: obs.elapsedMs, outcome: obs.outcome });
+        const precedingProductElapsedMs = obs.ordinal > 0 ? (elapsedByOrdinal[obs.ordinal - 1] ?? null) : null;
+        elapsedByOrdinal[obs.ordinal] = obs.elapsedMs;
+        if (obs.outcome === "SUCCESS") return;
+        const canonicalUrl = normalizeCatalogUrl(obs.url) ?? obs.url;
+        const tag = obs.outcome === "ZERO_VARIANT" ? "SkuFirstZeroVariant" : "SkuFirstCaptureFailure";
+        try {
+          await onLog(
+            "WARN",
+            `[${tag}] ${JSON.stringify({ ordinal: obs.ordinal, canonicalUrl, productElapsedMs: obs.elapsedMs, precedingProductElapsedMs, navStatus: navSink.status, redirectedToLogin: navSink.redirectedToLogin })}`,
+          );
+        } catch {
+          /* la telemetría NUNCA rompe el scraper (§10) */
+        }
+      },
     };
 
     // 4 · walk SKU-first. El WALK_SET se llena por el wrapper de captureLsPayload (capturas aceptadas).
-    const { products } = await runSkuFirstWalk(deps);
+    // §10: el resumen de cadencia se emite DESPUÉS del walk y ANTES de la decisión de completeness,
+    // en finally (resumen parcial si el walk lanzara). La telemetría nunca rompe el scraper.
+    let products: ScrapedProduct[];
+    try {
+      ({ products } = await runSkuFirstWalk(deps));
+    } finally {
+      try {
+        await onLog("INFO", `[SkuFirstCadence] ${JSON.stringify(summarizeCadence(observations))}`);
+      } catch {
+        /* no-op: telemetría no-fatal */
+      }
+    }
 
     // 6-7 · SITEMAP_END después del walk, antes de decidir completitud/persistencia.
     const endSnapshot = await fetchSitemapSnapshot({ fetchFn: sitemapFetchFn });

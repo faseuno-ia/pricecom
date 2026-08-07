@@ -266,7 +266,9 @@ export function computeVerdict(input: DtVerdictInput): DtVerdict {
     harnessRole: LOCAL_HARNESS_ROLE,
     captureFailureReproducedLocally,
     captureRootCause,
-    historicalProductionLatencyCaptureAssociation: input.historicalLatencyAssociation ?? "STRONGLY_SUPPORTED",
+    // R7 §12: el DEFAULT es UNPROVEN (no un claim fuerte). El caller DT pasa STRONGLY_SUPPORTED
+    // explícitamente porque ese dato histórico sí está establecido para ESTE caso.
+    historicalProductionLatencyCaptureAssociation: input.historicalLatencyAssociation ?? "UNPROVEN",
     crossEnvironmentCadenceComparable: CROSS_ENVIRONMENT_CADENCE_COMPARABLE,
     historical: {
       distribution: historical.distribution,

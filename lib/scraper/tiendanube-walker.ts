@@ -70,6 +70,21 @@ export interface WalkerDeps {
   isCancelled: () => boolean;
   onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string) => Promise<void>;
   onProgress: (stats: WalkStats) => Promise<void>;
+
+  // ── 2G-R7 · Observabilidad (OPCIONAL, inerte si ausente) ──────────────────
+  /** Reloj en ms para medir el costo por ficha. Default Date.now si no se inyecta. */
+  nowMs?: () => number;
+  /** Hook por ficha (post-captura). No altera el resultado de captureProductRows. */
+  onProductObserved?: (obs: WalkerProductObservation) => void | Promise<void>;
+}
+
+/** Observación por ficha del walk productivo (para telemetría de cadencia/zero-variant). */
+export interface WalkerProductObservation {
+  ordinal: number;
+  url: string;
+  elapsedMs: number;
+  outcome: "SUCCESS" | "ZERO_VARIANT" | "TERMINAL_FAILURE";
+  variantsCaptured: number;
 }
 
 /** Fase A: recolecta URLs de producto de los listados, deduplicadas y ordenadas. */
@@ -221,13 +236,21 @@ export async function runSkuFirstWalk(
       await deps.onLog("INFO", "[SKU-first] Cancelado durante captura de fichas");
       break;
     }
+    const nowMs = deps.nowMs ?? (() => Date.now());
+    const t0 = nowMs();
     const rows = await captureProductRows(urls[i], i, deps);
+    const elapsedMs = nowMs() - t0;
     stats.productsVisited++;
     if (rows === null) {
       stats.productsFailed++;
     } else {
       allRows.push(...rows);
       stats.variantsCaptured += rows.length;
+    }
+    // 2G-R7 · hook de observabilidad (inerte si ausente; NO altera el resultado de la captura).
+    if (deps.onProductObserved) {
+      const outcome = rows === null ? "TERMINAL_FAILURE" : rows.length === 0 ? "ZERO_VARIANT" : "SUCCESS";
+      await deps.onProductObserved({ ordinal: i, url: urls[i], elapsedMs, outcome, variantsCaptured: rows === null ? 0 : rows.length });
     }
     await deps.onProgress({ ...stats });
   }
