@@ -22,6 +22,7 @@ import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
+import { assertNoPreWritePriceRegressionForExtraction } from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue } from "./queues/job-queue.interface";
 import { logInfo, logError } from "../../lib/events/event-log";
@@ -166,6 +167,31 @@ async function processJob(jobId: string) {
 
     // Persistir productos
     if (products.length > 0) {
+      // 2G-R5D — Barrera pre-write FAIL-CLOSED, inmediatamente antes de la PRIMERA escritura
+      // comercial (createMany). Exige job.userId (misma autoridad de tenant que el upsert), verifica
+      // consistencia con provider.userId (sólo testigo, no reemplaza), lee el catálogo existente
+      // read-only y lanza ante priced→null o extracción login-gated sin precios. SIN try/catch
+      // local: se propaga al catch histórico del job (→ markFailed). No reordena ni envuelve el
+      // resto del success path.
+      await assertNoPreWritePriceRegressionForExtraction(
+        {
+          findExisting: (userId, providerId, skus) =>
+            prisma.catalogProduct.findMany({
+              where: { userId, providerId, sku: { in: skus } },
+              select: { id: true, sku: true, wholesalePrice: true },
+            }),
+        },
+        {
+          userId: job.userId,
+          providerUserId: provider.userId,
+          providerId: provider.id,
+          requiresLogin: provider.requiresLogin,
+          jobId,
+          products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
+          onLog,
+        },
+      );
+
       await prisma.extractedProduct.createMany({
         // Mapping extraído a una función pura (lib/scraper/extracted-product-input)
         // para poder testear la preservación de rawData sin DB. Byte-equivalente
