@@ -11,7 +11,7 @@ import {
 import type { PricingRuleForCalc } from "../pricing/pricing-engine";
 import { markPublicationsDrift } from "./mark-publications-drift";
 import { toCatalogUpperCase, toCatalogUpperCaseOrNull } from "./uppercase";
-import { resolveCatalogWriteMode, resolvePriceOnlyUpdate } from "./catalog-write-mode";
+import { resolveCatalogWriteMode, resolvePriceOnlyBatch, type PriceOnlyIncoming } from "./catalog-write-mode";
 
 interface IdentityInputs {
   sku?: string | null;
@@ -210,24 +210,38 @@ export async function upsertCatalogProducts(
   // la autoridad de lifecycle está deshabilitada). D (pre-write price guard) corre ANTES en el
   // worker y NO se bypassa. Retorna antes de todo el path histórico FULL.
   if (catalogWriteMode === "PRICE_ONLY") {
-    for (const product of job.products) {
-      const sku = typeof product.sku === "string" ? product.sku.trim() : "";
-      const existing = sku
-        ? await prismaClient.catalogProduct.findUnique({
-            where: { userId_providerId_sku: { userId, providerId, sku } },
-            select: { id: true },
-          })
-        : null;
-      const upd = resolvePriceOnlyUpdate(existing, {
-        sku: product.sku,
-        wholesalePrice: product.wholesalePrice != null ? Number(product.wholesalePrice) : null,
-      });
+    // PHASE 1 · VALIDATE_AND_RESOLVE (sin writes). Chequeo set-based de existencia (sin N+1).
+    const incoming: PriceOnlyIncoming[] = job.products.map((product) => ({
+      sku: product.sku,
+      wholesalePrice: product.wholesalePrice != null ? Number(product.wholesalePrice) : null,
+      extractedProductId: product.id,
+    }));
+    const uniqueSkus = Array.from(
+      new Set(incoming.map((i) => (typeof i.sku === "string" ? i.sku.trim() : "")).filter((s) => s.length > 0)),
+    );
+    const existingRows = uniqueSkus.length
+      ? await prismaClient.catalogProduct.findMany({
+          where: { userId, providerId, sku: { in: uniqueSkus } },
+          select: { id: true, sku: true },
+        })
+      : [];
+    const existingBySku = new Map<string, { id: string }>(
+      existingRows.map((r) => [String(r.sku).trim(), { id: r.id }]),
+    );
+    // Valida TODO (SKU inválido/nuevo, precio inválido) y resuelve en memoria. LANZA antes de
+    // cualquier write si algún producto es inválido, sin importar su posición en la lista.
+    const resolved = resolvePriceOnlyBatch(incoming, existingBySku);
+
+    // PHASE 2 · WRITE. Sólo si PHASE 1 pasó completa. Únicos campos: wholesalePrice + lastSeenAt +
+    // latestExtractedProductId. Sin metadata/stock/lifecycle/publication/Woo. (NO atómico: un fallo
+    // de DB mid-loop puede dejar writes parciales; mitigación = snapshot + diff en el canary.)
+    for (const u of resolved) {
       await prismaClient.catalogProduct.update({
-        where: { id: upd.catalogProductId },
+        where: { id: u.catalogProductId },
         data: {
-          wholesalePrice: upd.wholesalePrice,
+          wholesalePrice: u.wholesalePrice,
           lastSeenAt,
-          latestExtractedProductId: product.id,
+          latestExtractedProductId: u.latestExtractedProductId,
         },
       });
     }
