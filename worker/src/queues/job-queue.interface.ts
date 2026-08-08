@@ -18,7 +18,15 @@
 export interface JobPayload {
   jobId: string;
   providerId: string;
+  /** 2G-R8-Q1 · versión de lease (workerLockedAt del claim). Fencing token para heartbeat/terminal. */
+  leaseVersion: Date;
 }
+
+/** Resultado de una renovación de lease (heartbeat CAS). */
+export type LeaseRenewResult =
+  | { kind: "OWNED"; leaseVersion: Date } // CAS afectó 1 fila → seguimos siendo dueños; nueva versión
+  | { kind: "LOST" } // CAS afectó 0 filas → ownership perdido (reclaim/nuevo claim)
+  | { kind: "UNKNOWN" }; // el CAS lanzó (DB error/timeout) → ownership indeterminado (fail-closed)
 
 export interface IJobQueue {
   /**
@@ -39,14 +47,22 @@ export interface IJobQueue {
   updateProgress(jobId: string, progress: number, totalProducts: number): Promise<void>;
 
   /**
-   * Marca el job como completado con estadísticas finales.
+   * 2G-R8-Q1 · Heartbeat CAS del lease. Renueva workerLockedAt SOLO si seguimos siendo dueños
+   * (status=RUNNING AND workerLockedAt=expected). Devuelve OWNED (con nueva versión), LOST (0 filas)
+   * o UNKNOWN (el CAS lanzó). NUNCA usar un WHERE sólo por id/status (robaría el lease del nuevo dueño).
    */
-  markCompleted(jobId: string, result: JobResult): Promise<void>;
+  renewLease(jobId: string, expectedLeaseVersion: Date): Promise<LeaseRenewResult>;
 
   /**
-   * Marca el job como fallido con mensaje de error.
+   * Marca COMPLETED sólo si seguimos siendo dueños (CAS sobre expectedLeaseVersion). Devuelve true
+   * si terminalizamos (afectó 1 fila), false si el ownership ya no era nuestro (0 filas, suprimido).
    */
-  markFailed(jobId: string, errorMessage: string): Promise<void>;
+  markCompleted(jobId: string, result: JobResult, expectedLeaseVersion: Date): Promise<boolean>;
+
+  /**
+   * Marca FAILED sólo si seguimos siendo dueños (CAS). Devuelve true/false como markCompleted.
+   */
+  markFailed(jobId: string, errorMessage: string, expectedLeaseVersion: Date): Promise<boolean>;
 
   /**
    * Libera jobs bloqueados por workers que murieron sin completar.

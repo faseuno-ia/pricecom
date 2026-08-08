@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import type { IJobQueue, JobPayload, JobResult } from "./job-queue.interface";
+import type { IJobQueue, JobPayload, JobResult, LeaseRenewResult } from "./job-queue.interface";
 
 /**
  * Implementación de IJobQueue usando polling en PostgreSQL.
@@ -30,7 +30,7 @@ export class DbPollingQueue implements IJobQueue {
     // (creados por POST /api/catalog/import para emitir el diff de cambios
     // contra un Excel) y nunca deben procesarse acá. source IS NULL es el
     // default histórico = scraper automático.
-    const rows = await this.prisma.$queryRaw<{ id: string; providerId: string }[]>`
+    const rows = await this.prisma.$queryRaw<{ id: string; providerId: string; workerLockedAt: Date }[]>`
       UPDATE "ExtractionJob"
       SET
         status         = 'RUNNING',
@@ -47,11 +47,32 @@ export class DbPollingQueue implements IJobQueue {
         LIMIT  1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, "providerId"
+      RETURNING id, "providerId", "workerLockedAt"
     `;
 
     if (!rows.length) return null;
-    return { jobId: rows[0].id, providerId: rows[0].providerId };
+    // leaseVersion = workerLockedAt (timestamp(3), ms). Prisma lo devuelve como Date ms → round-trip exacto.
+    return { jobId: rows[0].id, providerId: rows[0].providerId, leaseVersion: rows[0].workerLockedAt };
+  }
+
+  /**
+   * 2G-R8-Q1 · Heartbeat CAS: renueva workerLockedAt SÓLO si seguimos siendo dueños. Statement único,
+   * transacción propia (NOW() = tiempo del statement → versión avanza y es única). RETURNING trae la
+   * nueva versión atómicamente. 0 filas → LOST. Un throw de DB → UNKNOWN (ownership indeterminado).
+   */
+  async renewLease(jobId: string, expectedLeaseVersion: Date): Promise<LeaseRenewResult> {
+    try {
+      const rows = await this.prisma.$queryRaw<{ workerLockedAt: Date }[]>`
+        UPDATE "ExtractionJob"
+        SET "workerLockedAt" = NOW(), "updatedAt" = NOW()
+        WHERE id = ${jobId} AND status = 'RUNNING' AND "workerLockedAt" = ${expectedLeaseVersion}
+        RETURNING "workerLockedAt"
+      `;
+      if (rows.length === 1) return { kind: "OWNED", leaseVersion: rows[0].workerLockedAt };
+      return { kind: "LOST" };
+    } catch {
+      return { kind: "UNKNOWN" };
+    }
   }
 
   async markRunning(jobId: string): Promise<void> {
@@ -70,9 +91,11 @@ export class DbPollingQueue implements IJobQueue {
     });
   }
 
-  async markCompleted(jobId: string, result: JobResult): Promise<void> {
-    await this.prisma.extractionJob.update({
-      where: { id: jobId },
+  async markCompleted(jobId: string, result: JobResult, expectedLeaseVersion: Date): Promise<boolean> {
+    // CAS fenced: updateMany permite el predicado de ownership (id no es único-compuesto). Sólo
+    // terminalizamos si seguimos siendo dueños; 0 filas → el nuevo dueño no se sobrescribe.
+    const { count } = await this.prisma.extractionJob.updateMany({
+      where: { id: jobId, status: "RUNNING", workerLockedAt: expectedLeaseVersion },
       data: {
         status: "COMPLETED",
         finishedAt: new Date(),
@@ -89,11 +112,12 @@ export class DbPollingQueue implements IJobQueue {
         updatedAt: new Date(),
       },
     });
+    return count === 1;
   }
 
-  async markFailed(jobId: string, errorMessage: string): Promise<void> {
-    await this.prisma.extractionJob.update({
-      where: { id: jobId },
+  async markFailed(jobId: string, errorMessage: string, expectedLeaseVersion: Date): Promise<boolean> {
+    const { count } = await this.prisma.extractionJob.updateMany({
+      where: { id: jobId, status: "RUNNING", workerLockedAt: expectedLeaseVersion },
       data: {
         status: "FAILED",
         finishedAt: new Date(),
@@ -102,6 +126,7 @@ export class DbPollingQueue implements IJobQueue {
         updatedAt: new Date(),
       },
     });
+    return count === 1;
   }
 
   /**
