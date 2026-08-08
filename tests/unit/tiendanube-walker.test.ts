@@ -279,6 +279,30 @@ describe("runSkuFirstWalk — orquestación de dos fases", () => {
     expect(r.products.length).toBe(1); // solo /ok
     expect(calls.logs.some(([l, m]) => l === "WARN" && /variant/i.test(m))).toBe(true);
   });
+  it("R24) equivalencia del agrupador post-R1: productos y cuarentena IDÉNTICOS; sólo se agrega metadata por ficha", async () => {
+    // Una ficha con una variante MISSING_SKU + una válida; otra ficha válida.
+    const { deps } = makeHarness({
+      listings: [["/q", "/ok"]],
+      capture: (url) =>
+        url === "/q"
+          ? ({ productName: "P", productUrl: url, domLabels: ["Color"], variants: [
+              { id: "1", product_id: "100", sku: "GOOD", option0: "X", price_number: 100, price_without_taxes: "$82,64", available: true, image_url: "//i1" },
+              { id: "2", product_id: "100", sku: "", option0: "Y", price_number: 100, price_without_taxes: "$82,64", available: true, image_url: "//i2" }, // MISSING_SKU
+            ] } as RawLsPagePayload)
+          : payloadFor(url),
+    });
+    const r = await runSkuFirstWalk(deps);
+    // Resultado comercial INTACTO: productos aceptados y cuarentena como antes de R1.
+    expect(r.products.map((p) => p.sku).sort()).toEqual(["GOOD", "SKU-/ok"]);
+    expect(r.quarantine.length).toBe(1);
+    expect(r.quarantine[0].reason).toBe("MISSING_SKU");
+    // ÚNICA diferencia permitida: metadata de cuarentena por ficha (additiva, consistente).
+    expect(r.fichaQuarantine["/q"]).toEqual({ count: 1, reasons: ["MISSING_SKU"] });
+    expect(r.fichaQuarantine["/ok"]).toBeUndefined();
+    const metaTotal = Object.values(r.fichaQuarantine).reduce((a, f) => a + f.count, 0);
+    expect(metaTotal).toBe(r.quarantine.length); // toda entrada de cuarentena queda atribuida a su ficha
+  });
+
   it("27) el orden final no depende de la finalización temporal de retries", async () => {
     // /b falla una vez (retry) — /a y /c ok. El orden final por SKU debe ser estable.
     const { deps } = makeHarness({

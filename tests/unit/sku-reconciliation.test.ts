@@ -6,11 +6,13 @@ import { describe, it, expect } from "vitest";
 import {
   reconcileSkus,
   isPersistablePrice,
+  fichaSkuIdentitySetComplete,
   type ReconcileInput,
   type ReconcileCatalogRow,
   type FichaOutcomeInfo,
   type ObservedVariant,
   type SkuResult,
+  type SkuClassification,
 } from "@/lib/catalog/sku-reconciliation";
 
 const FA = "x.com/productos/a";
@@ -74,9 +76,9 @@ describe("§3 fixtures R1-R17", () => {
     expect(r.evidenceLevel).toBe("SITEMAP_TWO_WITNESS");
   });
 
-  it("R4) VERIFIED_OK + complete + SKU histórico no aparece → VERIFIED_ABSENT (A4)", () => {
+  it("R4) VERIFIED_OK + complete + identity complete + SKU histórico no aparece → VERIFIED_ABSENT (A4)", () => {
     const r = run({ sku: "S1", fichaCanonicalUrl: FA, wholesalePrice: 100 }, {
-      start: [FA], end: [FA], outcomes: { [FA]: { outcome: "VERIFIED_OK", variantSetComplete: true } },
+      start: [FA], end: [FA], outcomes: { [FA]: { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: true } },
       observed: { [FA]: [{ sku: "OTRO", priceNumber: 100 }] },
     });
     expect(r.classification).toBe("SKU_VERIFIED_ABSENT");
@@ -210,6 +212,83 @@ describe("§3 fixtures R1-R17", () => {
     expect(r.classification).toBe("SKU_UNVERIFIED");
     expect(r.reason).toBe("EVIDENCE_CONFLICT");
     expect(r.conflictSources).toEqual(["CATALOG_MAPPING", "OBSERVED_MAPPING"]);
+  });
+});
+
+describe("§4 fixtures R18-R23 (identidad SKU + descubrimiento del proveedor)", () => {
+  it("fichaSkuIdentitySetComplete: count>0 → false, count=0/null → true", () => {
+    expect(fichaSkuIdentitySetComplete(1)).toBe(false);
+    expect(fichaSkuIdentitySetComplete(3)).toBe(false);
+    expect(fichaSkuIdentitySetComplete(0)).toBe(true);
+    expect(fichaSkuIdentitySetComplete(null)).toBe(true);
+    expect(fichaSkuIdentitySetComplete(undefined)).toBe(true);
+  });
+
+  it("R18) quarantineCount>0 (MISSING_SKU) + variantSetComplete=true + SKU no observado → UNVERIFIED (NO ABSENT)", () => {
+    const idComplete = fichaSkuIdentitySetComplete(1); // 1 variante retirada por cuarentena
+    const r = run({ sku: "S1", fichaCanonicalUrl: FA, wholesalePrice: 100 }, {
+      start: [FA], end: [FA],
+      outcomes: { [FA]: { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: idComplete } },
+      observed: { [FA]: [{ sku: "OTRO", priceNumber: 100 }] },
+    });
+    expect(r.classification).toBe("SKU_UNVERIFIED");
+    expect(r.reason).toBe("SKU_IDENTITY_SET_INCOMPLETE");
+    expect(r.classification).not.toBe("SKU_VERIFIED_ABSENT");
+  });
+
+  it("R19) ídem con NO_USABLE_NAME (mismo mecanismo: identidad incompleta) → UNVERIFIED (NO ABSENT)", () => {
+    // NO_USABLE_NAME también retira una variante del set reconciliable → skuIdentitySetComplete=false.
+    const r = run({ sku: "S1", fichaCanonicalUrl: FA, wholesalePrice: 100 }, {
+      start: [FA], end: [FA],
+      outcomes: { [FA]: { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: false } },
+      observed: { [FA]: [{ sku: "OTRO", priceNumber: 100 }] },
+    });
+    expect(r.classification).toBe("SKU_UNVERIFIED");
+    expect(r.reason).toBe("SKU_IDENTITY_SET_INCOMPLETE");
+  });
+
+  it("R20) quarantineCount=0 + variantSetComplete=true + identityComplete + SKU no observado → VERIFIED_ABSENT (única vía)", () => {
+    const idComplete = fichaSkuIdentitySetComplete(0);
+    expect(idComplete).toBe(true);
+    const r = run({ sku: "S1", fichaCanonicalUrl: FA, wholesalePrice: 100 }, {
+      start: [FA], end: [FA],
+      outcomes: { [FA]: { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: idComplete } },
+      observed: { [FA]: [{ sku: "OTRO", priceNumber: 100 }] },
+    });
+    expect(r.classification).toBe("SKU_VERIFIED_ABSENT");
+    expect(r.reason).toBe("VARIANT_NOT_IN_COMPLETE_SET");
+  });
+
+  it("R21) SKU observado sin fila de catálogo → NO aparece en catalogRowClassification, sí en NEW_PROVIDER_SKUS", () => {
+    const res = reconcileSkus({
+      catalogRows: [{ sku: "EXIST", fichaCanonicalUrl: FA, wholesalePrice: 100 }],
+      sitemapStart: new Set([FA]), sitemapEnd: new Set([FA]), sitemapStartOk: true, sitemapEndOk: true,
+      fichaOutcomes: new Map([[FA, { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: true }]]),
+      observedVariants: new Map([[FA, [{ sku: "EXIST", priceNumber: 100 }, { sku: "NUEVO", priceNumber: 200 }]]]),
+    });
+    expect(res.results.map((r) => r.sku)).toEqual(["EXIST"]); // NUEVO NO se clasifica como fila de catálogo
+    expect(res.providerDiscovery.newProviderSkus).toEqual(["NUEVO"]);
+    expect(res.providerDiscovery.providerNewSkuCount).toBe(1);
+    expect(res.providerDiscovery.providerNewFichaCount).toBe(1);
+  });
+
+  it("R22) batch con SKUs existentes válidos + nuevos → existentes siguen candidatos; nuevos NO abortan", () => {
+    const res = reconcileSkus({
+      catalogRows: [{ sku: "EXIST", fichaCanonicalUrl: FA, wholesalePrice: 100 }],
+      sitemapStart: new Set([FA]), sitemapEnd: new Set([FA]), sitemapStartOk: true, sitemapEndOk: true,
+      fichaOutcomes: new Map([[FA, { outcome: "VERIFIED_OK", variantSetComplete: true, skuIdentitySetComplete: true }]]),
+      observedVariants: new Map([[FA, [{ sku: "EXIST", priceNumber: 100 }, { sku: "NUEVO", priceNumber: 200 }]]]),
+    });
+    // el existente clasifica normalmente (candidato a price write); el nuevo no lo invalida ni aborta.
+    expect(res.results.find((r) => r.sku === "EXIST")?.classification).toBe("SKU_VERIFIED_PRESENT_WITH_PRICE");
+    expect(res.providerDiscovery.providerNewSkuCount).toBe(1);
+    // NEW_PROVIDER_SKUS_CAN_ABORT_EXISTING_PRICE_BATCH = false (la función no lanza ni descarta el existente)
+  });
+
+  it("R23) el enum SkuClassification NO contiene NEW_PROVIDER_SKU (type-level)", () => {
+    // @ts-expect-error NEW_PROVIDER_SKU no es un SkuClassification válido (si alguien lo agrega, este error desaparece y CI falla)
+    const bad: SkuClassification = "NEW_PROVIDER_SKU";
+    expect(bad).toBe("NEW_PROVIDER_SKU"); // runtime trivial; el guard real es el @ts-expect-error
   });
 });
 
