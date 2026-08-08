@@ -42,7 +42,7 @@ function mockDeps(over: Partial<WalkerDeps> & { payloads?: Record<string, any[]>
     resolveUrl,
     goToNextListing: vi.fn(async () => false),
     maxListingPages: 150,
-    navigateToProduct: vi.fn(async (url: string) => { currentUrl = url; if (failUrls.includes(url)) throw new Error("HTTP 429"); return { redirectedToLogin: false }; }),
+    navigateToProduct: vi.fn(async (url: string) => { currentUrl = url; if (failUrls.includes(url)) throw new Error("HTTP 429"); return { redirectedToLogin: false, status: 200 as number | null }; }),
     reLogin: vi.fn(async () => {}),
     captureLsPayload: vi.fn(async () => payloadFor(currentUrl, payloads[currentUrl] ?? [variant("SKU-" + currentUrl.slice(-3), 1000)])),
     maxProductRetries: 2,

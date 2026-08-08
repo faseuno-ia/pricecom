@@ -16,7 +16,7 @@
 // CERO writes DB/Provider/Job/Woo. Un solo browser, red serial. Output sólo conteos (nunca
 // precios/cookies/tokens/HTML).
 import type { Page } from "playwright";
-import { captureProductRows, type WalkerDeps, type RawLsPagePayload } from "../scraper/tiendanube-walker";
+import { captureProductRows, type WalkerDeps, type RawLsPagePayload, type FichaCaptureOutcome } from "../scraper/tiendanube-walker";
 
 export interface UrlRecord {
   canonicalUrl: string;
@@ -36,6 +36,10 @@ export interface UrlRecord {
   connectionReset: boolean;
   errorClass: string | null;
   elapsedMs: number;
+  // 2G-R8-Q2 (opcionales): outcome explícito + recuperación 429 por ficha.
+  outcome?: FichaCaptureOutcome;
+  recoveredAfter429?: boolean;
+  recoveryAttempts?: number;
 }
 
 export interface ArmAgg {
@@ -43,6 +47,8 @@ export interface ArmAgg {
   variantTotal: number; validPriceVariantCount: number; urlsWithAnyValidPrice: number;
   sessionLossCount: number; http429Count: number; retryAfterCount: number; challengeCount: number;
   connectionResetCount: number; firstZeroOrdinal: number | null;
+  // 2G-R8-Q2: witnesses de recuperación 429 (para §24).
+  recoveredAfter429Count: number; rateLimitedOutcomeCount: number; dataIncompleteOutcomeCount: number;
 }
 export interface ArmCadence { meanMsPerProduct: number; medianMsPerProduct: number; sumElapsedMs: number; wallClockMs: number | null; }
 export interface ArmResult { records: UrlRecord[]; agg: ArmAgg; cadence: ArmCadence; }
@@ -93,11 +99,13 @@ function buildFichaDeps(page: Page, reader: LsReader, reLogin: () => Promise<voi
         sink.status = resp?.status() ?? null;
         if (resp?.status() === 429) sink.http429 = true;
         const h = resp?.headers?.() ?? {};
-        if (h["retry-after"] !== undefined) sink.retryAfter = true;
+        const retryAfterRaw = h["retry-after"];
+        if (retryAfterRaw !== undefined) sink.retryAfter = true;
         const finalUrl = page.url();
         sink.finalUrl = finalUrl;
         sink.redirectedToLogin = finalUrl.includes("login") || finalUrl === baseUrl;
-        return { redirectedToLogin: sink.redirectedToLogin };
+        // 2G-R8-Q2: exponer status + Retry-After crudo para que captureProductRows ejerza el owner 429.
+        return { redirectedToLogin: sink.redirectedToLogin, status: sink.status, retryAfter: retryAfterRaw ?? null };
       } catch (e) {
         const cls = classifyError(e);
         sink.errorClass = cls;
@@ -134,7 +142,9 @@ export async function runArm(
     if (i > 0 && opts.interProductDelayMs > 0) await page.waitForTimeout(opts.interProductDelayMs);
     resetSink(sink);
     const t0 = Date.now();
-    const rows = await captureProductRows(cohort[i].canonicalUrl, i, deps); // unidad productiva
+    // 2G-R8-Q2: captureProductRows devuelve FichaCaptureResult (outcome explícito + recovery 429).
+    const res = await captureProductRows(cohort[i].canonicalUrl, i, deps); // unidad productiva
+    const rows = res.outcome === "READ_FAILED" ? null : res.rows; // preserva la semántica null=terminal del harness
     const elapsed = Date.now() - t0;
     const initial = rows === null ? 0 : rows.length;
     const skuCount = rows === null ? 0 : rows.filter((r: any) => typeof r.rawSku === "string" && r.rawSku.trim().length > 0).length;
@@ -145,9 +155,10 @@ export async function runArm(
       authWitness: validPrice > 0, initialVariantCount: initial, variantSkuCount: skuCount,
       validPriceVariantCount: validPrice, firstNonzeroVariantAtMs: null, challengeWitness: sink.http429,
       http429: sink.http429, retryAfterObserved: sink.retryAfter, connectionReset: sink.reset,
-      // rows===null → falla de navegación definitiva (errorClass); rows===[] → LS vacío (capture failure, errorClass null)
+      // rows===null → READ_FAILED (falla definitiva); rows===[] → DATA_INCOMPLETE/RATE_LIMITED (errorClass null)
       errorClass: rows === null ? (sink.errorClass ?? "CAPTURE_FAILED_AFTER_RETRIES") : null,
       elapsedMs: elapsed,
+      outcome: res.outcome, recoveredAfter429: res.recoveredAfter429, recoveryAttempts: res.recoveryAttempts,
     };
     records.push(rec);
     opts.onProgress?.(i, rec);
@@ -231,5 +242,8 @@ export function aggregate(records: UrlRecord[]): ArmAgg {
     challengeCount: records.filter((r) => r.challengeWitness).length,
     connectionResetCount: records.filter((r) => r.connectionReset).length,
     firstZeroOrdinal: firstZero ? firstZero.ordinal : null,
+    recoveredAfter429Count: records.filter((r) => r.recoveredAfter429 === true).length,
+    rateLimitedOutcomeCount: records.filter((r) => r.outcome === "RATE_LIMITED").length,
+    dataIncompleteOutcomeCount: records.filter((r) => r.outcome === "DATA_INCOMPLETE").length,
   };
 }

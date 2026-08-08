@@ -695,8 +695,12 @@ export class ScraperService {
       navigateToProduct: async (url) => {
         const resp = await page.goto(url, { waitUntil: "domcontentloaded" });
         const redirectedToLogin = page.url().includes("login") || page.url() === baseUrl;
-        navSink = { status: resp?.status() ?? null, redirectedToLogin }; // R7: telemetría (última nav de la ficha)
-        return { redirectedToLogin };
+        const status = resp?.status() ?? null;
+        // 2G-R8-Q2 · SÓLO el header Retry-After (nunca cookies/authorization/otros headers, §12/§15).
+        let retryAfter: string | null = null;
+        try { const h = resp?.headers?.() ?? {}; retryAfter = (h["retry-after"] as string | undefined) ?? null; } catch { retryAfter = null; }
+        navSink = { status, redirectedToLogin }; // R7: telemetría (última nav de la ficha)
+        return { redirectedToLogin, status, retryAfter };
       },
       reLogin: async () => {
         if (provider.requiresLogin && provider.encryptedPassword) {
@@ -713,19 +717,43 @@ export class ScraperService {
         return payload;
       },
 
-      // ── 2G-R7 · observabilidad por ficha (inerte para el resultado de la captura) ──
+      // ── 2G-R8-Q2 · observabilidad 429 (§15). Formatea [SkuFirstRateLimit*] agregando canonicalUrl.
+      //    Nunca cookies/authorization/precios: sólo ordinal, URLs, status, delays y budget. Inerte-safe.
+      onRateLimit: async (ev) => {
+        try {
+          const canonicalUrl = normalizeCatalogUrl(ev.originalNavigationUrl) ?? ev.originalNavigationUrl;
+          const base = { ordinal: ev.ordinal, originalNavigationUrl: ev.originalNavigationUrl, canonicalUrl };
+          if (ev.kind === "RATE_LIMIT") {
+            await onLog("WARN", `[SkuFirstRateLimit] ${JSON.stringify({ ...base, attempt: ev.attempt, navStatus: ev.navStatus, retryAfterPresent: ev.retryAfterPresent, retryAfterMs: ev.retryAfterMs, appliedDelayMs: ev.appliedDelayMs, remainingBudgetMs: ev.remainingBudgetMs })}`);
+          } else if (ev.kind === "RECOVERED") {
+            await onLog("INFO", `[SkuFirstRateLimitRecovered] ${JSON.stringify({ ...base, attempts: ev.attempt, totalDelayMs: ev.totalDelayMs })}`);
+          } else if (ev.kind === "EXHAUSTED") {
+            await onLog("WARN", `[SkuFirstRateLimitExhausted] ${JSON.stringify({ ...base, attempts: ev.attempt, totalDelayMs: ev.totalDelayMs })}`);
+          } else if (ev.kind === "BUDGET_EXHAUSTED") {
+            await onLog("WARN", `[SkuFirstRateLimitBudgetExhausted] ${JSON.stringify({ ...base, attempts: ev.attempt, totalDelayMs: ev.totalDelayMs, remainingBudgetMs: ev.remainingBudgetMs })}`);
+          }
+        } catch {
+          /* la telemetría NUNCA rompe el scraper (§10/§15) */
+        }
+      },
+
+      // ── 2G-R7/Q2 · observabilidad por ficha (inerte para el resultado de la captura) ──
       nowMs: () => Date.now(),
       onProductObserved: async (obs) => {
-        observations.push({ ordinal: obs.ordinal, elapsedMs: obs.elapsedMs, outcome: obs.outcome });
+        observations.push({ ordinal: obs.ordinal, elapsedMs: obs.elapsedMs, outcome: obs.outcome, recoveredAfter429: obs.recoveredAfter429 });
         const precedingProductElapsedMs = obs.ordinal > 0 ? (elapsedByOrdinal[obs.ordinal - 1] ?? null) : null;
         elapsedByOrdinal[obs.ordinal] = obs.elapsedMs;
-        if (obs.outcome === "SUCCESS") return;
+        if (obs.outcome === "VERIFIED_OK") return;
         const canonicalUrl = normalizeCatalogUrl(obs.url) ?? obs.url;
-        const tag = obs.outcome === "ZERO_VARIANT" ? "SkuFirstZeroVariant" : "SkuFirstCaptureFailure";
+        // §14: taxonomía separada; NUNCA condensar bajo "sin variantes".
+        const tag =
+          obs.outcome === "DATA_INCOMPLETE" ? "SkuFirstDataIncomplete" :
+          obs.outcome === "RATE_LIMITED" ? "SkuFirstRateLimitedFicha" :
+          "SkuFirstReadFailed";
         try {
           await onLog(
             "WARN",
-            `[${tag}] ${JSON.stringify({ ordinal: obs.ordinal, canonicalUrl, productElapsedMs: obs.elapsedMs, precedingProductElapsedMs, navStatus: navSink.status, redirectedToLogin: navSink.redirectedToLogin })}`,
+            `[${tag}] ${JSON.stringify({ ordinal: obs.ordinal, canonicalUrl, outcome: obs.outcome, productElapsedMs: obs.elapsedMs, precedingProductElapsedMs, navStatus: obs.httpStatusFinal ?? navSink.status, recoveredAfter429: obs.recoveredAfter429, recoveryAttempts: obs.recoveryAttempts, variantSetComplete: obs.variantSetComplete, redirectedToLogin: navSink.redirectedToLogin })}`,
           );
         } catch {
           /* la telemetría NUNCA rompe el scraper (§10) */
@@ -737,11 +765,18 @@ export class ScraperService {
     // §10: el resumen de cadencia se emite DESPUÉS del walk y ANTES de la decisión de completeness,
     // en finally (resumen parcial si el walk lanzara). La telemetría nunca rompe el scraper.
     let products: ScrapedProduct[];
+    let walkOutcome: Awaited<ReturnType<typeof runSkuFirstWalk>> | null = null;
     try {
-      ({ products } = await runSkuFirstWalk(deps));
+      walkOutcome = await runSkuFirstWalk(deps);
+      products = walkOutcome.products;
     } finally {
       try {
         await onLog("INFO", `[SkuFirstCadence] ${JSON.stringify(summarizeCadence(observations))}`);
+        if (walkOutcome) {
+          // §26/§15 · insumos de observabilidad: outcomes 4-valores + tamaño del FICHA_TO_SKUS_MAP.
+          await onLog("INFO", `[SkuFirstOutcomeSummary] ${JSON.stringify(walkOutcome.outcomeSummary)}`);
+          await onLog("INFO", `[SkuFirstFichaMap] ${JSON.stringify({ fichasObserved: Object.keys(walkOutcome.fichaToSkus).length })}`);
+        }
       } catch {
         /* no-op: telemetría no-fatal */
       }

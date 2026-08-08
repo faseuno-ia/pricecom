@@ -72,10 +72,14 @@ describe("2G-R7 · caller SKU-first (estructural, CI-safe)", () => {
     expect(completenessIdx).toBeGreaterThan(-1);
     expect(cadenceIdx).toBeLessThan(completenessIdx);
   });
-  it("observabilidad: onProductObserved + tags zero-variant/capture-failure presentes", () => {
+  it("observabilidad: onProductObserved + tags de la taxonomía 4-outcome (2G-R8-Q2) presentes", () => {
     expect(src).toMatch(/onProductObserved:/);
     // el tag se arma dinámicamente (`[${tag}]`), así que se busca el identificador del tag.
-    expect(src).toContain("SkuFirstZeroVariant");
-    expect(src).toContain("SkuFirstCaptureFailure");
+    expect(src).toContain("SkuFirstDataIncomplete");
+    expect(src).toContain("SkuFirstReadFailed");
+    expect(src).toContain("SkuFirstRateLimitedFicha");
+    // owner 429: eventos de recuperación observables.
+    expect(src).toContain("SkuFirstRateLimitRecovered");
+    expect(src).toContain("SkuFirstRateLimitBudgetExhausted");
   });
 });

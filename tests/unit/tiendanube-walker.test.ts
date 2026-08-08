@@ -76,7 +76,7 @@ function makeHarness(cfg: HarnessCfg) {
       calls.navigate.push(url);
       currentUrl = url;
       const redirected = !!cfg.redirectToLogin?.has(url) && !reLoggedIn;
-      return { redirectedToLogin: redirected };
+      return { redirectedToLogin: redirected, status: 200 as number | null };
     },
     async reLogin() {
       calls.reLogin++;
@@ -181,8 +181,8 @@ describe("mapProductPagePayloadToReducedRows — Fase B (mapping por ficha)", ()
   });
 });
 
-describe("captureProductRows — retry / re-login", () => {
-  it("14/15) fallo transitorio → retry; éxito conserva la ficha una sola vez", async () => {
+describe("captureProductRows — retry / re-login (2G-R8-Q2: FichaCaptureResult)", () => {
+  it("14/15) fallo transitorio → retry; éxito conserva la ficha una sola vez → VERIFIED_OK", async () => {
     const { deps, calls } = makeHarness({
       listings: [],
       capture: (url, attempt) => {
@@ -190,12 +190,12 @@ describe("captureProductRows — retry / re-login", () => {
         return payloadFor(url);
       },
     });
-    const rows = await captureProductRows("/p", 0, deps);
-    expect(rows).not.toBeNull();
-    expect(rows!.length).toBe(1);
+    const res = await captureProductRows("/p", 0, deps);
+    expect(res.outcome).toBe("VERIFIED_OK");
+    expect(res.rows.length).toBe(1);
     expect(calls.captureLs.length).toBe(2); // 1 fallo + 1 éxito
   });
-  it("16) fallo definitivo → null (reporta y continúa)", async () => {
+  it("16) fallo definitivo → READ_FAILED (reporta y continúa)", async () => {
     const { deps, calls } = makeHarness({
       listings: [],
       maxProductRetries: 2,
@@ -203,15 +203,17 @@ describe("captureProductRows — retry / re-login", () => {
         throw new Error("always");
       },
     });
-    const rows = await captureProductRows("/p", 0, deps);
-    expect(rows).toBeNull();
+    const res = await captureProductRows("/p", 0, deps);
+    expect(res.outcome).toBe("READ_FAILED");
+    expect(res.rows).toEqual([]);
     expect(calls.captureLs.length).toBe(3); // intento inicial + 2 retries
     expect(calls.logs.some(([l]) => l === "WARN")).toBe(true);
   });
   it("17) redirección a login → re-login y vuelve a la ficha", async () => {
     const { deps, calls } = makeHarness({ listings: [], redirectToLogin: new Set(["/p"]) });
-    const rows = await captureProductRows("/p", 0, deps);
-    expect(rows!.length).toBe(1);
+    const res = await captureProductRows("/p", 0, deps);
+    expect(res.outcome).toBe("VERIFIED_OK");
+    expect(res.rows.length).toBe(1);
     expect(calls.reLogin).toBe(1);
     expect(calls.navigate).toEqual(["/p", "/p"]); // navega, redirige, re-login, re-navega
   });
