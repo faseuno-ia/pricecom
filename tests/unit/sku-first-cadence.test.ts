@@ -82,14 +82,16 @@ describe("median", () => {
   });
 });
 
-describe("summarizeCadence", () => {
+describe("summarizeCadence (2G-R8-Q2 · taxonomía 4-outcome)", () => {
   it("handles 0 samples with all zeros and zero counts", () => {
     const summary = summarizeCadence([]);
     expect(summary).toEqual({
       productsAttempted: 0,
-      successfulWithVariants: 0,
-      zeroVariantCount: 0,
-      terminalFailureCount: 0,
+      verifiedOk: 0,
+      dataIncomplete: 0,
+      rateLimited: 0,
+      readFailed: 0,
+      recoveredAfter429: 0,
       meanMsPerProduct: 0,
       medianMsPerProduct: 0,
       p95MsPerProduct: 0,
@@ -100,14 +102,16 @@ describe("summarizeCadence", () => {
 
   it("handles a single sample", () => {
     const obs: ProductObservation[] = [
-      { ordinal: 1, elapsedMs: 250, outcome: "SUCCESS" },
+      { ordinal: 1, elapsedMs: 250, outcome: "VERIFIED_OK" },
     ];
     const summary = summarizeCadence(obs);
     expect(summary).toEqual({
       productsAttempted: 1,
-      successfulWithVariants: 1,
-      zeroVariantCount: 0,
-      terminalFailureCount: 0,
+      verifiedOk: 1,
+      dataIncomplete: 0,
+      rateLimited: 0,
+      readFailed: 0,
+      recoveredAfter429: 0,
       meanMsPerProduct: 250,
       medianMsPerProduct: 250,
       p95MsPerProduct: 250,
@@ -116,19 +120,21 @@ describe("summarizeCadence", () => {
     });
   });
 
-  it("counts mixed outcomes and computes ms stats over ALL observations", () => {
+  it("counts the four outcomes SEPARATELY (§14: no condensar bajo 'sin variantes') y stats sobre TODAS", () => {
     const obs: ProductObservation[] = [
-      { ordinal: 1, elapsedMs: 100, outcome: "SUCCESS" },
-      { ordinal: 2, elapsedMs: 200, outcome: "ZERO_VARIANT" },
-      { ordinal: 3, elapsedMs: 300, outcome: "TERMINAL_FAILURE" },
-      { ordinal: 4, elapsedMs: 400, outcome: "SUCCESS" },
-      { ordinal: 5, elapsedMs: 500, outcome: "SUCCESS" },
+      { ordinal: 1, elapsedMs: 100, outcome: "VERIFIED_OK" },
+      { ordinal: 2, elapsedMs: 200, outcome: "DATA_INCOMPLETE" },
+      { ordinal: 3, elapsedMs: 300, outcome: "READ_FAILED" },
+      { ordinal: 4, elapsedMs: 400, outcome: "RATE_LIMITED" },
+      { ordinal: 5, elapsedMs: 500, outcome: "VERIFIED_OK", recoveredAfter429: true },
     ];
     const summary = summarizeCadence(obs);
     expect(summary.productsAttempted).toBe(5);
-    expect(summary.successfulWithVariants).toBe(3);
-    expect(summary.zeroVariantCount).toBe(1);
-    expect(summary.terminalFailureCount).toBe(1);
+    expect(summary.verifiedOk).toBe(2);
+    expect(summary.dataIncomplete).toBe(1);
+    expect(summary.rateLimited).toBe(1);
+    expect(summary.readFailed).toBe(1);
+    expect(summary.recoveredAfter429).toBe(1);
     // stats over all 5 elapsedMs: 100,200,300,400,500
     expect(summary.meanMsPerProduct).toBe(300);
     expect(summary.medianMsPerProduct).toBe(300);
@@ -138,45 +144,27 @@ describe("summarizeCadence", () => {
     expect(summary.p95MsPerProduct).toBe(500);
   });
 
-  it("handles all ZERO_VARIANT and still counts every observation in stats", () => {
+  it("RATE_LIMITED y DATA_INCOMPLETE NO se cuentan como el mismo outcome", () => {
     const obs: ProductObservation[] = [
-      { ordinal: 1, elapsedMs: 10, outcome: "ZERO_VARIANT" },
-      { ordinal: 2, elapsedMs: 30, outcome: "ZERO_VARIANT" },
-      { ordinal: 3, elapsedMs: 20, outcome: "ZERO_VARIANT" },
+      { ordinal: 1, elapsedMs: 10, outcome: "RATE_LIMITED" },
+      { ordinal: 2, elapsedMs: 30, outcome: "DATA_INCOMPLETE" },
+      { ordinal: 3, elapsedMs: 20, outcome: "RATE_LIMITED" },
     ];
     const summary = summarizeCadence(obs);
-    expect(summary.productsAttempted).toBe(3);
-    expect(summary.successfulWithVariants).toBe(0);
-    expect(summary.zeroVariantCount).toBe(3);
-    expect(summary.terminalFailureCount).toBe(0);
+    expect(summary.rateLimited).toBe(2);
+    expect(summary.dataIncomplete).toBe(1);
+    expect(summary.verifiedOk).toBe(0);
+    expect(summary.readFailed).toBe(0);
     expect(summary.meanMsPerProduct).toBe(20);
-    expect(summary.medianMsPerProduct).toBe(20);
     expect(summary.minMsPerProduct).toBe(10);
     expect(summary.maxMsPerProduct).toBe(30);
   });
 
-  it("handles all TERMINAL_FAILURE and includes every observation in stats", () => {
+  it("fichas READ_FAILED no se excluyen de los stats de timing", () => {
+    // Si se excluyeran, la media sería 100 (solo el VERIFIED_OK). Incluyendo todas: media [100,900]=500.
     const obs: ProductObservation[] = [
-      { ordinal: 1, elapsedMs: 1000, outcome: "TERMINAL_FAILURE" },
-      { ordinal: 2, elapsedMs: 2000, outcome: "TERMINAL_FAILURE" },
-    ];
-    const summary = summarizeCadence(obs);
-    expect(summary.productsAttempted).toBe(2);
-    expect(summary.successfulWithVariants).toBe(0);
-    expect(summary.zeroVariantCount).toBe(0);
-    expect(summary.terminalFailureCount).toBe(2);
-    expect(summary.meanMsPerProduct).toBe(1500);
-    expect(summary.medianMsPerProduct).toBe(1500);
-    expect(summary.minMsPerProduct).toBe(1000);
-    expect(summary.maxMsPerProduct).toBe(2000);
-  });
-
-  it("verifies failing/zero fichas are not excluded from timing stats", () => {
-    // If failures were excluded, mean would be 100 (only the SUCCESS).
-    // Including all, mean over [100, 900] = 500.
-    const obs: ProductObservation[] = [
-      { ordinal: 1, elapsedMs: 100, outcome: "SUCCESS" },
-      { ordinal: 2, elapsedMs: 900, outcome: "TERMINAL_FAILURE" },
+      { ordinal: 1, elapsedMs: 100, outcome: "VERIFIED_OK" },
+      { ordinal: 2, elapsedMs: 900, outcome: "READ_FAILED" },
     ];
     const summary = summarizeCadence(obs);
     expect(summary.meanMsPerProduct).toBe(500);
