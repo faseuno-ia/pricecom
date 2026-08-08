@@ -22,6 +22,7 @@ import { extractWooStoreApi } from "../../lib/extractors/woo-store-api-extractor
 import { generateExcel } from "../../lib/excel/generator";
 import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extractions";
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
+import { attachExcelPostCommit } from "./attach-excel";
 import { assertNoPreWritePriceRegressionForExtraction } from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue, JobPayload } from "./queues/job-queue.interface";
@@ -233,12 +234,12 @@ async function processJob(payload: JobPayload) {
           );
           await tx.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
           await upsertCatalogProducts(jobId, tx as unknown as PrismaClient);
-          const fullProducts = await tx.extractedProduct.findMany({ where: { jobId } });
-          const excel = await generateExcel(fullProducts, provider, jobId);
           await tx.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
+          // Terminal COMPLETED con Excel NULO: el artefacto de reporte se genera POST-COMMIT
+          // (best-effort). Su generación NO debe poder revertir precios ya validados por D.
           await tx.extractionJob.updateMany({
             where: { id: jobId },
-            data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: excel.fileUrl, excelData: excel.buffer, excelName: excel.filename, workerLockedAt: null, updatedAt: new Date() },
+            data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: null, excelData: null, excelName: null, workerLockedAt: null, updatedAt: new Date() },
           });
           finalized = true;
         }, { timeout: 120000, maxWait: 15000 });
@@ -251,6 +252,10 @@ async function processJob(payload: JobPayload) {
       }
       if (!finalized) return;
       await onLog("INFO", `✓ Completado (PRICE_ONLY fenced) — ${products.length} productos procesados.`);
+      // POST-COMMIT: Excel = artefacto de reporte best-effort. Ya NO hay lease (workerLockedAt=NULL,
+      // job COMPLETED). attachExcelPostCommit NUNCA lanza: un fallo deja el job COMPLETED con
+      // excelData=null (regenerable) — no revierte precios ni cambia el estado del job.
+      await attachExcelPostCommit({ prisma, generateExcel, onLog }, { jobId, provider });
       await emitCompletion();
       return;
     }
