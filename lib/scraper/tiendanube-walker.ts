@@ -381,10 +381,22 @@ export interface WalkOutcomeSummary {
   total429SleepMs: number;
 }
 
+/**
+ * 2G-R8-Q2.1-A-R1 · §3.1 — metadata de cuarentena POR FICHA (count + reasons), derivada
+ * DESPUÉS de la agrupación a partir de `grouped.quarantine` + `allRows`. Es SÓLO metadata:
+ * no altera productos, cuarentena, navegación, captura, completitud ni persistencia. Q2.1-B la
+ * usa para derivar FICHA_SKU_IDENTITY_SET_COMPLETE (una ficha con quarantineCount>0 no autoriza
+ * inferir ausencia de variante, por CUALQUIER reason que retire una variante del set reconciliable).
+ */
+export interface FichaQuarantineInfo {
+  count: number;
+  reasons: string[];
+}
+
 /** Orquesta las dos fases y agrupa por SKU al final. */
 export async function runSkuFirstWalk(
   deps: WalkerDeps,
-): Promise<GroupResult & { stats: WalkStats; outcomeSummary: WalkOutcomeSummary; fichaToSkus: Record<string, string[]> }> {
+): Promise<GroupResult & { stats: WalkStats; outcomeSummary: WalkOutcomeSummary; fichaToSkus: Record<string, string[]>; fichaQuarantine: Record<string, FichaQuarantineInfo> }> {
   // Fase A. Sitemap-driven (2G-R3) cuando hay seed: NO recorre listados (el listado del
   // storefront es incompleto); usa el START_SET como conjunto de discovery. Sin seed →
   // discovery legacy por listados. En AMBOS casos el ACCEPTED_WALK_SET (autoridad de
@@ -490,5 +502,19 @@ export async function runSkuFirstWalk(
   } catch { /* la telemetría NUNCA rompe el walk */ }
   const fichaToSkusObj: Record<string, string[]> = {};
   for (const [k, v] of fichaToSkus) fichaToSkusObj[k] = [...v].sort();
-  return { ...grouped, stats, outcomeSummary, fichaToSkus: fichaToSkusObj };
+
+  // §3.1 · metadata de cuarentena por ficha (derivada de grouped.quarantine + allRows). SÓLO
+  // metadata: NO altera grouped.products/grouped.quarantine ni decisión alguna del walk. Cada
+  // entrada de cuarentena mapea a su ficha vía allRows[originalCaptureIndex].productUrl.
+  const fichaQuarantine: Record<string, FichaQuarantineInfo> = {};
+  for (const q of grouped.quarantine) {
+    const row = allRows[q.originalCaptureIndex];
+    const ficha = (row?.productUrl as string | null) ?? null;
+    const key = ficha ?? `__no_ficha__:${q.originalCaptureIndex}`;
+    if (!fichaQuarantine[key]) fichaQuarantine[key] = { count: 0, reasons: [] };
+    fichaQuarantine[key].count++;
+    fichaQuarantine[key].reasons.push(q.reason);
+  }
+
+  return { ...grouped, stats, outcomeSummary, fichaToSkus: fichaToSkusObj, fichaQuarantine };
 }

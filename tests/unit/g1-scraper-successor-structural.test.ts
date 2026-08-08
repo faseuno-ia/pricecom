@@ -53,19 +53,27 @@ const B4_R7_SUCCESSOR_SHA256 = "bff05f87d5691427cb73896586337d11b719d3be29b75bc8
 //     mapper/agrupación/cuarentena/completitud (ACCEPTED_WALK_SET) SIN cambios de semántica.
 //   La autoridad de completitud sigue llenándose SOLO con capturas VERIFIED_OK. Predecesor R7 bff05f87.
 const B4_R8Q2_SUCCESSOR_SHA256 = "a478853a7345dd35a88e690241c64c9c91f26e4f486d09a75e70785644577cae";
+// 2G-R8-Q2.1-A-R1: sucesión firmada de B4. Delta autorizado y acotado (§3.1 — metadata SÓLO):
+//   + FichaQuarantineInfo (tipo); runSkuFirstWalk deriva y devuelve `fichaQuarantine`
+//     (count+reasons por ficha) a partir de grouped.quarantine + allRows, DESPUÉS de la agrupación.
+//   = NO cambia productos/cuarentena/navegación/captura/completitud/persistencia: groupSkuFirst
+//     intacto, el WALK_SET/ACCEPTED sin cambios. SKU_FIRST_RUNTIME_BEHAVIOR_CHANGED=false; sólo
+//     SKU_FIRST_CAPTURE_METADATA_SHAPE_CHANGED=true. Predecesor R8-Q2 a478853a → sucesor R1 abajo.
+const B4_R8Q2_1A_R1_SUCCESSOR_SHA256 = "120491f51d651703d2b9a1ab5e4c4c47645227bcb276376afc635a4372de1386";
 
-describe("B5 inmutable + B4 sucesión firmada 2G-R8-Q2", () => {
+describe("B5 inmutable + B4 sucesión firmada 2G-R8-Q2.1-A-R1", () => {
   it("preserva B5 extracted-product-input como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
     expect(sha256File(B5_PATH)).toBe(B5_SIGNED_SHA256);
   });
 
-  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R8-Q2 (429 recovery)", () => {
+  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R8-Q2.1-A-R1 (metadata cuarentena)", () => {
     const actual = sha256File(B4_PATH);
-    // Estados anteriores deliberadamente sucedidos (G1 frozen → 2G-R3 → 2G-R7 → 2G-R8-Q2).
+    // Estados anteriores deliberadamente sucedidos (G1 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-A-R1).
     expect(actual).not.toBe(B4_G1_FROZEN_SHA256);
     expect(actual).not.toBe(B4_2GR3_SUCCESSOR_SHA256);
     expect(actual).not.toBe(B4_R7_SUCCESSOR_SHA256);
-    expect(actual).toBe(B4_R8Q2_SUCCESSOR_SHA256);
+    expect(actual).not.toBe(B4_R8Q2_SUCCESSOR_SHA256);
+    expect(actual).toBe(B4_R8Q2_1A_R1_SUCCESSOR_SHA256);
   });
 });
 

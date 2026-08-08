@@ -34,6 +34,7 @@ export type SkuReason =
   | "AMBIGUOUS_MAPPING"
   | "UNMAPPABLE_MAPPING"
   | "VARIANT_SET_INCOMPLETE"
+  | "SKU_IDENTITY_SET_INCOMPLETE"
   | "SITEMAP_DRIFT"
   | "SITEMAP_UNAVAILABLE"
   | "NOT_OBSERVED"
@@ -58,7 +59,16 @@ export interface ObservedVariant {
 
 export interface FichaOutcomeInfo {
   outcome: FichaOutcome;
+  /** Witness §3.2: vimos TODAS las variantes de la ficha. */
   variantSetComplete: VariantSetComplete;
+  /**
+   * 2G-R8-Q2.1-A-R1 · §3 — witness INDEPENDIENTE: pudimos reconciliar inequívocamente la
+   * IDENTIDAD SKU de todas las variantes relevantes. Una ficha con CUALQUIER variante retirada
+   * por cuarentena (por cualquier reason) tiene skuIdentitySetComplete=false. OPCIONAL: si falta,
+   * se trata como NO-completa (fail-safe: la ausencia por variante exige === true, nunca se infiere
+   * ausencia por omisión). Derivable de fichaQuarantine del walk vía fichaSkuIdentitySetComplete().
+   */
+  skuIdentitySetComplete?: VariantSetComplete;
 }
 
 export interface ReconcileInput {
@@ -94,12 +104,36 @@ export interface ReconcileSummary {
   byReason: Record<string, number>;
 }
 
+/**
+ * 2G-R8-Q2.1-A-R1 · §2 — EJE SEPARADO (no un 5º valor del enum de fila de catálogo). SKUs
+ * observados en el proveedor SIN fila de catálogo. Se detectan, particionan y reportan; NUNCA
+ * se escriben (NEW_PROVIDER_SKUS_INSERTED = 0) ni pueden abortar un batch de precios existente.
+ */
+export interface ProviderDiscovery {
+  newProviderSkus: string[];
+  providerNewSkuCount: number;
+  providerNewFichaCount: number;
+  /** máx 20. */
+  newProviderSkusSample: string[];
+}
+
 export interface ReconcileResult {
   results: SkuResult[];
   summary: ReconcileSummary;
   evidenceConflictCount: number;
   /** Máx 10; cada uno con las dos fuentes en conflicto. */
   evidenceConflictSample: Array<{ sku: string; sources: [string, string] }>;
+  /** §2 · eje independiente de descubrimiento del proveedor (SKUs nuevos, no en el catálogo). */
+  providerDiscovery: ProviderDiscovery;
+}
+
+/**
+ * 2G-R8-Q2.1-A-R1 · §3.1 bridge — deriva el witness FICHA_SKU_IDENTITY_SET_COMPLETE desde la
+ * metadata `fichaQuarantine` del walk: una ficha con CUALQUIER variante en cuarentena (count>0,
+ * por cualquier reason) NO tiene identidad SKU completa. Puro.
+ */
+export function fichaSkuIdentitySetComplete(quarantineCount: number | undefined | null): boolean {
+  return !(typeof quarantineCount === "number" && quarantineCount > 0);
 }
 
 /** Precio persistible: número finito estrictamente positivo (§ D / R13). null/NaN/Infinity/≤0 → no. */
@@ -183,11 +217,16 @@ function classifyOne(
         ? { sku, classification: "SKU_VERIFIED_PRESENT_WITH_PRICE", reason: null, evidenceLevel: "DIRECT_CAPTURE" } // A1
         : { sku, classification: "SKU_PRESENT_WITHOUT_PRICE", reason: null, evidenceLevel: "DIRECT_CAPTURE" };      // A2
     }
-    // SKU histórico NO aparece en el set observado de una ficha VERIFIED_OK.
-    if (outcome.variantSetComplete === true) {
-      return { sku, classification: "SKU_VERIFIED_ABSENT", reason: "VARIANT_NOT_IN_COMPLETE_SET", evidenceLevel: "DIRECT_CAPTURE" }; // A4
+    // SKU histórico NO aparece en el set observado de una ficha VERIFIED_OK. La ausencia por
+    // variante (A4) exige AMBOS witnesses: set de VARIANTES completo Y set de IDENTIDAD SKU completo.
+    if (outcome.variantSetComplete !== true) {
+      return unverified(sku, "VARIANT_SET_INCOMPLETE"); // R9 (NO_VARIANT_ABSENCE_WITHOUT_COMPLETE_SET)
     }
-    return unverified(sku, "VARIANT_SET_INCOMPLETE"); // R9 (NO_VARIANT_ABSENCE_WITHOUT_COMPLETE_SET)
+    if (outcome.skuIdentitySetComplete !== true) {
+      // R18/R19: alguna variante fue retirada por cuarentena → su SKU tampoco aparece → falso ABSENT.
+      return unverified(sku, "SKU_IDENTITY_SET_INCOMPLETE"); // NO_VARIANT_ABSENCE_WITHOUT_SKU_IDENTITY_COMPLETE
+    }
+    return { sku, classification: "SKU_VERIFIED_ABSENT", reason: "VARIANT_NOT_IN_COMPLETE_SET", evidenceLevel: "DIRECT_CAPTURE" }; // A4
   }
 
   // TIER 4 · sin outcome de ficha → ausencia por sitemap (A3), con dos testigos consistentes.
@@ -239,5 +278,26 @@ export function reconcileSkus(input: ReconcileInput): ReconcileResult {
     }
   }
 
-  return { results, summary, evidenceConflictCount, evidenceConflictSample };
+  // §2 · providerDiscovery: SKUs observados en el proveedor SIN fila de catálogo (eje separado).
+  const catalogSkus = new Set(input.catalogRows.map((r) => (r.sku ?? "").trim()).filter((s) => s !== ""));
+  const newSkuFichas = new Map<string, Set<string>>(); // sku nuevo → fichas donde se observó
+  for (const [ficha, variants] of input.observedVariants) {
+    for (const v of variants) {
+      const sku = (v.sku ?? "").trim();
+      if (sku === "" || catalogSkus.has(sku)) continue;
+      if (!newSkuFichas.has(sku)) newSkuFichas.set(sku, new Set());
+      newSkuFichas.get(sku)!.add(ficha);
+    }
+  }
+  const newProviderSkus = [...newSkuFichas.keys()].sort();
+  const newFichas = new Set<string>();
+  for (const fs of newSkuFichas.values()) for (const f of fs) newFichas.add(f);
+  const providerDiscovery: ProviderDiscovery = {
+    newProviderSkus,
+    providerNewSkuCount: newProviderSkus.length,
+    providerNewFichaCount: newFichas.size,
+    newProviderSkusSample: newProviderSkus.slice(0, 20),
+  };
+
+  return { results, summary, evidenceConflictCount, evidenceConflictSample, providerDiscovery };
 }
