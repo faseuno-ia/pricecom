@@ -215,16 +215,22 @@ describe("2G-R5D-R3 · assertNoPreWritePriceRegressionForExtraction (wired, tena
 // §5 (R3) — estructural del write barrier INLINE en worker/src/index.ts (CI-safe: lee un tracked file).
 describe("2G-R5D-R3 · write barrier inline en worker/src/index.ts (estructural)", () => {
   const workerSrc = readFileSync(resolve(process.cwd(), "worker/src/index.ts"), "utf8");
-  it("existe EXACTAMENTE una llamada al guard (PRE_WRITE_GUARD_CALL_COUNT_IN_WORKER=1)", () => {
-    const calls = workerSrc.match(/assertNoPreWritePriceRegressionForExtraction\(/g) ?? [];
-    expect(calls.length).toBe(1);
-  });
-  it("el guard corre ANTES de la primera escritura comercial (createMany)", () => {
-    const guardIdx = workerSrc.indexOf("assertNoPreWritePriceRegressionForExtraction(");
-    const createIdx = workerSrc.indexOf("prisma.extractedProduct.createMany(");
-    expect(guardIdx).toBeGreaterThan(-1);
-    expect(createIdx).toBeGreaterThan(-1);
-    expect(guardIdx).toBeLessThan(createIdx);
+  // 2G-R8-Q1: dos paths de finalización (PRICE_ONLY fenced en tx + FULL inline), cada uno con SU
+  // guard antes de SU createMany. El invariante deja de ser "exactamente 1" y pasa a ser "cada
+  // createMany va precedido por un guard" (ningún createMany sin guard previo).
+  it("cada createMany va precedido por una llamada al guard (guard antes de toda escritura comercial)", () => {
+    const guards = [...workerSrc.matchAll(/assertNoPreWritePriceRegressionForExtraction\(/g)].map((m) => m.index!);
+    const creates = [...workerSrc.matchAll(/extractedProduct\.createMany\(/g)].map((m) => m.index!);
+    expect(guards.length).toBeGreaterThanOrEqual(1);
+    expect(creates.length).toBeGreaterThanOrEqual(1);
+    // por cada createMany existe un guard con índice menor y sin otro createMany entre medio
+    for (const c of creates) {
+      const guardsBefore = guards.filter((g) => g < c);
+      expect(guardsBefore.length).toBeGreaterThan(0);
+      const nearestGuard = Math.max(...guardsBefore);
+      const createsBetween = creates.filter((c2) => c2 > nearestGuard && c2 < c);
+      expect(createsBetween.length).toBe(0);
+    }
   });
   it("el guard usa job.userId como autoridad y provider.userId sólo como testigo", () => {
     expect(workerSrc).toMatch(/userId:\s*job\.userId/);

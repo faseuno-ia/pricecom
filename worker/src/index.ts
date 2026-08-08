@@ -24,14 +24,25 @@ import { compareWithPreviousExtraction } from "../../lib/comparison/compare-extr
 import { upsertCatalogProducts } from "../../lib/catalog/upsert-catalog-products";
 import { assertNoPreWritePriceRegressionForExtraction } from "../../lib/catalog/pre-write-price-guard";
 import { DbPollingQueue } from "./queues/db-polling-queue";
-import type { IJobQueue } from "./queues/job-queue.interface";
+import type { IJobQueue, JobPayload } from "./queues/job-queue.interface";
+import { JobLease } from "./job-lease";
+import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
 import { logInfo, logError } from "../../lib/events/event-log";
 import { runConsistencyCheck } from "./consistency-check";
+
+/** 2G-R8-Q1 · señal interna: el CAS de ownership dentro de la tx fenced afectó 0 filas (lease
+ * perdido) → hace rollback de toda la transacción comercial. No es un fallo del job. */
+class LeaseFencingError extends Error {
+  constructor() { super("LEASE_FENCING_LOST"); this.name = "LeaseFencingError"; }
+}
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
 const STALE_JOB_TIMEOUT  = parseInt(process.env.WORKER_STALE_TIMEOUT_MS ?? String(10 * 60 * 1000));
 const STALE_CHECK_EVERY  = 12; // cada 12 polls (~1 min) revisar stale jobs
+// 2G-R8-Q1 · heartbeat de lease. 60s de intervalo → ~10 renovaciones dentro del stale timeout de
+// 600s → un job vivo (walk largo) nunca se re-clama. Seguridad operativa, no inferencia de duración.
+const WORKER_LEASE_HEARTBEAT_INTERVAL_MS = parseInt(process.env.WORKER_LEASE_HEARTBEAT_INTERVAL_MS ?? "60000");
 // Cada 60 polls (~5 min a 5s/poll) chequea consistencia. Con módulo 1 se
 // dispara también en el primer ciclo, para limpiar lo que quedó de períodos
 // donde el worker estuvo caído.
@@ -68,9 +79,19 @@ async function writeLog(
 }
 
 // ─── Procesador de job ────────────────────────────────────────────────────────
-async function processJob(jobId: string) {
+async function processJob(payload: JobPayload) {
+  const { jobId, leaseVersion } = payload;
   console.log(`\n► Procesando job ${jobId} (PID ${process.pid})`);
 
+  // 2G-R8-Q1 · lease heartbeat: renueva el ownership (workerLockedAt) mientras el job trabaja, de
+  // modo que releaseStaleJobs (10 min) NUNCA re-clame un walk vivo (causa raíz de la doble ejecución
+  // del canary R8-P0). Si el lease se pierde/queda desconocido, la finalización NO persiste.
+  const lease = new JobLease(jobId, leaseVersion, queue, WORKER_LEASE_HEARTBEAT_INTERVAL_MS, (l, m) => {
+    void writeLog(jobId, l, m).catch(() => {});
+  });
+  lease.start();
+
+  try {
   const job = await prisma.extractionJob.findUnique({
     where: { id: jobId },
     include: { provider: { include: { scraperConfig: true } } },
@@ -78,7 +99,8 @@ async function processJob(jobId: string) {
 
   if (!job?.provider) {
     console.error(`Job ${jobId}: proveedor no encontrado, saltando.`);
-    await queue.markFailed(jobId, "Proveedor no encontrado");
+    const fin = await lease.pauseForFinalization();
+    if (fin.owned) await queue.markFailed(jobId, "Proveedor no encontrado", fin.leaseVersion);
     return;
   }
 
@@ -165,140 +187,110 @@ async function processJob(jobId: string) {
       });
     }
 
-    // Persistir productos
+    // 2G-R8-Q1 · Finalización LEASE-FENCED. Handoff (5.bis): detener el heartbeat y esperar cualquier
+    // renovación en vuelo ANTES de finalizar (evita que el heartbeat se robe el lease a sí mismo).
+    const fin = await lease.pauseForFinalization();
+    if (!fin.owned) {
+      await onLog("WARN", `[WorkerLease] ownership ${fin.state} antes de finalizar — se ABORTA la persistencia sin escritura comercial ni terminal; el job queda RUNNING para stale recovery.`);
+      return;
+    }
+
+    const withPrice    = products.filter((p) => p.wholesalePrice !== null).length;
+    const withoutPrice = products.length - withPrice;
+    const withoutSku   = products.filter((p) => !p.sku).length;
+    const writeMode = resolveCatalogWriteMode(provider.scraperConfig?.catalogWriteMode);
+    const completionStats = { totalProducts: products.length, productsWithPrice: withPrice, productsWithoutPrice: withoutPrice, productsWithoutSku: withoutSku };
+
+    // Comparación + EventLog de completado (best-effort, post-terminal; no comercial).
+    const emitCompletion = async () => {
+      let comparisonStats: { newProducts: number; removedProducts: number; priceUp: number; priceDown: number; stockChanged: number } | null = null;
+      try {
+        await compareWithPreviousExtraction(jobId, prisma);
+        await onLog("INFO", "Comparación con extracción anterior generada.");
+        comparisonStats = await prisma.extractionComparison.findUnique({ where: { jobId }, select: { newProducts: true, removedProducts: true, priceUp: true, priceDown: true, stockChanged: true } });
+      } catch (err) {
+        console.error("[comparison] Error al comparar:", err);
+        await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
+      }
+      await logInfo({ source: "EXTRACTION", type: "EXTRACTION_COMPLETED", title: `Extracción completada — ${provider.name}`, providerId: provider.id, jobId, metadata: { ...completionStats, ...(comparisonStats ?? {}) } });
+    };
+
+    // ── PRICE_ONLY: escritura comercial FENCED END-TO-END en UNA transacción (sin EventLog/Woo ⇒
+    //    tx-scopable, 6.quater/6.quinquies). CAS de ownership como PRIMERA sentencia; si falla → throw
+    //    → rollback TOTAL (cero writes comerciales; el old owner no puede commitear). ──
+    if (products.length > 0 && writeMode === "PRICE_ONLY") {
+      let finalized = false;
+      try {
+        await prisma.$transaction(async (tx) => {
+          const owned = await tx.$queryRaw<{ id: string }[]>`
+            UPDATE "ExtractionJob" SET "workerLockedAt" = NOW(), "updatedAt" = NOW()
+            WHERE id = ${jobId} AND status = 'RUNNING' AND "workerLockedAt" = ${fin.leaseVersion}
+            RETURNING id`;
+          if (owned.length !== 1) throw new LeaseFencingError();
+          await assertNoPreWritePriceRegressionForExtraction(
+            { findExisting: (u, p, s) => tx.catalogProduct.findMany({ where: { userId: u, providerId: p, sku: { in: s } }, select: { id: true, sku: true, wholesalePrice: true } }) },
+            { userId: job.userId, providerUserId: provider.userId, providerId: provider.id, requiresLogin: provider.requiresLogin, jobId, products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })), onLog },
+          );
+          await tx.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
+          await upsertCatalogProducts(jobId, tx as unknown as PrismaClient);
+          const fullProducts = await tx.extractedProduct.findMany({ where: { jobId } });
+          const excel = await generateExcel(fullProducts, provider, jobId);
+          await tx.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
+          await tx.extractionJob.updateMany({
+            where: { id: jobId },
+            data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: excel.fileUrl, excelData: excel.buffer, excelName: excel.filename, workerLockedAt: null, updatedAt: new Date() },
+          });
+          finalized = true;
+        }, { timeout: 120000, maxWait: 15000 });
+      } catch (txErr) {
+        if (txErr instanceof LeaseFencingError) {
+          await onLog("WARN", `[WorkerLease] lease perdido durante la finalización fenced — rollback total, cero writes comerciales; el job queda RUNNING.`);
+          return;
+        }
+        throw txErr; // D u otros errores → catch histórico → fenced markFailed
+      }
+      if (!finalized) return;
+      await onLog("INFO", `✓ Completado (PRICE_ONLY fenced) — ${products.length} productos procesados.`);
+      await emitCompletion();
+      return;
+    }
+
+    // ── FULL (u otros modes/providers): flujo histórico inline; terminal COMPLETED FENCED por CAS.
+    //    FULL puede llamar Woo/EventLog no-transaccionales → NO se envuelve en una tx DB (garantía por
+    //    partes, 6.quinquies): terminal fencing genérico, pero los writes comerciales no son atómicos. ──
     if (products.length > 0) {
-      // 2G-R5D — Barrera pre-write FAIL-CLOSED, inmediatamente antes de la PRIMERA escritura
-      // comercial (createMany). Exige job.userId (misma autoridad de tenant que el upsert), verifica
-      // consistencia con provider.userId (sólo testigo, no reemplaza), lee el catálogo existente
-      // read-only y lanza ante priced→null o extracción login-gated sin precios. SIN try/catch
-      // local: se propaga al catch histórico del job (→ markFailed). No reordena ni envuelve el
-      // resto del success path.
       await assertNoPreWritePriceRegressionForExtraction(
-        {
-          findExisting: (userId, providerId, skus) =>
-            prisma.catalogProduct.findMany({
-              where: { userId, providerId, sku: { in: skus } },
-              select: { id: true, sku: true, wholesalePrice: true },
-            }),
-        },
-        {
-          userId: job.userId,
-          providerUserId: provider.userId,
-          providerId: provider.id,
-          requiresLogin: provider.requiresLogin,
-          jobId,
-          products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })),
-          onLog,
-        },
+        { findExisting: (userId, providerId, skus) => prisma.catalogProduct.findMany({ where: { userId, providerId, sku: { in: skus } }, select: { id: true, sku: true, wholesalePrice: true } }) },
+        { userId: job.userId, providerUserId: provider.userId, providerId: provider.id, requiresLogin: provider.requiresLogin, jobId, products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })), onLog },
       );
-
-      await prisma.extractedProduct.createMany({
-        // Mapping extraído a una función pura (lib/scraper/extracted-product-input)
-        // para poder testear la preservación de rawData sin DB. Byte-equivalente
-        // al map inline previo.
-        data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)),
-      });
-
-      // Sincronizar el catálogo persistente. Aislado en try/catch porque su
-      // fallo no debe abortar la extracción (Excel, comparación, etc. siguen).
+      await prisma.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
       try {
         await upsertCatalogProducts(jobId, prisma);
         await onLog("DEBUG", "CatalogProduct upsert completado");
       } catch (err) {
-        await onLog("WARN", "Error en upsert de CatalogProduct — no rompe la extracción", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+        await onLog("WARN", "Error en upsert de CatalogProduct — no rompe la extracción", { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    // Estadísticas
-    const withPrice    = products.filter((p) => p.wholesalePrice !== null).length;
-    const withoutPrice = products.length - withPrice;
-    const withoutSku   = products.filter((p) => !p.sku).length;
-
-    // Generar Excel y persistirlo en DB (no en filesystem — Railway es efímero).
     let excelFileUrl: string | null = null;
     let excelName: string | null = null;
     let excelData: Buffer | null = null;
-
     if (products.length > 0) {
       await onLog("INFO", "Generando archivo Excel...");
       const fullProducts = await prisma.extractedProduct.findMany({ where: { jobId } });
       const result = await generateExcel(fullProducts, provider, jobId);
-      excelFileUrl = result.fileUrl;
-      excelName = result.filename;
-      excelData = result.buffer;
-      await onLog(
-        "INFO",
-        `Excel generado (${(result.buffer.byteLength / 1024).toFixed(0)} KB) — ${result.filename}`
-      );
+      excelFileUrl = result.fileUrl; excelName = result.filename; excelData = result.buffer;
+      await onLog("INFO", `Excel generado (${(result.buffer.byteLength / 1024).toFixed(0)} KB) — ${result.filename}`);
     }
+    await prisma.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
 
-    // Actualizar timestamp del proveedor
-    await prisma.provider.update({
-      where: { id: provider.id },
-      data:  { lastExtractionAt: new Date() },
-    });
-
-    await queue.markCompleted(jobId, {
-      totalProducts:       products.length,
-      productsWithPrice:   withPrice,
-      productsWithoutPrice: withoutPrice,
-      productsWithoutSku:  withoutSku,
-      // excelFilePath queda null para los nuevos jobs — el Excel vive en
-      // excelData (DB) y la UI lo descarga por excelFileUrl.
-      excelFilePath:       null,
-      excelFileUrl,
-      excelData,
-      excelName,
-    });
-
+    const finalizedFull = await queue.markCompleted(jobId, { ...completionStats, excelFilePath: null, excelFileUrl, excelData, excelName }, fin.leaseVersion);
+    if (!finalizedFull) {
+      await onLog("WARN", `[WorkerLease] terminal COMPLETED suprimido (ownership ya no es nuestro).`);
+      return;
+    }
     await onLog("INFO", `✓ Completado — ${products.length} productos procesados.`);
-
-    // Comparar contra la extracción COMPLETED anterior del mismo proveedor.
-    // En try/catch propio: si la comparación falla, el job ya está COMPLETED
-    // y no queremos romper el worker.
-    let comparisonStats: {
-      newProducts: number;
-      removedProducts: number;
-      priceUp: number;
-      priceDown: number;
-      stockChanged: number;
-    } | null = null;
-    try {
-      // Pasamos la instancia del worker para no abrir una segunda conexión.
-      await compareWithPreviousExtraction(jobId, prisma);
-      await onLog("INFO", "Comparación con extracción anterior generada.");
-      const comp = await prisma.extractionComparison.findUnique({
-        where: { jobId },
-        select: {
-          newProducts: true,
-          removedProducts: true,
-          priceUp: true,
-          priceDown: true,
-          stockChanged: true,
-        },
-      });
-      comparisonStats = comp;
-    } catch (err) {
-      console.error("[comparison] Error al comparar:", err);
-      await onLog("WARN", `No se pudo generar la comparación: ${(err as Error).message}`);
-    }
-
-    await logInfo({
-      source: "EXTRACTION",
-      type: "EXTRACTION_COMPLETED",
-      title: `Extracción completada — ${provider.name}`,
-      providerId: provider.id,
-      jobId,
-      metadata: {
-        totalProducts: products.length,
-        productsWithPrice: withPrice,
-        productsWithoutPrice: withoutPrice,
-        productsWithoutSku: withoutSku,
-        ...(comparisonStats ?? {}),
-      },
-    });
+    await emitCompletion();
 
   } catch (err) {
     const errorMsg = (err as Error).message;
@@ -308,12 +300,19 @@ async function processJob(jobId: string) {
     // lleva EXACTAMENTE error.message histórico. Los diagnósticos de completitud ya no dependen solo
     // del EventLog: sobreviven en el propio registro autoritativo del job.
     const failureMessage = selectFailureMessage(err);
-    // Resiliencia mutua: el fallo de markFailed no debe ocultar el error original (ya emitido por
-    // onLog) ni impedir el EventLog; el fallo del EventLog no debe impedir markFailed (va primero).
-    try {
-      await queue.markFailed(jobId, failureMessage);
-    } catch (markErr) {
-      console.error(`[worker] markFailed falló para job ${jobId} (no oculta el error original):`, markErr);
+    // 2G-R8-Q1 · markFailed FENCED: sólo si seguimos siendo dueños. Si el lease se perdió (reclaim) o
+    // quedó UNKNOWN (DB error), NO escribimos estado terminal — hacerlo sobre la ejecución nueva es
+    // exactamente el daño que Q1 previene (5.ter). El job queda RUNNING y stale recovery lo maneja.
+    const finFail = await lease.pauseForFinalization();
+    if (finFail.owned) {
+      try {
+        const marked = await queue.markFailed(jobId, failureMessage, finFail.leaseVersion);
+        if (!marked) await onLog("WARN", `[WorkerLease] markFailed suprimido (ownership ya no es nuestro).`);
+      } catch (markErr) {
+        console.error(`[worker] markFailed falló para job ${jobId} (no oculta el error original):`, markErr);
+      }
+    } else {
+      await onLog("WARN", `[WorkerLease] error del job con lease ${finFail.state} — NO se marca FAILED (job queda RUNNING para stale recovery).`);
     }
     // EventLog = evidencia SUPLEMENTARIA (no única copia). reasonCode + counts + sample≤20 + SHA;
     // nunca listas completas/precios/HTML/cookies/tokens.
@@ -331,6 +330,10 @@ async function processJob(jobId: string) {
     } catch (logErr) {
       console.error(`[worker] logError falló para job ${jobId} (markFailed ya intentado):`, logErr);
     }
+  }
+  } finally {
+    // 2G-R8-Q1 · siempre detener el heartbeat (limpieza del timer; sin dangling interval).
+    await lease.stop("processJob-end");
   }
 }
 
@@ -377,7 +380,7 @@ async function pollLoop() {
       const payload = await queue.claimNextJob();
 
       if (payload) {
-        await processJob(payload.jobId);
+        await processJob(payload);
       }
 
     } catch (err) {
