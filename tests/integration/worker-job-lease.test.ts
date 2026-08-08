@@ -193,7 +193,7 @@ describe("2G-R8-Q1-R1 · benchmark finalización PRICE_ONLY 1121 writes (sanity 
     const provider = await createTestProvider(user.id, {});
     // Seed catálogo existente (1121 filas) en bulk.
     await testPrisma.catalogProduct.createMany({
-      data: Array.from({ length: N }, (_, i) => ({ userId: user.id, providerId: provider.id, sku: `BM-${i}`, name: `bm-${i}`, supplierName: provider.name, lastSeenAt: new Date(), wholesalePrice: 10 })),
+      data: Array.from({ length: N }, (_, i) => ({ userId: user.id, providerId: provider.id, sku: `BM-${i}`, supplierName: provider.name, lastSeenAt: new Date(), wholesalePrice: 10 })),
     });
     const rows = await testPrisma.catalogProduct.findMany({ where: { providerId: provider.id }, select: { id: true } });
     expect(rows.length).toBe(N);
