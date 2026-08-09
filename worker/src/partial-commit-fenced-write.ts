@@ -28,8 +28,9 @@ export interface FencedPartialWriteParams {
   priceWriteSkus: Array<{ sku: string; newPrice: number }>;
   completionStats: Record<string, number>;
   onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string) => Promise<void> | void;
-  /** Seams de inyección de falla — SÓLO tests. */
-  faults?: { throwAfterPriceUpdates?: number; throwBeforeProviderUpdate?: boolean; throwBeforeTerminal?: boolean };
+  /** Seam de inyección de falla JS a mitad del loop de updates — SÓLO tests (W17_JS). W18/W19 usan
+   *  fallas REALES de tx.provider.update() / terminal via triggers de Postgres. */
+  faults?: { throwAfterPriceUpdates?: number };
 }
 
 export interface FencedPartialWriteResult { committed: boolean; finalizationMs: number; writtenCount: number }
@@ -75,11 +76,9 @@ export async function fencedPartialWrite(prisma: PrismaClient, params: FencedPar
     writtenCount = wr.written;
 
     // 5 · Provider update.
-    if (faults?.throwBeforeProviderUpdate) throw new Error("__TEST_FAULT_BEFORE_PROVIDER_UPDATE");
     await tx.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
 
     // 6 · terminal COMPLETED (excel null; post-commit best-effort).
-    if (faults?.throwBeforeTerminal) throw new Error("__TEST_FAULT_BEFORE_TERMINAL");
     await tx.extractionJob.updateMany({
       where: { id: jobId },
       data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: null, excelData: null, excelName: null, workerLockedAt: null, updatedAt: new Date() },

@@ -128,6 +128,27 @@ describe("runPartialCommitShadow", () => {
     expect(r.lifecyclePreviewStatus).toBe("VALID_SHADOW_NO_PRICE_WRITE");
   });
 
+  it("W43) present-without-price anomaly=true PERO write-set válido → autoriza escritura igual (anomaly no cambia elegibilidad)", async () => {
+    const FB = "https://differenttouch.com.ar/productos/b";
+    const partial: SkuFirstPartialResult = {
+      products: [{ sku: "A", productUrl: FA, wholesalePrice: 105, name: "A", description: null, oldPrice: null, stock: null, category: null, brand: null, imageUrl: null, rawData: {} }],
+      fichaObservations: [
+        { ordinal: 0, url: FA, elapsedMs: 1, outcome: "VERIFIED_OK", variantsCaptured: 1, recoveredAfter429: false, recoveryAttempts: 0, httpStatusFinal: 200, variantSetComplete: true },
+        { ordinal: 1, url: FB, elapsedMs: 1, outcome: "VERIFIED_OK", variantsCaptured: 1, recoveredAfter429: false, recoveryAttempts: 0, httpStatusFinal: 200, variantSetComplete: true },
+      ],
+      fichaQuarantine: {}, ...sitemap([canonA, "differenttouch.com.ar/productos/b"]),
+      completenessComplete: true, completenessReasonCode: null, completenessDiagnostics: {},
+    };
+    // A observado con precio; B observado SIN precio (present-without-price). ratio 1/2=0.5 > 0.15.
+    (partial.products as any).push({ sku: "B", productUrl: FB, wholesalePrice: null, name: "B", description: null, oldPrice: null, stock: null, category: null, brand: null, imageUrl: null, rawData: {} });
+    const catalog: AssemblyCatalogRow[] = [{ sku: "A", productUrl: FA, wholesalePrice: 100 }, { sku: "B", productUrl: FB, wholesalePrice: null }];
+    const { deps, fencedCalls } = makeDeps(partial, catalog);
+    const r = await runPartialCommitShadow(deps);
+    expect(r.presentWithoutPriceCeiling.anomaly).toBe(true); // 1/2 > 0.15
+    expect(r.classification).toBe("GREEN_FIRST_PRODUCTIVE_PRICE_WRITE"); // elegibilidad de escritura NO cambia
+    expect(fencedCalls[0].priceWriteSkus).toEqual([{ sku: "A", newPrice: 105 }]); // sólo A escribe
+  });
+
   it("W32) fencedCommit NUNCA se llama si no se autoriza escritura (orden de fases)", async () => {
     // preflight ABORT (order-of-magnitude): A 10→500.
     const partial: SkuFirstPartialResult = {

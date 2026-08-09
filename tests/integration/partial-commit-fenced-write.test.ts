@@ -104,28 +104,43 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     }
   });
 
-  it("W18 · fallo antes del Provider update → rollback total", async () => {
+  it("W18 · fallo REAL de tx.provider.update() (trigger RAISE de Postgres) → rollback total", async () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }]);
-    await expect(fencedPartialWrite(testPrisma, {
-      jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-      leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
-      faults: { throwBeforeProviderUpdate: true },
-    })).rejects.toThrow(/BEFORE_PROVIDER_UPDATE/);
-    expect(await priceOf(provider.id, "A")).toBe(100);
-    expect(await epCount(job.id)).toBe(0);
-    expect(await jobStatus(job.id)).toBe("RUNNING");
+    await testPrisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION __test_fault_prov() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'test_provider_update_fault'; END; $$ LANGUAGE plpgsql;`);
+    await testPrisma.$executeRawUnsafe(`CREATE TRIGGER __test_fault_prov_trg BEFORE UPDATE ON "Provider" FOR EACH ROW EXECUTE FUNCTION __test_fault_prov();`);
+    try {
+      await expect(fencedPartialWrite(testPrisma, {
+        jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
+        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
+      })).rejects.toThrow(/test_provider_update_fault/); // W18_PROVIDER_UPDATE_ACTUAL_FAILURE
+      expect(await priceOf(provider.id, "A")).toBe(100); // CATALOG_ROLLBACK
+      expect(await epCount(job.id)).toBe(0);             // EP_ROLLBACK
+      expect(await jobStatus(job.id)).toBe("RUNNING");   // JOB_NOT_COMPLETED
+    } finally {
+      await testPrisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS __test_fault_prov_trg ON "Provider";`);
+      await testPrisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS __test_fault_prov();`);
+    }
   });
 
-  it("W19 · fallo antes del terminal COMPLETED → rollback total (precio=0 escrituras, job no COMPLETED)", async () => {
+  it("W19 · fallo REAL de la escritura terminal COMPLETED (trigger RAISE) → rollback total (provider update REVERTIDO)", async () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }]);
-    await expect(fencedPartialWrite(testPrisma, {
-      jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-      leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
-      faults: { throwBeforeTerminal: true },
-    })).rejects.toThrow(/BEFORE_TERMINAL/);
-    expect(await priceOf(provider.id, "A")).toBe(100);
-    expect(await epCount(job.id)).toBe(0);
-    expect(await jobStatus(job.id)).toBe("RUNNING");
+    // trigger que RAISE sólo cuando status pasa a COMPLETED (la CAS mantiene status=RUNNING → no dispara).
+    await testPrisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION __test_fault_terminal() RETURNS trigger AS $$ BEGIN IF NEW.status='COMPLETED' THEN RAISE EXCEPTION 'test_terminal_fault'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;`);
+    await testPrisma.$executeRawUnsafe(`CREATE TRIGGER __test_fault_terminal_trg BEFORE UPDATE ON "ExtractionJob" FOR EACH ROW EXECUTE FUNCTION __test_fault_terminal();`);
+    try {
+      await expect(fencedPartialWrite(testPrisma, {
+        jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
+        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
+      })).rejects.toThrow(/test_terminal_fault/); // W19_TERMINAL_UPDATE_ACTUAL_FAILURE
+      expect(await priceOf(provider.id, "A")).toBe(100); // CATALOG_ROLLBACK
+      expect(await epCount(job.id)).toBe(0);             // EP_ROLLBACK
+      const prov = await testPrisma.provider.findUniqueOrThrow({ where: { id: provider.id }, select: { lastExtractionAt: true } });
+      expect(prov.lastExtractionAt).toBeNull();          // PROVIDER_UPDATE_ROLLED_BACK_WHEN_TERMINAL_FAILS
+      expect(await jobStatus(job.id)).toBe("RUNNING");
+    } finally {
+      await testPrisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS __test_fault_terminal_trg ON "ExtractionJob";`);
+      await testPrisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS __test_fault_terminal();`);
+    }
   });
 
   it("W1/commit · éxito → precio escrito, EP=observaciones, job COMPLETED", async () => {

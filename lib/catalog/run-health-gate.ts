@@ -10,6 +10,32 @@ export const MAX_READ_FAILED_FICHA_COUNT = 5;
 export const MAX_RATE_LIMITED_FICHA_COUNT = 5;
 export const MAX_DELISTED_RATIO = 0.15;
 
+// 2G-R8-Q2.1-B PRE-PR-R2 · §9 — TECHO PRE-REGISTRADO de SKU_PRESENT_WITHOUT_PRICE. Congelado AHORA
+// (baseline 47/1121≈0.042). Ratio = present-without-price / eligible-mapped-catalog-skus. NO está
+// cableado al control-flow de Q2.1-B (lifecycle es SHADOW_ONLY): sólo se calcula y reporta. Su efecto
+// pre-registrado es BLOQUEAR el avance a Q2.1-C/D (enforcement) hasta investigar, NO abortar el price
+// shadow ni invalidar precios válidos del PRICE_WRITE_SET.
+export const MAX_PRESENT_WITHOUT_PRICE_RATIO_EXPECTED = 0.15;
+
+export interface PresentWithoutPriceCeiling {
+  ratio: number;
+  anomaly: boolean;
+  /** ratio entre los VERIFIED_PRESENT (with-price + without-price), diagnóstico. */
+  ratioAmongVerifiedPresent: number;
+}
+
+export function evaluatePresentWithoutPriceCeiling(input: {
+  presentWithoutPriceCount: number;
+  eligibleMappedCatalogSkuCount: number;
+  verifiedPresentWithPriceCount: number;
+}): PresentWithoutPriceCeiling {
+  const denomCatalog = input.eligibleMappedCatalogSkuCount;
+  const ratio = denomCatalog > 0 ? input.presentWithoutPriceCount / denomCatalog : 0;
+  const verifiedPresent = input.verifiedPresentWithPriceCount + input.presentWithoutPriceCount;
+  const ratioAmongVerifiedPresent = verifiedPresent > 0 ? input.presentWithoutPriceCount / verifiedPresent : 0;
+  return { ratio, anomaly: ratio > MAX_PRESENT_WITHOUT_PRICE_RATIO_EXPECTED, ratioAmongVerifiedPresent };
+}
+
 export interface RunHealthGateInput {
   dataIncompleteFichaCount: number;
   readFailedFichaCount: number;

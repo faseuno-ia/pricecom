@@ -5,6 +5,7 @@ import { partitionReconciliation, type PartitionCatalogRow } from "@/lib/catalog
 import { evaluateRunHealthGate } from "@/lib/catalog/run-health-gate";
 import { evaluatePricePreflight } from "@/lib/catalog/price-preflight";
 import { computeLifecycleShadow } from "@/lib/catalog/lifecycle-shadow";
+import { evaluatePresentWithoutPriceCeiling, MAX_PRESENT_WITHOUT_PRICE_RATIO_EXPECTED } from "@/lib/catalog/run-health-gate";
 import type { SkuResult, ObservedVariant } from "@/lib/catalog/sku-reconciliation";
 
 const res = (sku: string, classification: SkuResult["classification"], reason: SkuResult["reason"] = null): SkuResult =>
@@ -146,6 +147,33 @@ describe("§6 · evaluatePricePreflight", () => {
     const r = evaluatePricePreflight({ priceWriteSet: ws, presentWithoutPriceCount: 0 });
     expect(r.shape).toBe("NORMAL_DRIFT");
     expect(r.verdict).toBe("PASS");
+  });
+});
+
+describe("§9 · evaluatePresentWithoutPriceCeiling (techo pre-registrado, reporting-only)", () => {
+  it("threshold pre-registrado congelado en 0.15", () => {
+    expect(MAX_PRESENT_WITHOUT_PRICE_RATIO_EXPECTED).toBe(0.15);
+  });
+  it("W40 · baseline 47/1121 ≈ 0.042 → anomaly=false", () => {
+    const r = evaluatePresentWithoutPriceCeiling({ presentWithoutPriceCount: 47, eligibleMappedCatalogSkuCount: 1121, verifiedPresentWithPriceCount: 1074 });
+    expect(r.ratio).toBeCloseTo(0.042, 3);
+    expect(r.anomaly).toBe(false);
+  });
+  it("W41 · 169/1121 > 0.15 → anomaly=true", () => {
+    const r = evaluatePresentWithoutPriceCeiling({ presentWithoutPriceCount: 169, eligibleMappedCatalogSkuCount: 1121, verifiedPresentWithPriceCount: 952 });
+    expect(r.ratio).toBeGreaterThan(0.15);
+    expect(r.anomaly).toBe(true);
+  });
+  it("W42 · 1121/1121 = 1 → anomaly=true (caso extremo, write-set vacío)", () => {
+    const r = evaluatePresentWithoutPriceCeiling({ presentWithoutPriceCount: 1121, eligibleMappedCatalogSkuCount: 1121, verifiedPresentWithPriceCount: 0 });
+    expect(r.ratio).toBe(1);
+    expect(r.anomaly).toBe(true);
+    expect(r.ratioAmongVerifiedPresent).toBe(1);
+  });
+  it("denominador 0 → ratio 0 sin dividir por cero", () => {
+    const r = evaluatePresentWithoutPriceCeiling({ presentWithoutPriceCount: 0, eligibleMappedCatalogSkuCount: 0, verifiedPresentWithPriceCount: 0 });
+    expect(r.ratio).toBe(0);
+    expect(r.anomaly).toBe(false);
   });
 });
 

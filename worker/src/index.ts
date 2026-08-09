@@ -433,6 +433,7 @@ async function processPartialCommitShadowJob(args: {
     health: { abort: report.health.abort, delistedRatio: Number(report.health.delistedRatio.toFixed(4)), reasons: report.health.reasons },
     preflight: { verdict: report.preflight.verdict, median: Number(report.preflight.medianRelativePriceChange.toFixed(4)), shape: report.preflight.shape, changed: report.preflight.wholesalePriceChangedCount, orderOfMag: report.preflight.priceOrderOfMagnitudeShiftCount, writesetHardFails: report.preflight.priceWriteSetConstructionBug },
     lifecycle: { totalWouldPause: report.lifecycle.totalWouldPause, priceNotPublished: report.lifecycle.wouldPausePriceNotPublished, dataIncomplete: report.lifecycle.wouldPauseDataIncomplete, delisted: report.lifecycle.wouldPauseDelisted, unmappable: report.lifecycle.unmappableCount, unknown: report.lifecycle.unknownCount },
+    presentWithoutPriceCeiling: { ratio: Number(report.presentWithoutPriceCeiling.ratio.toFixed(4)), anomaly: report.presentWithoutPriceCeiling.anomaly, threshold: 0.15 },
     finalizationMs: report.fenced?.finalizationMs ?? null,
   })}`);
 }
