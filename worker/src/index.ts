@@ -30,6 +30,8 @@ import { JobLease } from "./job-lease";
 import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
 import { logInfo, logError } from "../../lib/events/event-log";
 import { runConsistencyCheck } from "./consistency-check";
+import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
+import { writePriceOnlyExplicit } from "../../lib/catalog/price-only-partial-write";
 
 /** 2G-R8-Q1 · señal interna: el CAS de ownership dentro de la tx fenced afectó 0 filas (lease
  * perdido) → hace rollback de toda la transacción comercial. No es un fallo del job. */
@@ -159,6 +161,21 @@ async function processJob(payload: JobPayload) {
         provider: { baseUrl: provider.baseUrl },
         scraperConfig: provider.scraperConfig,
       });
+
+      // 2G-R8-Q2.1-B · PARTIAL-COMMIT SHADOW. Path explícito: SÓLO si el flag de ejecución está
+      // activo (env) Y writeMode=PRICE_ONLY Y extractionMode=SKU-first (conjunción, §2). En CUALQUIER
+      // otro caso se cae al run() histórico fail-closed (GENERIC/FULL/legacy INTACTOS por construcción:
+      // no se toca este else). PRICE_ONLY por sí solo NO relaja completitud.
+      const partialCommitShadow =
+        process.env.PARTIAL_COMMIT_SHADOW === "1" &&
+        resolveCatalogWriteMode(provider.scraperConfig?.catalogWriteMode) === "PRICE_ONLY" &&
+        runtimeConfig.effectiveExtractionMode === "TIENDANUBE_LS_VARIANTS_SKU_FIRST";
+      if (partialCommitShadow) {
+        await onLog("INFO", "[PartialCommit] EXECUTION_PATH ACTIVE (PRICE_ONLY ∧ SKU-first ∧ PARTIAL_COMMIT_SHADOW=1)");
+        await processPartialCommitShadowJob({ job, provider, runtimeConfig, lease, onLog, onProgress });
+        return; // el shadow maneja walk/compuertas/escritura/terminal; NO se marca FAILED por incompletitud.
+      }
+
       const scraper = new ScraperService();
       products = await scraper.run({
         provider,
@@ -340,6 +357,120 @@ async function processJob(payload: JobPayload) {
     // 2G-R8-Q1 · siempre detener el heartbeat (limpieza del timer; sin dangling interval).
     await lease.stop("processJob-end");
   }
+}
+
+// ─── 2G-R8-Q2.1-B · PARTIAL-COMMIT SHADOW (path explícito) ─────────────────────
+// Construye las deps REALES (walk rico, catálogo, fenced write, terminal no-write) y corre la
+// orquestación pura (orden de fases). El precio se escribe SÓLO para el PRICE_WRITE_SET explícito
+// (jamás derivado de un query sobre ExtractedProduct). ExtractedProduct = OBSERVACIONES (deliverable).
+async function processPartialCommitShadowJob(args: {
+  job: { id: string; userId: string | null; startUrl: string | null };
+  provider: unknown;
+  runtimeConfig: { effectiveLoginUrl?: string | null };
+  lease: JobLease;
+  onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string, meta?: Record<string, unknown>) => Promise<void>;
+  onProgress: (currentPage: number, totalFoundSoFar: number) => Promise<void>;
+}): Promise<void> {
+  const { job, provider, runtimeConfig, lease, onLog, onProgress } = args;
+  const p = provider as unknown as { id: string; userId: string | null; requiresLogin: boolean; encryptedPassword: string | null; baseUrl: string; name: string; scraperConfig: unknown };
+  const jobId = job.id;
+  const scraper = new ScraperService();
+  const sitemapFetchFn = async (url: string) => {
+    const res = await fetch(url, { redirect: "manual" });
+    return { status: res.status, text: await res.text(), finalUrl: res.url, header: (n: string) => res.headers.get(n) };
+  };
+
+  const report = await runPartialCommitShadow({
+    nowMs: () => Date.now(),
+    onLog: (l, m) => onLog(l, m),
+    runReconciliation: () =>
+      scraper.runSkuFirstPartialReconciliation({
+        provider: provider as never,
+        config: (p.scraperConfig ?? null) as never,
+        startUrl: job.startUrl,
+        onLog,
+        onProgress,
+        extractionMode: "TIENDANUBE_LS_VARIANTS_SKU_FIRST",
+        effectiveLoginUrl: runtimeConfig.effectiveLoginUrl,
+        sitemapFetchFn,
+        sitemapMinExpectedProducts: DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS,
+      }),
+    loadCatalogRows: async () => {
+      const rows = await prisma.catalogProduct.findMany({
+        where: { userId: job.userId ?? undefined, providerId: p.id },
+        select: { sku: true, productUrl: true, wholesalePrice: true },
+      });
+      return rows
+        .map((r) => ({ sku: (r.sku ?? "").trim(), productUrl: r.productUrl, wholesalePrice: r.wholesalePrice == null ? null : Number(r.wholesalePrice) }))
+        .filter((r) => r.sku !== "");
+    },
+    markCompletedNoWrite: async (completionStats) => {
+      const fin = await lease.pauseForFinalization();
+      if (!fin.owned) { await onLog("WARN", "[PartialCommit] lease perdido — terminal no-write suprimido; job queda RUNNING."); return false; }
+      const noWriteResult = { totalProducts: completionStats.totalProducts ?? 0, productsWithPrice: 0, productsWithoutPrice: completionStats.productsWithoutPrice ?? 0, productsWithoutSku: 0, excelFilePath: null, excelFileUrl: null, excelData: null, excelName: null };
+      return queue.markCompleted(jobId, noWriteResult, fin.leaseVersion);
+    },
+    fencedCommit: async ({ observations, priceWriteSkus, completionStats }: FencedCommitInput) => {
+      const fin = await lease.pauseForFinalization();
+      if (!fin.owned) { await onLog("WARN", "[PartialCommit] lease perdido pre-commit — CERO escritura; job queda RUNNING."); return { committed: false, finalizationMs: 0, writtenCount: 0 }; }
+      const t0 = Date.now();
+      let writtenCount = 0;
+      await prisma.$transaction(async (tx) => {
+        // 1 · CAS de ownership (0 filas → rollback total).
+        const owned = await tx.$queryRaw<{ id: string }[]>`
+          UPDATE "ExtractionJob" SET "workerLockedAt" = NOW(), "updatedAt" = NOW()
+          WHERE id = ${jobId} AND status = 'RUNNING' AND "workerLockedAt" = ${fin.leaseVersion}
+          RETURNING id`;
+        if (owned.length !== 1) throw new LeaseFencingError();
+        // 2 · D sobre EXCLUSIVAMENTE el PRICE_WRITE_SET (§9.1). No se relaja.
+        await assertNoPreWritePriceRegressionForExtraction(
+          { findExisting: (u, pr, s) => tx.catalogProduct.findMany({ where: { userId: u, providerId: pr, sku: { in: s } }, select: { id: true, sku: true, wholesalePrice: true } }) },
+          { userId: job.userId, providerUserId: p.userId, providerId: p.id, requiresLogin: p.requiresLogin, jobId, products: priceWriteSkus.map((w) => ({ sku: w.sku, wholesalePrice: w.newPrice })), onLog },
+        );
+        // 3 · ExtractedProduct = OBSERVACIONES (política OBSERVATIONS): deliverable/evidence completos.
+        await tx.extractedProduct.createMany({ data: observations.map((prod) => mapScrapedToExtractedProductInput(prod, jobId, p.id)) });
+        const eps = await tx.extractedProduct.findMany({ where: { jobId }, select: { id: true, sku: true } });
+        const epBySku = new Map(eps.map((e) => [String(e.sku ?? "").trim(), e.id]));
+        // 4 · PRICE_ONLY writes SÓLO del write-set explícito (lista en memoria; nunca derivada de query).
+        const entries = priceWriteSkus
+          .map((w) => ({ sku: w.sku, newPrice: w.newPrice, extractedProductId: epBySku.get(w.sku) }))
+          .filter((e): e is { sku: string; newPrice: number; extractedProductId: string } => typeof e.extractedProductId === "string");
+        const wr = await writePriceOnlyExplicit(
+          { catalogProduct: { findMany: (a) => tx.catalogProduct.findMany(a) as never, update: (a) => tx.catalogProduct.update(a) as never } },
+          { userId: job.userId as string, providerId: p.id, entries, lastSeenAt: new Date() },
+        );
+        writtenCount = wr.written;
+        // 5 · Provider update.
+        await tx.provider.update({ where: { id: p.id }, data: { lastExtractionAt: new Date() } });
+        // 6 · terminal COMPLETED con excel null (post-commit best-effort).
+        await tx.extractionJob.updateMany({
+          where: { id: jobId },
+          data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: null, excelData: null, excelName: null, workerLockedAt: null, updatedAt: new Date() },
+        });
+      }, { timeout: 120000, maxWait: 15000 });
+      const finalizationMs = Date.now() - t0;
+      await attachExcelPostCommit({ prisma, generateExcel, onLog }, { jobId, provider: provider as never });
+      return { committed: true, finalizationMs, writtenCount };
+    },
+  });
+
+  // §12 · witnesses (sin secretos/precios).
+  await onLog("INFO", `[PartialCommitReport] ${JSON.stringify({
+    classification: report.classification,
+    lifecyclePreviewStatus: report.lifecyclePreviewStatus,
+    fencedTransactionOpened: report.fencedTransactionOpened,
+    priceWriteSetSize: report.priceWriteSetSize,
+    wholesalePriceWrittenCount: report.wholesalePriceWrittenCount,
+    presentWithoutPrice: report.presentWithoutPriceCount,
+    verifiedAbsent: report.verifiedAbsentCount,
+    unverified: report.unverifiedCount,
+    providerNewSkuCount: report.providerNewSkuCount,
+    partitionCoversCatalog: report.partitionCoversCatalog,
+    health: { abort: report.health.abort, delistedRatio: Number(report.health.delistedRatio.toFixed(4)), reasons: report.health.reasons },
+    preflight: { verdict: report.preflight.verdict, median: Number(report.preflight.medianRelativePriceChange.toFixed(4)), shape: report.preflight.shape, changed: report.preflight.wholesalePriceChangedCount, orderOfMag: report.preflight.priceOrderOfMagnitudeShiftCount, writesetHardFails: report.preflight.priceWriteSetConstructionBug },
+    lifecycle: { totalWouldPause: report.lifecycle.totalWouldPause, priceNotPublished: report.lifecycle.wouldPausePriceNotPublished, dataIncomplete: report.lifecycle.wouldPauseDataIncomplete, delisted: report.lifecycle.wouldPauseDelisted, unmappable: report.lifecycle.unmappableCount, unknown: report.lifecycle.unknownCount },
+    finalizationMs: report.fenced?.finalizationMs ?? null,
+  })}`);
 }
 
 // ─── Poll loop ────────────────────────────────────────────────────────────────
