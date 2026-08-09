@@ -9,7 +9,7 @@ import type { ProviderScraperConfig, Provider } from "@prisma/client";
 import { parsePrice, cleanProductName } from "../utils/index";
 import { decrypt } from "../utils/crypto";
 import { resolveExtractionMode } from "./tiendanube-sku-first";
-import { runSkuFirstWalk, type WalkerDeps, type RawLsPagePayload } from "./tiendanube-walker";
+import { runSkuFirstWalk, type WalkerDeps, type RawLsPagePayload, type WalkerProductObservation, type FichaQuarantineInfo } from "./tiendanube-walker";
 // G1 — completitud SKU-first por cobertura de sitemap (fail-closed, dos snapshots).
 import { fetchSitemapSnapshot, type SitemapFetchFn, type SitemapSnapshot } from "./runtime-sitemap-reference";
 import { resolveTwoSnapshotCompleteness } from "./sitemap-two-snapshot";
@@ -41,6 +41,35 @@ export interface ScrapedProduct {
   /// (lib/catalog/source-identity) en gates posteriores. Inertes hoy.
   externalProductId?: string | number | bigint | null;
   externalVariantId?: string | number | bigint | null;
+}
+
+/** 2G-R8-Q2.1-B · contexto interno del walk SKU-first + completitud (antes de la decisión throw/continuar). */
+type SkuFirstWalkContext = {
+  products: ScrapedProduct[];
+  completeness: ReturnType<typeof resolveTwoSnapshotCompleteness>;
+  walkOutcome: Awaited<ReturnType<typeof runSkuFirstWalk>>;
+  startSnapshot: Extract<SitemapSnapshot, { kind: "POPULATED" }>;
+  endSnapshot: SitemapSnapshot;
+  fichaObservations: Map<string, WalkerProductObservation>;
+  walkSet: Set<string>;
+};
+
+/**
+ * 2G-R8-Q2.1-B · §2 — data cruda de reconciliación del partial-commit path. El worker la combina con
+ * el catálogo (assembleReconciliationInput) y corre el orden de fases (§3). NO contiene decisión de
+ * escritura: sólo observación. Sin secretos.
+ */
+export interface SkuFirstPartialResult {
+  products: ScrapedProduct[];
+  fichaObservations: WalkerProductObservation[];
+  fichaQuarantine: Record<string, FichaQuarantineInfo>;
+  sitemapStartUrls: string[];
+  sitemapEndUrls: string[];
+  sitemapStartOk: boolean;
+  sitemapEndOk: boolean;
+  completenessComplete: boolean;
+  completenessReasonCode: string | null;
+  completenessDiagnostics: Record<string, unknown>;
 }
 
 export interface ScraperOptions {
@@ -594,7 +623,7 @@ export class ScraperService {
    * Reusa login, paginación, re-login y logging/progreso del flujo legacy. El
    * flujo legacy queda intacto: este método solo corre cuando el modo está activo.
    */
-  private async runTiendaNubeSkuFirst(page: Page, options: ScraperOptions, startSnapshot: SitemapSnapshot | null): Promise<ScrapedProduct[]> {
+  private async runSkuFirstWalkWithCompleteness(page: Page, options: ScraperOptions, startSnapshot: SitemapSnapshot | null): Promise<SkuFirstWalkContext> {
     const { provider, config, onLog, onProgress, sitemapFetchFn } = options;
     const baseUrl = provider.baseUrl;
     const minExpectedProducts = options.sitemapMinExpectedProducts ?? DIFFERENTTOUCH_SITEMAP_MIN_EXPECTED_PRODUCTS;
@@ -656,6 +685,9 @@ export class ScraperService {
     // ── 2G-R7 · Observabilidad de cadencia/zero-variant (no invasiva) ──
     const observations: ProductObservation[] = [];
     const elapsedByOrdinal: number[] = [];
+    // 2G-R8-Q2.1-B · observaciones por ficha canónica (para armar los inputs del clasificador en el
+    // partial-commit path). Inerte para el path fail-closed (que sólo devuelve products).
+    const fichaObservations = new Map<string, WalkerProductObservation>();
     let navSink: { status: number | null; redirectedToLogin: boolean } = { status: null, redirectedToLogin: false };
 
     const deps: WalkerDeps = {
@@ -741,6 +773,7 @@ export class ScraperService {
       nowMs: () => Date.now(),
       onProductObserved: async (obs) => {
         observations.push({ ordinal: obs.ordinal, elapsedMs: obs.elapsedMs, outcome: obs.outcome, recoveredAfter429: obs.recoveredAfter429 });
+        fichaObservations.set(normalizeCatalogUrl(obs.url) ?? obs.url, obs); // Q2.1-B: por ficha canónica
         const precedingProductElapsedMs = obs.ordinal > 0 ? (elapsedByOrdinal[obs.ordinal - 1] ?? null) : null;
         elapsedByOrdinal[obs.ordinal] = obs.elapsedMs;
         if (obs.outcome === "VERIFIED_OK") return;
@@ -800,12 +833,71 @@ export class ScraperService {
         `removed=${d.removedDuringRunCount} → ${completeness.complete ? "COMPLETE" : "FAIL_CLOSED:" + completeness.reasonCode}`,
     );
 
-    // 14 · fail-closed: SOLO se devuelven productos si la cobertura es COMPLETE. Cualquier otro
-    // resultado lanza → sale de run() → catch del worker → markFailed → CERO persistencia.
-    if (!completeness.complete) {
-      throw new SkuFirstCompletenessError(completeness.reasonCode, completeness.diagnostics);
+    // Devuelve el contexto completo. La DECISIÓN de completitud (throw vs continuar) la toma el caller:
+    // el path fail-closed lanza; el path partial-commit produce conteos y continúa (§2).
+    return {
+      products,
+      completeness,
+      walkOutcome: walkOutcome as NonNullable<typeof walkOutcome>,
+      startSnapshot,
+      endSnapshot,
+      fichaObservations,
+      walkSet,
+    };
+  }
+
+  /**
+   * 2G-R8-Q2.1-B · Path histórico FAIL-CLOSED — comportamiento OBSERVABLE INTACTO. Sólo devuelve
+   * productos si la cobertura es COMPLETE; cualquier otro resultado lanza SkuFirstCompletenessError
+   * → worker markFailed → CERO persistencia. ES EL ÚNICO PATH para FULL/legacy/PRICE_ONLY genérico:
+   * la relajación de completitud NO vive acá (GENERIC_PRICE_ONLY_COMPLETENESS_BEHAVIOR_CHANGED=false).
+   */
+  private async runTiendaNubeSkuFirst(page: Page, options: ScraperOptions, startSnapshot: SitemapSnapshot | null): Promise<ScrapedProduct[]> {
+    const ctx = await this.runSkuFirstWalkWithCompleteness(page, options, startSnapshot);
+    if (!ctx.completeness.complete) {
+      throw new SkuFirstCompletenessError(ctx.completeness.reasonCode, ctx.completeness.diagnostics);
     }
-    return products;
+    return ctx.products;
+  }
+
+  /**
+   * 2G-R8-Q2.1-B · §2 · Path PARTIAL-COMMIT (SÓLO reachable cuando el worker resuelve la conjunción
+   * PRICE_ONLY ∧ SKU-first ∧ partial-commit). La compuerta de completitud NO lanza: produce conteos y
+   * DEVUELVE la data cruda de reconciliación para que el worker corra el orden de fases (§3). Reusa el
+   * MISMO walk/auth/completeness que el path fail-closed (runSkuFirstWalkWithCompleteness); la única
+   * diferencia es que acá NO se lanza por incompletitud.
+   */
+  async runSkuFirstPartialReconciliation(options: ScraperOptions): Promise<SkuFirstPartialResult> {
+    await this.init();
+    const page = this.page as Page;
+    try {
+      // Orden SKU-first: SITEMAP_START ANTES del login (idéntico a run()).
+      const startSnapshot = await prepareSkuFirstStartSnapshot({
+        extractionMode: options.extractionMode ?? null,
+        sitemapFetchFn: options.sitemapFetchFn,
+      });
+      // Login inicial (mismo flujo que run(): performLogin antes del walk). El witness de auth fail-closed
+      // vive dentro de runSkuFirstWalkWithCompleteness y SIGUE lanzando si la sesión no se establece.
+      if (options.provider.requiresLogin && options.provider.encryptedPassword) {
+        await this.performLogin(page, options.provider, options.config, options.onLog, options.effectiveLoginUrl);
+      }
+      const ctx = await this.runSkuFirstWalkWithCompleteness(page, options, startSnapshot);
+      const d = ctx.completeness.diagnostics as unknown as Record<string, unknown>;
+      return {
+        products: ctx.products,
+        fichaObservations: [...ctx.fichaObservations.values()],
+        fichaQuarantine: ctx.walkOutcome.fichaQuarantine,
+        sitemapStartUrls: ctx.startSnapshot.urls,
+        sitemapEndUrls: ctx.endSnapshot.kind === "POPULATED" ? ctx.endSnapshot.urls : [],
+        sitemapStartOk: ctx.startSnapshot.kind === "POPULATED",
+        sitemapEndOk: ctx.endSnapshot.kind === "POPULATED",
+        completenessComplete: ctx.completeness.complete,
+        completenessReasonCode: ctx.completeness.reasonCode,
+        completenessDiagnostics: d,
+      };
+    } finally {
+      await this.close();
+    }
   }
 
   /**

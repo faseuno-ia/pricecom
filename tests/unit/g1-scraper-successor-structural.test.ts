@@ -114,16 +114,26 @@ const SCRAPER_R7_SUCCESSOR_SHA256 = "c0e20e99afd99b5be0a009c0fb36eee7f2aad807ff2
 // ReadFailed); log de [SkuFirstOutcomeSummary]/[SkuFirstFichaMap]. NO toca D/upsert/Woo/stock/completeness ni
 // el path legacy/FULL (goToNextPage intacto). Predecesor 2G-R7 c0e20e99 → sucesor R8-Q2 abajo.
 const SCRAPER_R8Q2_SUCCESSOR_SHA256 = "664d66d91b62da84d7c226eb39ebd1e09df7b181f7f541ac3ef93bb7906ad1fc";
+// 2G-R8-Q2.1-B: sucesión firmada de scraper.service.ts. Delta autorizado (§2, opción "método separado"):
+//   ~ runTiendaNubeSkuFirst → extraído a runSkuFirstWalkWithCompleteness (context) + wrapper thin que
+//     conserva el comportamiento OBSERVABLE fail-closed (throw en incompleto, return en completo).
+//   + runSkuFirstPartialReconciliation(): NUEVO método del partial-commit path — NO lanza por
+//     incompletitud; devuelve la data cruda de reconciliación (SkuFirstPartialResult). Sólo reachable
+//     cuando el worker resuelve PRICE_ONLY ∧ SKU-first ∧ partial-commit. GENERIC/FULL/legacy INTACTOS.
+//   + fichaObservations por ficha canónica (inerte para el path fail-closed).
+// Predecesor 2G-R8-Q2 664d66d9 → sucesor R8-Q2.1-B abajo.
+const SCRAPER_R8Q2_1B_SUCCESSOR_SHA256 = "fedce4b1b6eff842646eea9209de4c36da3985cd6712b57ab1b1d8c36344a5bf";
 
 describe("G1/2G — sucesión firmada de scraper.service.ts", () => {
-  it("mantiene scraper.service.ts en el sucesor firmado 2G-R8-Q2", () => {
+  it("mantiene scraper.service.ts en el sucesor firmado 2G-R8-Q2.1-B", () => {
     const actual = sha256File(SCRAPER_SERVICE_PATH);
-    // Antecedentes deliberadamente sucedidos (I0 → G1-B6 → 2G-R3 → 2G-R7 → 2G-R8-Q2).
+    // Antecedentes deliberadamente sucedidos (I0 → G1-B6 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-B).
     expect(actual).not.toBe(SCRAPER_I0_SHA256);
     expect(actual).not.toBe(SCRAPER_G1_B6_SHA256);
     expect(actual).not.toBe(SCRAPER_2GR3_SUCCESSOR_SHA256);
     expect(actual).not.toBe(SCRAPER_R7_SUCCESSOR_SHA256);
+    expect(actual).not.toBe(SCRAPER_R8Q2_SUCCESSOR_SHA256);
     // Guard real del estado autorizado vigente.
-    expect(actual).toBe(SCRAPER_R8Q2_SUCCESSOR_SHA256);
+    expect(actual).toBe(SCRAPER_R8Q2_1B_SUCCESSOR_SHA256);
   });
 });
