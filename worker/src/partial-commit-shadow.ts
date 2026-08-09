@@ -136,6 +136,42 @@ export async function runPartialCommitShadow(deps: PartialCommitShadowDeps): Pro
   // FASE 13 · PRICE PREFLIGHT.
   const preflight = evaluatePricePreflight({ priceWriteSet: partition.priceWriteSet, presentWithoutPriceCount: partition.presentWithoutPriceCount });
 
+  // OBS1 · artefacto de REVISIÓN de precios persistido (observabilidad; onLog → ExtractionLog + consola,
+  // fuera de la fenced tx). Emitido DESPUÉS del preflight y ANTES de la decisión/return/fenced tx, para
+  // que sobreviva a REVIEW_REQUIRED (que NO abre tx ni persiste ExtractedProduct). Los valores provienen
+  // EXACTAMENTE del preflight/partición usados para decidir (una sola fuente de verdad; sin recálculo).
+  // Si el health gate abortó, la muestra NO es el factor decisorio → no se fabrica (reason=HEALTH_GATE_ABORT).
+  if (health.abort) {
+    await deps.onLog("INFO", `[PartialCommitPriceSample] ${JSON.stringify({ schemaVersion: 1, priceSampleComputed: false, reason: "HEALTH_GATE_ABORT" })}`);
+  } else {
+    const pwp = evaluatePresentWithoutPriceCeiling({ presentWithoutPriceCount: partition.presentWithoutPriceCount, eligibleMappedCatalogSkuCount, verifiedPresentWithPriceCount: partition.priceWriteSetSize });
+    await deps.onLog("INFO", `[PartialCommitPriceSample] ${JSON.stringify({
+      schemaVersion: 1,
+      priceSampleComputed: true,
+      pricePlausibilityVerdict: preflight.verdict,
+      priceChangeShape: preflight.shape,
+      priceWriteSetSize: partition.priceWriteSetSize,
+      wholesalePriceChangedCount: preflight.wholesalePriceChangedCount,
+      medianRelativeChange: preflight.medianRelativePriceChange,
+      p95AbsRelativeChange: preflight.p95AbsRelativePriceChange,
+      iqrRelativeChange: preflight.iqrRelativePriceChange,
+      shareWithin5PctOfMedian: preflight.shareWithin5pctOfMedianChange,
+      shareNegative: preflight.shareNegativeChange,
+      sharePositive: preflight.sharePositiveChange,
+      rowsChangedMoreThan50Pct: preflight.rowsChangedMoreThan50Pct,
+      rowsChangedMoreThan200Pct: preflight.rowsChangedMoreThan200Pct,
+      priceOrderOfMagnitudeShiftCount: preflight.priceOrderOfMagnitudeShiftCount,
+      nullToValidPriceCount: preflight.nullToValidPriceCount,
+      writesetExistingPricedToNullCount: preflight.writesetExistingPricedToNullCount,
+      writesetNewNullPriceCount: preflight.writesetNewNullPriceCount,
+      writesetNewNonPositivePriceCount: preflight.writesetNewNonpositivePriceCount,
+      presentWithoutPriceCount: preflight.presentWithoutPriceCount,
+      presentWithoutPriceRatioCatalog: pwp.ratio,
+      priceChangeSampleMax20: preflight.priceChangeSampleMax20,
+      top5Outliers: preflight.top5OutliersByAbsRelChange,
+    })}`);
+  }
+
   const decision = decidePartialCommit(health, preflight);
   await deps.onLog("INFO", `[PartialCommit] decision=${decision.classification} authorizeWrite=${decision.authorizeWrite} writeSet=${partition.priceWriteSetSize} health.abort=${health.abort} preflight=${preflight.verdict}`);
 
