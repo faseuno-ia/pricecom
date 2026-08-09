@@ -42,7 +42,11 @@ export interface PartialPriceWriteResult {
  */
 export async function writePriceOnlyExplicit(
   client: PartialWriteCatalogClient,
-  args: { userId: string; providerId: string; entries: PartialPriceWriteEntry[]; lastSeenAt: Date },
+  args: {
+    userId: string; providerId: string; entries: PartialPriceWriteEntry[]; lastSeenAt: Date;
+    /** Hook post-update (seam para inyección de fallas en tests de atomicidad; producción no lo pasa). */
+    onAfterEachUpdate?: (writtenSoFar: number) => void | Promise<void>;
+  },
 ): Promise<PartialPriceWriteResult> {
   const bySku = new Map<string, PartialPriceWriteEntry>();
   for (const e of args.entries) {
@@ -72,6 +76,7 @@ export async function writePriceOnlyExplicit(
       data: { wholesalePrice: e.newPrice, lastSeenAt: args.lastSeenAt, latestExtractedProductId: e.extractedProductId },
     });
     written++;
+    if (args.onAfterEachUpdate) await args.onAfterEachUpdate(written);
   }
   return { requested: bySku.size, written, skippedNonexistentSkus: skipped.sort() };
 }

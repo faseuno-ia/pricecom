@@ -31,13 +31,8 @@ import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
 import { logInfo, logError } from "../../lib/events/event-log";
 import { runConsistencyCheck } from "./consistency-check";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
-import { writePriceOnlyExplicit } from "../../lib/catalog/price-only-partial-write";
-
-/** 2G-R8-Q1 · señal interna: el CAS de ownership dentro de la tx fenced afectó 0 filas (lease
- * perdido) → hace rollback de toda la transacción comercial. No es un fallo del job. */
-class LeaseFencingError extends Error {
-  constructor() { super("LEASE_FENCING_LOST"); this.name = "LeaseFencingError"; }
-}
+import { fencedPartialWrite } from "./partial-commit-fenced-write";
+import { LeaseFencingError } from "./lease-fencing-error";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
@@ -413,44 +408,13 @@ async function processPartialCommitShadowJob(args: {
     fencedCommit: async ({ observations, priceWriteSkus, completionStats }: FencedCommitInput) => {
       const fin = await lease.pauseForFinalization();
       if (!fin.owned) { await onLog("WARN", "[PartialCommit] lease perdido pre-commit — CERO escritura; job queda RUNNING."); return { committed: false, finalizationMs: 0, writtenCount: 0 }; }
-      const t0 = Date.now();
-      let writtenCount = 0;
-      await prisma.$transaction(async (tx) => {
-        // 1 · CAS de ownership (0 filas → rollback total).
-        const owned = await tx.$queryRaw<{ id: string }[]>`
-          UPDATE "ExtractionJob" SET "workerLockedAt" = NOW(), "updatedAt" = NOW()
-          WHERE id = ${jobId} AND status = 'RUNNING' AND "workerLockedAt" = ${fin.leaseVersion}
-          RETURNING id`;
-        if (owned.length !== 1) throw new LeaseFencingError();
-        // 2 · D sobre EXCLUSIVAMENTE el PRICE_WRITE_SET (§9.1). No se relaja.
-        await assertNoPreWritePriceRegressionForExtraction(
-          { findExisting: (u, pr, s) => tx.catalogProduct.findMany({ where: { userId: u, providerId: pr, sku: { in: s } }, select: { id: true, sku: true, wholesalePrice: true } }) },
-          { userId: job.userId, providerUserId: p.userId, providerId: p.id, requiresLogin: p.requiresLogin, jobId, products: priceWriteSkus.map((w) => ({ sku: w.sku, wholesalePrice: w.newPrice })), onLog },
-        );
-        // 3 · ExtractedProduct = OBSERVACIONES (política OBSERVATIONS): deliverable/evidence completos.
-        await tx.extractedProduct.createMany({ data: observations.map((prod) => mapScrapedToExtractedProductInput(prod, jobId, p.id)) });
-        const eps = await tx.extractedProduct.findMany({ where: { jobId }, select: { id: true, sku: true } });
-        const epBySku = new Map(eps.map((e) => [String(e.sku ?? "").trim(), e.id]));
-        // 4 · PRICE_ONLY writes SÓLO del write-set explícito (lista en memoria; nunca derivada de query).
-        const entries = priceWriteSkus
-          .map((w) => ({ sku: w.sku, newPrice: w.newPrice, extractedProductId: epBySku.get(w.sku) }))
-          .filter((e): e is { sku: string; newPrice: number; extractedProductId: string } => typeof e.extractedProductId === "string");
-        const wr = await writePriceOnlyExplicit(
-          { catalogProduct: { findMany: (a) => tx.catalogProduct.findMany(a) as never, update: (a) => tx.catalogProduct.update(a) as never } },
-          { userId: job.userId as string, providerId: p.id, entries, lastSeenAt: new Date() },
-        );
-        writtenCount = wr.written;
-        // 5 · Provider update.
-        await tx.provider.update({ where: { id: p.id }, data: { lastExtractionAt: new Date() } });
-        // 6 · terminal COMPLETED con excel null (post-commit best-effort).
-        await tx.extractionJob.updateMany({
-          where: { id: jobId },
-          data: { status: "COMPLETED", finishedAt: new Date(), progress: 100, ...completionStats, excelFilePath: null, excelFileUrl: null, excelData: null, excelName: null, workerLockedAt: null, updatedAt: new Date() },
-        });
-      }, { timeout: 120000, maxWait: 15000 });
-      const finalizationMs = Date.now() - t0;
+      const result = await fencedPartialWrite(prisma, {
+        jobId, userId: job.userId, provider: { id: p.id, userId: p.userId, requiresLogin: p.requiresLogin },
+        leaseVersion: fin.leaseVersion, observations, priceWriteSkus, completionStats, onLog,
+      });
+      // POST-COMMIT · Excel best-effort (no revierte precios ni cambia el estado COMPLETED del job).
       await attachExcelPostCommit({ prisma, generateExcel, onLog }, { jobId, provider: provider as never });
-      return { committed: true, finalizationMs, writtenCount };
+      return result;
     },
   });
 
