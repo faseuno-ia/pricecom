@@ -111,6 +111,14 @@ export async function runPartialCommitShadow(deps: PartialCommitShadowDeps): Pro
 
   // FASE 9-10 · particiones (provider-discovery + catálogo).
   const partition = partitionReconciliation(reconciled.results, input.catalogRows, input.observedVariants);
+  // OBS1-R1 · PWP (techo present-without-price) evaluado UNA SOLA VEZ → objeto canónico compartido por
+  // TODOS los consumidores (buildReport / [PartialCommitReport] / [PartialCommitPriceSample] / anomaly).
+  // Recomputación estructuralmente imposible: nadie más llama a evaluatePresentWithoutPriceCeiling.
+  const presentWithoutPriceCeiling = evaluatePresentWithoutPriceCeiling({
+    presentWithoutPriceCount: partition.presentWithoutPriceCount,
+    eligibleMappedCatalogSkuCount,
+    verifiedPresentWithPriceCount: partition.priceWriteSetSize,
+  });
   if (!partition.partitionCoversCatalog) {
     await deps.onLog("ERROR", `[PartialCommit] PARTITION_DOES_NOT_COVER_CATALOG sum=${partition.fourClassSum} total=${partition.totalCatalogRows}`);
     // STOP: no abrir transacción. Se marca terminal sin escritura.
@@ -118,7 +126,7 @@ export async function runPartialCommitShadow(deps: PartialCommitShadowDeps): Pro
     await deps.markCompletedNoWrite({ totalProducts: partition.totalCatalogRows, productsWithPrice: 0, productsWithoutPrice: partition.presentWithoutPriceCount, productsWithoutSku: 0 });
     return buildReport("STOP_PARTITION_DOES_NOT_COVER_CATALOG", "DIAGNOSTIC_ONLY", false, false, partition, reconciled.providerDiscovery.providerNewSkuCount,
       evaluateRunHealthGate({ dataIncompleteFichaCount: fichaOutcomeCounts.dataIncomplete, readFailedFichaCount: fichaOutcomeCounts.readFailed, rateLimitedFichaCount: fichaOutcomeCounts.rateLimited, verifiedDelistedSkuCount: partition.verifiedAbsentCount, eligibleMappedCatalogSkuCount }),
-      evaluatePricePreflight({ priceWriteSet: partition.priceWriteSet, presentWithoutPriceCount: partition.presentWithoutPriceCount }), lifecycle, 0, eligibleMappedCatalogSkuCount);
+      evaluatePricePreflight({ priceWriteSet: partition.priceWriteSet, presentWithoutPriceCount: partition.presentWithoutPriceCount }), lifecycle, 0, presentWithoutPriceCeiling);
   }
 
   // FASE 11 · LIFECYCLE SHADOW (SIEMPRE, antes de las compuertas).
@@ -136,20 +144,55 @@ export async function runPartialCommitShadow(deps: PartialCommitShadowDeps): Pro
   // FASE 13 · PRICE PREFLIGHT.
   const preflight = evaluatePricePreflight({ priceWriteSet: partition.priceWriteSet, presentWithoutPriceCount: partition.presentWithoutPriceCount });
 
+  // OBS1 · artefacto de REVISIÓN de precios persistido (observabilidad; onLog → ExtractionLog + consola,
+  // fuera de la fenced tx). Emitido DESPUÉS del preflight y ANTES de la decisión/return/fenced tx, para
+  // que sobreviva a REVIEW_REQUIRED (que NO abre tx ni persiste ExtractedProduct). Los valores provienen
+  // EXACTAMENTE del preflight/partición/PWP-canónico usados para decidir (una sola fuente de verdad; sin
+  // recálculo). OBS1-R1 · el preflight SÍ se computa aunque health aborte → NO se descarta la evidencia:
+  // se preserva etiquetada DIAGNOSTIC_ONLY (misma política que lifecycle). El verdict COMPUTADO se conserva,
+  // pero priceReviewApplicable=false deja claro que NO es el verdict aplicado para autorizar escritura.
+  await deps.onLog("INFO", `[PartialCommitPriceSample] ${JSON.stringify({
+    schemaVersion: 1,
+    priceReviewApplicable: !health.abort,
+    priceReviewStatus: health.abort ? "DIAGNOSTIC_ONLY" : "DECISION_RELEVANT",
+    ...(health.abort ? { reason: "HEALTH_GATE_ABORT" } : {}),
+    pricePlausibilityVerdict: preflight.verdict,
+    priceChangeShape: preflight.shape,
+    priceWriteSetSize: partition.priceWriteSetSize,
+    wholesalePriceChangedCount: preflight.wholesalePriceChangedCount,
+    medianRelativeChange: preflight.medianRelativePriceChange,
+    p95AbsRelativeChange: preflight.p95AbsRelativePriceChange,
+    iqrRelativeChange: preflight.iqrRelativePriceChange,
+    shareWithin5PctOfMedian: preflight.shareWithin5pctOfMedianChange,
+    shareNegative: preflight.shareNegativeChange,
+    sharePositive: preflight.sharePositiveChange,
+    rowsChangedMoreThan50Pct: preflight.rowsChangedMoreThan50Pct,
+    rowsChangedMoreThan200Pct: preflight.rowsChangedMoreThan200Pct,
+    priceOrderOfMagnitudeShiftCount: preflight.priceOrderOfMagnitudeShiftCount,
+    nullToValidPriceCount: preflight.nullToValidPriceCount,
+    writesetExistingPricedToNullCount: preflight.writesetExistingPricedToNullCount,
+    writesetNewNullPriceCount: preflight.writesetNewNullPriceCount,
+    writesetNewNonPositivePriceCount: preflight.writesetNewNonpositivePriceCount,
+    presentWithoutPriceCount: preflight.presentWithoutPriceCount,
+    presentWithoutPriceRatioCatalog: presentWithoutPriceCeiling.ratio, // objeto CANÓNICO (sin recálculo)
+    priceChangeSampleMax20: preflight.priceChangeSampleMax20,
+    top5Outliers: preflight.top5OutliersByAbsRelChange,
+  })}`);
+
   const decision = decidePartialCommit(health, preflight);
   await deps.onLog("INFO", `[PartialCommit] decision=${decision.classification} authorizeWrite=${decision.authorizeWrite} writeSet=${partition.priceWriteSetSize} health.abort=${health.abort} preflight=${preflight.verdict}`);
 
   if (!decision.authorizeWrite) {
     // FASE 14 (no-write) · cero escritura comercial; lifecycle ya calculado.
     await deps.markCompletedNoWrite({ totalProducts: partition.totalCatalogRows, productsWithPrice: 0, productsWithoutPrice: partition.presentWithoutPriceCount, productsWithoutSku: 0 });
-    return buildReport(decision.classification, decision.lifecyclePreviewStatus, false, false, partition, reconciled.providerDiscovery.providerNewSkuCount, health, preflight, lifecycle, 0, eligibleMappedCatalogSkuCount);
+    return buildReport(decision.classification, decision.lifecyclePreviewStatus, false, false, partition, reconciled.providerDiscovery.providerNewSkuCount, health, preflight, lifecycle, 0, presentWithoutPriceCeiling);
   }
 
   // FASE 14 (write) · transacción fenced. observations = TODAS las válidas; price write = SÓLO N.
   const priceWriteSkus = partition.priceWriteSet.map((e) => ({ sku: e.sku, newPrice: e.newPrice }));
   const completionStats = { totalProducts: partition.totalCatalogRows, productsWithPrice: partition.priceWriteSetSize, productsWithoutPrice: partition.presentWithoutPriceCount, productsWithoutSku: 0 };
   const fenced = await deps.fencedCommit({ observations: partial.products, priceWriteSkus, completionStats });
-  const report = buildReport(decision.classification, decision.lifecyclePreviewStatus, true, fenced.committed, partition, reconciled.providerDiscovery.providerNewSkuCount, health, preflight, lifecycle, fenced.writtenCount, eligibleMappedCatalogSkuCount);
+  const report = buildReport(decision.classification, decision.lifecyclePreviewStatus, true, fenced.committed, partition, reconciled.providerDiscovery.providerNewSkuCount, health, preflight, lifecycle, fenced.writtenCount, presentWithoutPriceCeiling);
   report.fenced = fenced;
   return report;
 }
@@ -165,7 +208,7 @@ function buildReport(
   preflight: PricePreflightResult,
   lifecycle: LifecycleShadowResult,
   wholesalePriceWrittenCount: number,
-  eligibleMappedCatalogSkuCount: number,
+  presentWithoutPriceCeiling: PresentWithoutPriceCeiling,
 ): PartialCommitShadowReport {
   return {
     classification,
@@ -179,11 +222,7 @@ function buildReport(
     providerNewSkuCount,
     partitionCoversCatalog: partition.partitionCoversCatalog,
     health, preflight, lifecycle, wholesalePriceWrittenCount,
-    presentWithoutPriceCeiling: evaluatePresentWithoutPriceCeiling({
-      presentWithoutPriceCount: partition.presentWithoutPriceCount,
-      eligibleMappedCatalogSkuCount,
-      verifiedPresentWithPriceCount: partition.priceWriteSetSize,
-    }),
+    presentWithoutPriceCeiling,
   };
 }
 
