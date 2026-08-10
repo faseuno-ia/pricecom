@@ -170,13 +170,21 @@ describe("runPartialCommitShadow", () => {
     expect(raw!.startsWith(PRICE_SAMPLE_PREFIX)).toBe(true);
     const s = parseSample(logs);
     expect(s.schemaVersion).toBe(1);
-    expect(s.priceSampleComputed).toBe(true);
+    expect(s.priceReviewApplicable).toBe(true);
+    expect(s.priceReviewStatus).toBe("DECISION_RELEVANT");
     expect(s.pricePlausibilityVerdict).toBe("PASS");
     expect(s.priceWriteSetSize).toBe(1);
     expect(s.wholesalePriceChangedCount).toBe(1);
     expect(s.priceChangeSampleMax20.length).toBeLessThanOrEqual(20);
     expect(s.priceChangeSampleMax20[0]).toMatchObject({ sku: "A", old: 100, new: 105 });
     expect(s.priceChangeSampleMax20[0].rel).toBeCloseTo(0.05, 4);
+  });
+
+  it("OBS7) PWP evaluado UNA sola vez: el ratio del price sample == el del reporte canónico (misma fuente)", async () => {
+    const { deps, logs } = makeDeps(onePartial(105), oneCatalog(100));
+    const r = await runPartialCommitShadow(deps);
+    const s = parseSample(logs);
+    expect(s.presentWithoutPriceRatioCatalog).toBe(r.presentWithoutPriceCeiling.ratio); // mismo objeto canónico
   });
 
   it("OBS2) REVIEW_REQUIRED → fenced tx NO abre, markCompletedNoWrite, PERO sample SÍ emitido (load-bearing)", async () => {
@@ -186,7 +194,8 @@ describe("runPartialCommitShadow", () => {
     expect(fencedCalls.length).toBe(0);
     expect(noWriteCalls.length).toBe(1); // → ExtractedProduct = 0 (no createMany)
     const s = parseSample(logs);
-    expect(s.priceSampleComputed).toBe(true);
+    expect(s.priceReviewApplicable).toBe(true);
+    expect(s.priceReviewStatus).toBe("DECISION_RELEVANT");
     expect(s.pricePlausibilityVerdict).toBe("REVIEW_REQUIRED");
     expect(s.priceChangeSampleMax20[0]).toMatchObject({ sku: "A", old: 100, new: 150 });
   });
@@ -203,10 +212,10 @@ describe("runPartialCommitShadow", () => {
     const { deps, logs } = makeDeps(onePartial(105), oneCatalog(100), { fencedCommit: async () => { throw new Error("fenced boom"); } });
     await expect(runPartialCommitShadow(deps)).rejects.toThrow(/fenced boom/);
     expect(priceSampleLog(logs)).toBeDefined(); // emitido ANTES de la tx
-    expect(parseSample(logs).priceSampleComputed).toBe(true);
+    expect(parseSample(logs).priceReviewApplicable).toBe(true);
   });
 
-  it("OBS5) health gate abort ANTES de decidir → NO se fabrica muestra (priceSampleComputed=false, reason)", async () => {
+  it("OBS5) health gate abort → evidencia PRESERVADA etiquetada DIAGNOSTIC_ONLY (métricas presentes, no aplica)", async () => {
     const fichas = Array.from({ length: 6 }, (_, i) => `https://differenttouch.com.ar/productos/rl${i}`);
     const partial: SkuFirstPartialResult = {
       products: [],
@@ -215,13 +224,21 @@ describe("runPartialCommitShadow", () => {
       completenessComplete: false, completenessReasonCode: "R2", completenessDiagnostics: {},
     };
     const catalog: AssemblyCatalogRow[] = fichas.map((u, i) => ({ sku: `RL${i}`, productUrl: u, wholesalePrice: 100 }));
-    const { deps, logs } = makeDeps(partial, catalog);
+    const { deps, logs, fencedCalls } = makeDeps(partial, catalog);
     const r = await runPartialCommitShadow(deps);
     expect(r.classification).toBe("GREEN_FAIL_CLOSED_ABNORMAL_FAILURE_RATE");
+    expect(fencedCalls.length).toBe(0); // health abort → NO escritura
     const s = parseSample(logs);
     expect(s.schemaVersion).toBe(1);
-    expect(s.priceSampleComputed).toBe(false);
+    // OBS1-R1: el preflight SÍ se computa aunque health aborte → evidencia PRESERVADA, no descartada.
+    expect(s.priceReviewApplicable).toBe(false); // no es el verdict aplicado para autorizar escritura
+    expect(s.priceReviewStatus).toBe("DIAGNOSTIC_ONLY");
     expect(s.reason).toBe("HEALTH_GATE_ABORT");
+    // métricas reales presentes (NO fabricadas): el payload conserva la muestra computada.
+    expect(s.pricePlausibilityVerdict).toBeDefined();
+    expect(s.priceWriteSetSize).toBe(0);
+    expect(Array.isArray(s.priceChangeSampleMax20)).toBe(true);
+    expect(Array.isArray(s.top5Outliers)).toBe(true);
   });
 
   it("W32) fencedCommit NUNCA se llama si no se autoriza escritura (orden de fases)", async () => {
