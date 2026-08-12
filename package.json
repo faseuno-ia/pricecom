@@ -7,7 +7,7 @@
     "dev:app": "next dev",
     "build": "next build",
     "start": "prisma migrate deploy && next start",
-    "worker": "tsx watch worker/src/index.ts",
+    "worker": "tsx watch worker/src/dev.ts",
     "diag:dt-sku-harness": "tsx scripts/diag-dt-sku-harness.ts",
     "worker:start": "tsx worker/src/index.ts",
     "db:push": "prisma db push",

@@ -33,6 +33,7 @@ import { runConsistencyCheck } from "./consistency-check";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
 import { fencedPartialWrite } from "./partial-commit-fenced-write";
 import { LeaseFencingError } from "./lease-fencing-error";
+import { bootWorker } from "./worker-boot";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
@@ -502,4 +503,14 @@ async function shutdown() {
   process.exit(0);
 }
 
-pollLoop();
+// 2G-R9-PR1 · arranque FAIL-CLOSED. El poll loop SÓLO corre si WORKER_ENABLED === "true"; en cualquier
+// otro caso el proceso queda idle emitiendo [WorkerDisabledHeartbeat] sin consumir la cola. [WorkerBoot]
+// se emite UNA vez en ambos modos (testigo de identidad del ejecutor). Sink: consola (no hay jobId al boot).
+bootWorker({
+  workerEnabledRaw: process.env.WORKER_ENABLED,
+  pid: process.pid,
+  env: process.env,
+  emit: (message) => console.log(message),
+  startPoller: () => { void pollLoop(); },
+  scheduleDisabledHeartbeat: (onTick, intervalMs) => { setInterval(onTick, intervalMs); },
+});
