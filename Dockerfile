@@ -18,4 +18,6 @@ EXPOSE 3000
 # (pricecom-worker). Antes este CMD arrancaba además el poll loop del worker como sidecar — residuo de
 # la migración incompleta 2026-05-24 que causó el dual-poller (ver docs/worker-topology.md).
 # `npm start` = `prisma migrate deploy && next start` (el migrate deploy sigue corriendo en el boot web).
-CMD ["npm", "start"]
+# Diff MÍNIMO: sólo se removió `npx tsx <worker-entrypoint> & ` del CMD previo; se preserva la forma
+# `sh -c` y el modelo de proceso (PID1=sh) exactamente como estaba, sin cambiar la semántica de señales.
+CMD ["sh", "-c", "npm start"]
