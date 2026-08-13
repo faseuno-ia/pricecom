@@ -6,11 +6,13 @@
 // lanza un error tipado ANTES del scraper (terminalización fenced vía el catch existente de processJob).
 
 import type { WorkerIdentity } from "./worker-boot";
+import type { WriteOrchestrationMode } from "../../lib/catalog/write-orchestration-mode";
 
 /** El marcador de canary vive en ExtractionJob.source. Autoridad INTERNAL_ONLY (ninguna API/UI/scheduler
  *  puede fijar source; el enqueue público whitelistea sólo providerId+startUrl). Ver docs. */
 export const CANARY_MARKER = "CANARY_PARTIAL";
-export const PATH_DECISION_SCHEMA_VERSION = 1 as const;
+// schemaVersion 2 (2G-R10-PR19): el payload lleva writeOrchestrationMode en vez del difunto partialFlagEnabled.
+export const PATH_DECISION_SCHEMA_VERSION = 2 as const;
 
 /** errorMessage estable de la terminalización fail-closed del canary (distinguible del persist error). */
 export const CANARY_PRECONDITION_ERROR_CODE = "CONTROLLED_CANARY_PARTIAL_PRECONDITION_FAILED";
@@ -24,9 +26,9 @@ export type ExecutionPath = "PARTIAL" | "HISTORICAL" | "CANARY_FAIL_CLOSED";
 
 export interface PathDecisionInput {
   isCanary: boolean;
-  partialFlagEnabled: boolean;                 // C1 · PARTIAL_COMMIT_SHADOW === "1"
-  catalogWriteMode: string | null | undefined; // C2 · resuelto ("PRICE_ONLY" | "FULL")
-  extractionMode: string | null | undefined;   // C3 · effectiveExtractionMode
+  writeOrchestrationMode: WriteOrchestrationMode; // C1' · autoridad del orquestador POR PROVEEDOR
+  catalogWriteMode: string | null | undefined;    // C2 · resuelto ("PRICE_ONLY" | "FULL")
+  extractionMode: string | null | undefined;      // C3 · effectiveExtractionMode
 }
 
 export interface PathDecision {
@@ -41,7 +43,7 @@ export interface PathDecision {
  * para jobs de canary (que NUNCA deben ejecutar el historical path).
  */
 export function decideExecutionPath(input: PathDecisionInput): PathDecision {
-  const c1 = input.partialFlagEnabled === true;
+  const c1 = input.writeOrchestrationMode === "GUARDED_PRICE_ONLY"; // C1' · autoridad explícita por proveedor
   const c2 = input.catalogWriteMode === PRICE_ONLY;
   const c3 = input.extractionMode === SKU_FIRST;
 
@@ -93,7 +95,7 @@ export function buildPathDecisionWitness(a: {
     schemaVersion: PATH_DECISION_SCHEMA_VERSION,
     jobId: a.jobId,
     jobSource: a.jobSource,
-    partialFlagEnabled: a.inputs.partialFlagEnabled,
+    writeOrchestrationMode: a.inputs.writeOrchestrationMode,
     catalogWriteMode: a.inputs.catalogWriteMode ?? null,
     extractionMode: a.inputs.extractionMode ?? null,
     selectedPath: a.decision.selectedPath,

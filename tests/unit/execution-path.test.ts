@@ -21,7 +21,7 @@ const COMBOS: Array<[boolean, boolean, boolean]> = [
 ];
 const inputFor = (isCanary: boolean, [c1, c2, c3]: [boolean, boolean, boolean]): PathDecisionInput => ({
   isCanary,
-  partialFlagEnabled: c1,
+  writeOrchestrationMode: c1 ? "GUARDED_PRICE_ONLY" : "LEGACY", // C1' · autoridad por proveedor
   catalogWriteMode: c2 ? PRICE_ONLY : "FULL",
   extractionMode: c3 ? SKU_FIRST : "SOMETHING_ELSE",
 });
@@ -153,17 +153,19 @@ describe("2G-R9-MICROFIX · CanaryWitnessPersistError · errorMessage = constant
 describe("2G-R9-PR2 · buildPathDecisionWitness (H/J · sin secretos)", () => {
   const identity = readWorkerIdentity({ RAILWAY_SERVICE_NAME: "pricecom-worker", RAILWAY_SERVICE_ID: "s", RAILWAY_REPLICA_ID: "r", RAILWAY_DEPLOYMENT_ID: "d", RAILWAY_GIT_COMMIT_SHA: "fab48e7" });
 
-  it("contiene todos los campos requeridos, schemaVersion=1, failedConjuncts array, sin secretos", () => {
+  it("contiene todos los campos requeridos (incl. writeOrchestrationMode), schemaVersion=2, sin secretos", () => {
     const decision = decideExecutionPath(inputFor(true, [true, false, true]));
     const w = buildPathDecisionWitness({
       jobId: "job1", jobSource: CANARY_MARKER, inputs: inputFor(true, [true, false, true]), decision, pid: 7, identity,
     });
     expect(w.schemaVersion).toBe(PATH_DECISION_SCHEMA_VERSION);
+    expect(PATH_DECISION_SCHEMA_VERSION).toBe(2);
     expect(Object.keys(w).sort()).toEqual([
-      "catalogWriteMode", "extractionMode", "failedConjuncts", "jobId", "jobSource", "partialFlagEnabled",
+      "catalogWriteMode", "extractionMode", "failedConjuncts", "jobId", "jobSource",
       "pid", "railwayDeploymentId", "railwayGitCommitSha", "railwayReplicaId", "railwayServiceId",
-      "railwayServiceName", "schemaVersion", "selectedPath",
+      "railwayServiceName", "schemaVersion", "selectedPath", "writeOrchestrationMode",
     ]);
+    expect(w.writeOrchestrationMode).toBe("GUARDED_PRICE_ONLY"); // G) [PathDecision] incluye writeOrchestrationMode
     expect(w.selectedPath).toBe("CANARY_FAIL_CLOSED");
     expect(w.failedConjuncts).toEqual(["C2"]);
     const blob = JSON.stringify(w).toLowerCase();

@@ -28,6 +28,7 @@ import { DbPollingQueue } from "./queues/db-polling-queue";
 import type { IJobQueue, JobPayload } from "./queues/job-queue.interface";
 import { JobLease } from "./job-lease";
 import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
+import { resolveWriteOrchestrationMode } from "../../lib/catalog/write-orchestration-mode";
 import { logInfo, logError } from "../../lib/events/event-log";
 import { runConsistencyCheck } from "./consistency-check";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
@@ -137,12 +138,13 @@ async function processJob(payload: JobPayload) {
     // [PathDecision] + guard del canary, ANTES de CUALQUIER extracción (WOO o scraper). Un job de canary
     // (source=CANARY_MARKER) con precondiciones incumplidas lanza CanaryPreconditionError aquí y NUNCA
     // alcanza el scraper: la terminalización FAILED la procesa el catch fenced de processJob (primitiva Q1).
-    // 2G-R8-Q2.1-B: PARTIAL sólo si C1(flag)∧C2(PRICE_ONLY)∧C3(SKU-first); si no, HISTORICAL (jobs normales,
-    // fail-closed intacto) o CANARY_FAIL_CLOSED (jobs de canary).
+    // 2G-R10-PR19: PARTIAL sólo si C1'(writeOrchestrationMode=GUARDED_PRICE_ONLY, autoridad POR PROVEEDOR)
+    // ∧ C2(PRICE_ONLY) ∧ C3(SKU-first); si no, HISTORICAL (jobs normales, fail-closed intacto) o
+    // CANARY_FAIL_CLOSED (jobs de canary). Default LEGACY → ningún proveedor cambia de conducta al desplegar.
     const isCanary = job.source === CANARY_MARKER;
     const pathInputs = {
       isCanary,
-      partialFlagEnabled: process.env.PARTIAL_COMMIT_SHADOW === "1",
+      writeOrchestrationMode: resolveWriteOrchestrationMode(provider.scraperConfig?.writeOrchestrationMode),
       catalogWriteMode: resolveCatalogWriteMode(provider.scraperConfig?.catalogWriteMode),
       extractionMode: runtimeConfig.effectiveExtractionMode,
     };
@@ -157,10 +159,11 @@ async function processJob(payload: JobPayload) {
     });
 
     if (decision.selectedPath === "PARTIAL") {
-      // Firma legacy preservada (LEGACY_PARTIAL_SIGNATURE_PRESERVED) para el monitoreo existente.
-      await onLog("INFO", "[PartialCommit] EXECUTION_PATH ACTIVE (PRICE_ONLY ∧ SKU-first ∧ PARTIAL_COMMIT_SHADOW=1)");
+      // El witness [PathDecision] (executor-bound, incluye writeOrchestrationMode/selectedPath) es el
+      // testigo de selección de path; la vieja línea "[PartialCommit] EXECUTION_PATH ACTIVE …" se removió
+      // (nombraba un flag global de orquestación ya inexistente → sería una afirmación falsa).
       await processPartialCommitShadowJob({ job, provider, runtimeConfig, lease, onLog, onProgress });
-      return; // el shadow maneja walk/compuertas/escritura/terminal; NO se marca FAILED por incompletitud.
+      return; // el orquestador maneja walk/compuertas/escritura/terminal; NO se marca FAILED por incompletitud.
     }
 
     // HISTORICAL — jobs normales (el guard del canary ya descartó CANARY_FAIL_CLOSED arriba).
