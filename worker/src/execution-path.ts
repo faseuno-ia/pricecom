@@ -69,9 +69,14 @@ export class CanaryPreconditionError extends Error {
 /** El witness durable del canary no se pudo persistir → fail-closed ANTES del scraper (razón distinguible). */
 export class CanaryWitnessPersistError extends Error {
   readonly reasonCode = CANARY_WITNESS_PERSIST_ERROR_CODE;
+  /** cause original conservado para debugging / console del worker; NO se serializa a errorMessage. */
+  readonly cause?: unknown;
   constructor(cause?: unknown) {
-    super(`${CANARY_WITNESS_PERSIST_ERROR_CODE}${cause instanceof Error ? `: ${cause.message}` : ""}`);
+    // .message es un CONSTANTE literal: lo que termina en ExtractionJob.errorMessage (vía
+    // selectFailureMessage) nunca incluye internals de la excepción cruda (host/connection string).
+    super(CANARY_WITNESS_PERSIST_ERROR_CODE);
     this.name = "CanaryWitnessPersistError";
+    this.cause = cause;
   }
 }
 
