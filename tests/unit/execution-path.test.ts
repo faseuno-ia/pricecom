@@ -113,6 +113,43 @@ describe("2G-R9-PR2 · selectAndGuardPath · efectos (4.c)", () => {
   });
 });
 
+describe("2G-R9-MICROFIX · CanaryWitnessPersistError · errorMessage = constante literal, sin leak", () => {
+  const SECRET = "postgres://u:p@db-host.internal:5432/neondb";
+  const throwWithSecret = async () => { throw new Error(`connect ECONNREFUSED ${SECRET} extra-host db-host.internal`); };
+
+  it("el .message persistido es EXACTAMENTE el reasonCode (no incluye cause.message)", async () => {
+    const err = await selectAndGuardPath({ inputs: inputFor(true, [true, true, true]), emitWitness: throwWithSecret, buildWitnessLine: () => "[PathDecision] x" })
+      .then(() => null, (e) => e);
+    expect(err).toBeInstanceOf(CanaryWitnessPersistError);
+    expect(err.message).toBe("CONTROLLED_CANARY_PATH_DECISION_PERSIST_FAILED"); // PERSISTED_ERROR_MESSAGE_IS_LITERAL_CONSTANT
+  });
+
+  it("SENTINEL LEAK: el .message NO contiene la connection string ni el hostname del cause", async () => {
+    const err = await selectAndGuardPath({ inputs: inputFor(true, [true, true, true]), emitWitness: throwWithSecret, buildWitnessLine: () => "[PathDecision] x" })
+      .then(() => null, (e) => e);
+    expect(err.message).not.toContain(SECRET);
+    expect(err.message).not.toContain("db-host.internal");
+    expect(err.message).not.toContain("5432");
+    expect(err.message).not.toContain("ECONNREFUSED");
+  });
+
+  it("cause se conserva como propiedad de la excepción (debugging / console)", async () => {
+    const cause = new Error(SECRET);
+    const err = new CanaryWitnessPersistError(cause);
+    expect(err.cause).toBe(cause); // CAUSE_RETAINED_AS_EXCEPTION_PROPERTY
+    expect(err.message).toBe("CONTROLLED_CANARY_PATH_DECISION_PERSIST_FAILED");
+  });
+
+  it("scraper 0 llamadas bajo persist-fail (sigue fail-closed)", async () => {
+    const scraperSpy = vi.fn();
+    await expect((async () => {
+      await selectAndGuardPath({ inputs: inputFor(true, [true, true, true]), emitWitness: throwWithSecret, buildWitnessLine: () => "[PathDecision] x" });
+      scraperSpy();
+    })()).rejects.toBeInstanceOf(CanaryWitnessPersistError);
+    expect(scraperSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("2G-R9-PR2 · buildPathDecisionWitness (H/J · sin secretos)", () => {
   const identity = readWorkerIdentity({ RAILWAY_SERVICE_NAME: "pricecom-worker", RAILWAY_SERVICE_ID: "s", RAILWAY_REPLICA_ID: "r", RAILWAY_DEPLOYMENT_ID: "d", RAILWAY_GIT_COMMIT_SHA: "fab48e7" });
 
