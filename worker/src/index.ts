@@ -33,7 +33,8 @@ import { runConsistencyCheck } from "./consistency-check";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
 import { fencedPartialWrite } from "./partial-commit-fenced-write";
 import { LeaseFencingError } from "./lease-fencing-error";
-import { bootWorker } from "./worker-boot";
+import { bootWorker, readWorkerIdentity } from "./worker-boot";
+import { selectAndGuardPath, buildPathDecisionWitness, CANARY_MARKER } from "./execution-path";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
@@ -124,6 +125,45 @@ async function processJob(payload: JobPayload) {
   try {
     let products: ScrapedProduct[];
 
+    // La config efectiva se construye una sola vez con el builder puro (reutilizada por el path histórico
+    // HTML). G1: effectiveExtractionMode → ScraperOptions.extractionMode; effectiveLoginUrl → performLogin
+    // legacy. loginFlowStrategy sigue SIN conectarse al ejecutor DOCUMENT_REDIRECT (LEGACY).
+    const runtimeConfig = buildProviderRuntimeConfig({
+      provider: { baseUrl: provider.baseUrl },
+      scraperConfig: provider.scraperConfig,
+    });
+
+    // 2G-R9-PR2 · UNA SOLA decisión canónica de path (decideExecutionPath) + witness durable
+    // [PathDecision] + guard del canary, ANTES de CUALQUIER extracción (WOO o scraper). Un job de canary
+    // (source=CANARY_MARKER) con precondiciones incumplidas lanza CanaryPreconditionError aquí y NUNCA
+    // alcanza el scraper: la terminalización FAILED la procesa el catch fenced de processJob (primitiva Q1).
+    // 2G-R8-Q2.1-B: PARTIAL sólo si C1(flag)∧C2(PRICE_ONLY)∧C3(SKU-first); si no, HISTORICAL (jobs normales,
+    // fail-closed intacto) o CANARY_FAIL_CLOSED (jobs de canary).
+    const isCanary = job.source === CANARY_MARKER;
+    const pathInputs = {
+      isCanary,
+      partialFlagEnabled: process.env.PARTIAL_COMMIT_SHADOW === "1",
+      catalogWriteMode: resolveCatalogWriteMode(provider.scraperConfig?.catalogWriteMode),
+      extractionMode: runtimeConfig.effectiveExtractionMode,
+    };
+    const decision = await selectAndGuardPath({
+      inputs: pathInputs,
+      emitWitness: (line) => onLog("INFO", line),
+      buildWitnessLine: (d) =>
+        `[PathDecision] ${JSON.stringify(buildPathDecisionWitness({
+          jobId, jobSource: job.source ?? null, inputs: pathInputs, decision: d,
+          pid: process.pid, identity: readWorkerIdentity(process.env),
+        }))}`,
+    });
+
+    if (decision.selectedPath === "PARTIAL") {
+      // Firma legacy preservada (LEGACY_PARTIAL_SIGNATURE_PRESERVED) para el monitoreo existente.
+      await onLog("INFO", "[PartialCommit] EXECUTION_PATH ACTIVE (PRICE_ONLY ∧ SKU-first ∧ PARTIAL_COMMIT_SHADOW=1)");
+      await processPartialCommitShadowJob({ job, provider, runtimeConfig, lease, onLog, onProgress });
+      return; // el shadow maneja walk/compuertas/escritura/terminal; NO se marca FAILED por incompletitud.
+    }
+
+    // HISTORICAL — jobs normales (el guard del canary ya descartó CANARY_FAIL_CLOSED arriba).
     if (provider.providerType === "WOO_STORE_API") {
       // Camino Store API (JSON). No usa Playwright ni scraperConfig.
       // El progreso se basa en el total REAL de páginas (X-WP-TotalPages),
@@ -148,30 +188,6 @@ async function processJob(payload: JobPayload) {
         onLog,
       });
     } else {
-      // Camino scraper HTML. La config efectiva se construye desde el scraperConfig de Prisma
-      // con el builder puro. G1: effectiveExtractionMode → ScraperOptions.extractionMode;
-      // effectiveLoginUrl → performLogin legacy (navega a la loginUrl validada antes del form).
-      // loginFlowStrategy sigue SIN conectarse al ejecutor DOCUMENT_REDIRECT (permanece LEGACY;
-      // A3_LOGIN_EXECUTOR_CONFIG_DRIVEN = false).
-      const runtimeConfig = buildProviderRuntimeConfig({
-        provider: { baseUrl: provider.baseUrl },
-        scraperConfig: provider.scraperConfig,
-      });
-
-      // 2G-R8-Q2.1-B · PARTIAL-COMMIT SHADOW. Path explícito: SÓLO si el flag de ejecución está
-      // activo (env) Y writeMode=PRICE_ONLY Y extractionMode=SKU-first (conjunción, §2). En CUALQUIER
-      // otro caso se cae al run() histórico fail-closed (GENERIC/FULL/legacy INTACTOS por construcción:
-      // no se toca este else). PRICE_ONLY por sí solo NO relaja completitud.
-      const partialCommitShadow =
-        process.env.PARTIAL_COMMIT_SHADOW === "1" &&
-        resolveCatalogWriteMode(provider.scraperConfig?.catalogWriteMode) === "PRICE_ONLY" &&
-        runtimeConfig.effectiveExtractionMode === "TIENDANUBE_LS_VARIANTS_SKU_FIRST";
-      if (partialCommitShadow) {
-        await onLog("INFO", "[PartialCommit] EXECUTION_PATH ACTIVE (PRICE_ONLY ∧ SKU-first ∧ PARTIAL_COMMIT_SHADOW=1)");
-        await processPartialCommitShadowJob({ job, provider, runtimeConfig, lease, onLog, onProgress });
-        return; // el shadow maneja walk/compuertas/escritura/terminal; NO se marca FAILED por incompletitud.
-      }
-
       const scraper = new ScraperService();
       products = await scraper.run({
         provider,
