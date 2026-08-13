@@ -112,6 +112,11 @@ model ProviderScraperConfig {
   /// (histórico). "PRICE_ONLY" → sólo wholesalePrice + lastSeenAt + latestExtractedProductId;
   /// preserva metadata/lifecycle/publications/Woo. Resolver fail-loud ante valores inválidos.
   catalogWriteMode  String?
+  /// 2G-R10-PR19 · Autoridad de ORQUESTADOR por proveedor (config-driven, explícita). null/""/"LEGACY"
+  /// → LEGACY (orquestador histórico; default seguro, sin cambio de conducta al desplegar). "GUARDED_
+  /// PRICE_ONLY" → orquestador con reconciliación + health gate + price preflight + lifecycle shadow +
+  /// commit fenced PRICE_ONLY (opt-in EXPLÍCITO por proveedor). Resolver fail-loud ante valores inválidos.
+  writeOrchestrationMode String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }
