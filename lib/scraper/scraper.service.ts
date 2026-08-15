@@ -5,6 +5,7 @@ import * as cheerio from "cheerio";
 // como tipo del parámetro `card` porque `cards.each((_, el) => $(el))` retorna
 // Cheerio<AnyNode>.
 import type { AnyNode } from "domhandler";
+import type { SupplierTaxonomyObservation } from "./tiendanube-taxonomy";
 import type { ProviderScraperConfig, Provider } from "@prisma/client";
 import { parsePrice, cleanProductName } from "../utils/index";
 import { decrypt } from "../utils/crypto";
@@ -41,6 +42,10 @@ export interface ScrapedProduct {
   /// (lib/catalog/source-identity) en gates posteriores. Inertes hoy.
   externalProductId?: string | number | bigint | null;
   externalVariantId?: string | number | bigint | null;
+  /// C1 · Observación ADITIVA de taxonomía del proveedor (breadcrumb normalizado, ver
+  /// `tiendanube-taxonomy.ts`). SÓLO observación: ningún writer existente la lee ni persiste.
+  /// `undefined`/`null` = NOT_OBSERVED. NO altera el campo legacy `category` (que sigue igual).
+  supplierTaxonomy?: SupplierTaxonomyObservation | null;
 }
 
 /** 2G-R8-Q2.1-B · contexto interno del walk SKU-first + completitud (antes de la decisión throw/continuar). */
@@ -592,10 +597,24 @@ export class ScraperService {
         .call(document.querySelectorAll("[data-option-name], .form-label, label[for^='variation']"))
         .map(function (el) { return (el.textContent || "").trim(); })
         .filter(function (t) { return t.length > 0; });
+      // C1 · Observación ADITIVA de breadcrumb (taxonomía del proveedor). Lee SÓLO el DOM ya
+      // cargado de la ficha (sin navegación, sin request extra). TOTALIDAD: cualquier fallo de
+      // selector/DOM/parsing de la observación produce breadcrumb=null y NUNCA rompe la captura
+      // de precio/producto (NOT_OBSERVED = null; NO_ABSENCE_FROM_FAILURE). Bloque aislado.
+      var breadcrumb = null;
+      try {
+        var bcEl = document.querySelector(".breadcrumbs, nav.breadcrumb, [class*='breadcrumb']");
+        if (bcEl) {
+          breadcrumb = Array.prototype.slice.call(bcEl.querySelectorAll("a, span"))
+            .map(function (e) { return (e.textContent || "").trim(); })
+            .filter(function (t) { return t.length > 0 && t !== ">" && t !== "/"; });
+        }
+      } catch (e) { breadcrumb = null; }
       return {
         productName: coerceName(product.name),
         productUrl: (product.canonical_url || (typeof location !== "undefined" ? location.href : null)) || null,
         domLabels: labels,
+        breadcrumb: breadcrumb,
         variants: variants.map(function (v) {
           return {
             id: v.id, product_id: v.product_id, sku: v.sku,

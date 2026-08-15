@@ -43,6 +43,9 @@ export interface RawLsPagePayload {
   productName: string | null;
   productUrl: string | null;
   domLabels: (string | null)[];
+  /// C1 · Breadcrumb crudo de la ficha (raíz + categorías + hoja de producto), o `null`/ausente
+  /// si no se observó. ADITIVO y opcional: sólo alimenta la observación de taxonomía.
+  breadcrumb?: (string | null)[] | null;
   variants: Record<string, unknown>[];
 }
 
@@ -73,6 +76,8 @@ export interface FichaCaptureResult {
   sleptMs: number;
   /** Nº de requests de documento (page.goto) emitidos — auditoría de multiplicación (§2). */
   documentRequests: number;
+  /** C1 · Breadcrumb crudo de la ficha (aditivo/opcional). Sólo alimenta la observación de taxonomía. */
+  breadcrumb?: (string | null)[] | null;
 }
 
 /** Resultado de navegación de la Fase B (§11 requiere status + Retry-After para el owner 429). */
@@ -280,9 +285,10 @@ export async function captureProductRows(
     remaining -= ms;
     if (budget) { budget.remainingMs -= ms; budget.totalSleptMs += ms; }
   };
-  const result = (outcome: FichaCaptureOutcome, rows: TnReducedRow[], variantSetComplete: VariantSetComplete): FichaCaptureResult => ({
+  const result = (outcome: FichaCaptureOutcome, rows: TnReducedRow[], variantSetComplete: VariantSetComplete, breadcrumb?: (string | null)[] | null): FichaCaptureResult => ({
     outcome, rows, recoveredAfter429: recovered, recoveryAttempts: retries429,
     httpStatusFinal: statusFinal, variantSetComplete, sleptMs, documentRequests,
+    breadcrumb: breadcrumb ?? null,
   });
 
   for (let attempt = 0; attempt <= deps.maxProductRetries; attempt++) {
@@ -357,7 +363,7 @@ export async function captureProductRows(
       // VERIFIED_OK. §3.2: una captura perturbada por rate-limiting NO autoriza a afirmar
       // completitud del set (posición conservadora, NO_ABSENCE_FROM_FAILURE) → "unknown".
       const variantSetComplete: VariantSetComplete = recovered ? "unknown" : true;
-      return result("VERIFIED_OK", rows, variantSetComplete);
+      return result("VERIFIED_OK", rows, variantSetComplete, payload.breadcrumb ?? null);
     } catch {
       // Excepción técnica de navegación/captura (timeout/red/evaluate) → READ_FAILED (§3.5).
       if (attempt === deps.maxProductRetries) {
@@ -440,6 +446,8 @@ export async function runSkuFirstWalk(
   const rateLimitBudget: RateLimitWalkBudget = { remainingMs: WALK_429_SLEEP_BUDGET_MS, totalSleptMs: 0 };
 
   const allRows: TnReducedRow[] = [];
+  // C1 · Mapa ADITIVO sourcePageIndex(=i) → breadcrumb de la ficha, para la observación de taxonomía.
+  const breadcrumbByPage = new Map<number, (string | null)[] | null>();
   await deps.onLog("INFO", "[SKU-first] Fase B: captura de fichas individuales");
   for (let i = 0; i < urls.length; i++) {
     if (deps.isCancelled()) {
@@ -462,6 +470,7 @@ export async function runSkuFirstWalk(
 
     if (res.outcome === "VERIFIED_OK" && res.rows.length > 0) {
       allRows.push(...res.rows);
+      breadcrumbByPage.set(i, res.breadcrumb ?? null); // C1 · aditivo; keyed por sourcePageIndex (=i)
       stats.variantsCaptured += res.rows.length;
       // Identidad de ficha: productUrl de la ficha capturada; fallback a la url navegada.
       const fichaKey = (res.rows[0]?.productUrl as string | null) ?? urls[i];
@@ -485,7 +494,7 @@ export async function runSkuFirstWalk(
   }
   outcomeSummary.total429SleepMs = rateLimitBudget.totalSleptMs;
 
-  const grouped = groupSkuFirst(allRows);
+  const grouped = groupSkuFirst(allRows, breadcrumbByPage);
   await deps.onLog(
     "INFO",
     `[SKU-first] Agrupación final: ${grouped.products.length} productos, ` +
