@@ -21,6 +21,7 @@
 // activa únicamente por config explícita en el orquestador.
 
 import type { ScrapedProduct } from "./scraper.service";
+import { normalizeSupplierTaxonomy } from "./tiendanube-taxonomy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos
@@ -308,7 +309,13 @@ function median(nums: number[]): number | null {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-export function groupSkuFirst(rows: TnReducedRow[]): GroupResult {
+export function groupSkuFirst(
+  rows: TnReducedRow[],
+  // C1 · Mapa ADITIVO/opcional sourcePageIndex → breadcrumb crudo de esa ficha. Sólo alimenta la
+  // observación de taxonomía (`supplierTaxonomy`). Ausente ⇒ taxonomía NOT_OBSERVED (null). No afecta
+  // agrupación, precio, SKU, imagen ni ninguna salida existente.
+  breadcrumbByPage?: ReadonlyMap<number, ReadonlyArray<string | null> | null>,
+): GroupResult {
   const quarantine: QuarantineEntry[] = [];
   const groups = new Map<string, Member[]>();
   const groupOrder: string[] = [];
@@ -483,6 +490,13 @@ export function groupSkuFirst(rows: TnReducedRow[]): GroupResult {
       variants: rawVariants,
     };
 
+    // C1 · Observación ADITIVA de taxonomía. Los SKU hermanos comparten la ficha (sourcePageIndex)
+    // → misma ruta. Se resuelve el breadcrumb de la ficha del ganador. NO toca `category` (legacy null).
+    const winnerPageIndex = typeof winner.row.sourcePageIndex === "number" ? winner.row.sourcePageIndex : null;
+    const supplierTaxonomy = normalizeSupplierTaxonomy(
+      winnerPageIndex !== null ? breadcrumbByPage?.get(winnerPageIndex) ?? null : null,
+    );
+
     products.push({
       sku: trimmedSku,
       name,
@@ -497,6 +511,7 @@ export function groupSkuFirst(rows: TnReducedRow[]): GroupResult {
       rawData,
       externalProductId: winner.productIdStr,
       externalVariantId: winner.variantIdStr,
+      supplierTaxonomy,
     });
   }
 

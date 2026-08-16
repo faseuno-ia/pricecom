@@ -60,20 +60,32 @@ const B4_R8Q2_SUCCESSOR_SHA256 = "a478853a7345dd35a88e690241c64c9c91f26e4f486d09
 //     intacto, el WALK_SET/ACCEPTED sin cambios. SKU_FIRST_RUNTIME_BEHAVIOR_CHANGED=false; sólo
 //     SKU_FIRST_CAPTURE_METADATA_SHAPE_CHANGED=true. Predecesor R8-Q2 a478853a → sucesor R1 abajo.
 const B4_R8Q2_1A_R1_SUCCESSOR_SHA256 = "120491f51d651703d2b9a1ab5e4c4c47645227bcb276376afc635a4372de1386";
+// C1 · sucesión firmada de B4 (tiendanube-walker). Delta autorizado y ACOTADO (observación de
+// taxonomía de proveedor, SÓLO observación; ninguna semántica existente cambia):
+//   + RawLsPagePayload.breadcrumb?               (aditivo/opcional; breadcrumb crudo de la ficha)
+//   + FichaCaptureResult.breadcrumb?             (aditivo/opcional; el helper result() lo transporta)
+//   ~ result()/VERIFIED_OK: pasan payload.breadcrumb (sin tocar rows/outcome/429/completitud)
+//   + Fase B: mapa aditivo breadcrumbByPage(sourcePageIndex→breadcrumb); groupSkuFirst(allRows, map)
+//     sólo para poblar la observación supplierTaxonomy. Navegación/captura/mapper/agrupación/
+//     cuarentena/completitud/ACCEPTED_WALK_SET SIN cambios. Probado byte-idéntico
+//     (EXISTING_OUTPUT_SHA/PRICE_WRITE_INPUT_SHA/SKU_GROUPING_SHA) por la instrumentación C1.
+// Predecesor 2G-R8-Q2.1-A-R1 120491f5 → sucesor C1 abajo.
+const B4_C1_SUCCESSOR_SHA256 = "6acdf4112353a1b79e20ce716ffcc9f3ba7e9b48fc03a05d5740b96257de8fac";
 
-describe("B5 inmutable + B4 sucesión firmada 2G-R8-Q2.1-A-R1", () => {
+describe("B5 inmutable + B4 sucesión firmada C1", () => {
   it("preserva B5 extracted-product-input como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
     expect(sha256File(B5_PATH)).toBe(B5_SIGNED_SHA256);
   });
 
-  it("mantiene B4 tiendanube-walker en el sucesor firmado 2G-R8-Q2.1-A-R1 (metadata cuarentena)", () => {
+  it("mantiene B4 tiendanube-walker en el sucesor firmado C1 (observación de taxonomía)", () => {
     const actual = sha256File(B4_PATH);
-    // Estados anteriores deliberadamente sucedidos (G1 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-A-R1).
+    // Estados anteriores deliberadamente sucedidos (G1 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-A-R1 → C1).
     expect(actual).not.toBe(B4_G1_FROZEN_SHA256);
     expect(actual).not.toBe(B4_2GR3_SUCCESSOR_SHA256);
     expect(actual).not.toBe(B4_R7_SUCCESSOR_SHA256);
     expect(actual).not.toBe(B4_R8Q2_SUCCESSOR_SHA256);
-    expect(actual).toBe(B4_R8Q2_1A_R1_SUCCESSOR_SHA256);
+    expect(actual).not.toBe(B4_R8Q2_1A_R1_SUCCESSOR_SHA256);
+    expect(actual).toBe(B4_C1_SUCCESSOR_SHA256);
   });
 });
 
@@ -123,17 +135,30 @@ const SCRAPER_R8Q2_SUCCESSOR_SHA256 = "664d66d91b62da84d7c226eb39ebd1e09df7b181f
 //   + fichaObservations por ficha canónica (inerte para el path fail-closed).
 // Predecesor 2G-R8-Q2 664d66d9 → sucesor R8-Q2.1-B abajo.
 const SCRAPER_R8Q2_1B_SUCCESSOR_SHA256 = "fedce4b1b6eff842646eea9209de4c36da3985cd6712b57ab1b1d8c36344a5bf";
+// C1 · sucesión firmada de scraper.service.ts. Delta autorizado y ACOTADO (observación de
+// taxonomía, SÓLO observación; ninguna semántica de precio/D/upsert/Woo/login/navegación cambia):
+//   + import type SupplierTaxonomyObservation (./tiendanube-taxonomy)
+//   + ScrapedProduct.supplierTaxonomy?  (aditivo/opcional; ningún writer existente lo lee)
+//   ~ captureLsPayload: el page.evaluate lee además el breadcrumb del DOM YA CARGADO de la ficha
+//     (sin navegación ni request extra) y lo agrega como payload.breadcrumb. Variantes/precio/
+//     domLabels/productName/productUrl SIN cambios.
+//   R2 (cierre pre-commit): la lectura del breadcrumb queda envuelta en try/catch → cualquier fallo
+//     de selector/DOM/parsing produce breadcrumb=null y NUNCA rompe la captura de precio/producto
+//     (TOTALIDAD; NOT_OBSERVED=null). Sólo endurece la observación; nada más cambia.
+// Predecesor 2G-R8-Q2.1-B fedce4b1 → sucesor C1 (finalizado en R2) abajo.
+const SCRAPER_C1_SUCCESSOR_SHA256 = "549767f86730f03f4ffb6cd78d7b5f603924f1b8caa33bc8f32f4a40b2e45be3";
 
 describe("G1/2G — sucesión firmada de scraper.service.ts", () => {
-  it("mantiene scraper.service.ts en el sucesor firmado 2G-R8-Q2.1-B", () => {
+  it("mantiene scraper.service.ts en el sucesor firmado C1", () => {
     const actual = sha256File(SCRAPER_SERVICE_PATH);
-    // Antecedentes deliberadamente sucedidos (I0 → G1-B6 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-B).
+    // Antecedentes deliberadamente sucedidos (I0 → G1-B6 → 2G-R3 → 2G-R7 → 2G-R8-Q2 → 2G-R8-Q2.1-B → C1).
     expect(actual).not.toBe(SCRAPER_I0_SHA256);
     expect(actual).not.toBe(SCRAPER_G1_B6_SHA256);
     expect(actual).not.toBe(SCRAPER_2GR3_SUCCESSOR_SHA256);
     expect(actual).not.toBe(SCRAPER_R7_SUCCESSOR_SHA256);
     expect(actual).not.toBe(SCRAPER_R8Q2_SUCCESSOR_SHA256);
+    expect(actual).not.toBe(SCRAPER_R8Q2_1B_SUCCESSOR_SHA256);
     // Guard real del estado autorizado vigente.
-    expect(actual).toBe(SCRAPER_R8Q2_1B_SUCCESSOR_SHA256);
+    expect(actual).toBe(SCRAPER_C1_SUCCESSOR_SHA256);
   });
 });
