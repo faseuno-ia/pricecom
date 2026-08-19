@@ -24,6 +24,32 @@ import {
 } from "../helpers/factories";
 import { WooCommerceClient } from "@/lib/integrations/woocommerce/client";
 import { publishProductToWoo } from "@/lib/integrations/woocommerce/publication-service";
+import { FIRST_PUBLISH_AUTHORITY } from "@/lib/publishing/first-publish-authority";
+
+// C2-DESIGN-1 · estos 4 casos ejercitan el path CREATE = PRIMERA publicación, que desde el
+// guardarraíl exige un par (providerId, storeId) explícitamente ELIGIBLE. El fixture usa un par
+// REAL del seed, resuelto por CLAVE ESTABLE (nombre de proveedor × nombre de tienda) y NO por
+// índice del array: un reordenamiento del seed no puede desviarlo en silencio a otro proveedor.
+// Los ids NO se duplican acá — se leen de la autoridad.
+//
+// Si el par desaparece del seed o deja de ser ELIGIBLE, esto LANZA al importar el archivo y los
+// 4 tests fallan de forma ruidosa e inconfundible.
+const ELIGIBLE_PAIR = (() => {
+  const entry = FIRST_PUBLISH_AUTHORITY.find(
+    (e) =>
+      e.providerName === "IMPOTEKNO" &&
+      e.storeName === "ELECTROFAYS" &&
+      e.decision === "ELIGIBLE",
+  );
+  if (!entry) {
+    throw new Error(
+      'lazy-sku.test.ts: el par ELIGIBLE "IMPOTEKNO × ELECTROFAYS" ya no existe en ' +
+        "FIRST_PUBLISH_AUTHORITY. Estos tests son de PRIMERA publicación y necesitan un par E1: " +
+        "actualizá el fixture con un par elegible vigente del seed.",
+    );
+  }
+  return entry;
+})();
 
 // Builder de un WooProduct mock con shape suficiente para el código bajo test
 // (solo lee id/sku/permalink, pero devolvemos un objeto válido por las dudas).
@@ -66,8 +92,11 @@ describe("publishProductToWoo — flujo lazy SKU", () => {
 
   it("1. CREATE feliz: genera TEK-003, persiste antes del push, emite SKU_ASSIGNED + WOO_PRODUCT_CREATED", async () => {
     const user = await createTestUser();
-    const provider = await createTestProvider(user.id, { skuPrefix: "TEK-" });
-    const { store } = await createTestStore(user.id);
+    const provider = await createTestProvider(user.id, {
+      id: ELIGIBLE_PAIR.providerId,
+      skuPrefix: "TEK-",
+    });
+    const { store } = await createTestStore(user.id, { id: ELIGIBLE_PAIR.storeId });
     const cp = await createTestCatalogProduct(user.id, provider.id, {
       sku: "003",
       finalPrice: 1500,
@@ -139,8 +168,11 @@ describe("publishProductToWoo — flujo lazy SKU", () => {
 
   it("2. Colisión en PricEcom: warning-only, publica igual + emite SKU_COLLISION", async () => {
     const user = await createTestUser();
-    const provider = await createTestProvider(user.id, { skuPrefix: "TEK-" });
-    const { store } = await createTestStore(user.id);
+    const provider = await createTestProvider(user.id, {
+      id: ELIGIBLE_PAIR.providerId,
+      skuPrefix: "TEK-",
+    });
+    const { store } = await createTestStore(user.id, { id: ELIGIBLE_PAIR.storeId });
 
     // Otro cp del MISMO user que ya tiene una pub con sku "TEK-003".
     const otherCp = await createTestCatalogProduct(user.id, provider.id, {
@@ -204,8 +236,11 @@ describe("publishProductToWoo — flujo lazy SKU", () => {
 
   it("3. Colisión en Woo (guard 3): bloquea, pp queda ERROR_SKU_CONFLICT + pendingSync=false", async () => {
     const user = await createTestUser();
-    const provider = await createTestProvider(user.id, { skuPrefix: "TEK-" });
-    const { store } = await createTestStore(user.id);
+    const provider = await createTestProvider(user.id, {
+      id: ELIGIBLE_PAIR.providerId,
+      skuPrefix: "TEK-",
+    });
+    const { store } = await createTestStore(user.id, { id: ELIGIBLE_PAIR.storeId });
     const cp = await createTestCatalogProduct(user.id, provider.id, {
       sku: "003",
       finalPrice: 1500,
@@ -280,8 +315,11 @@ describe("publishProductToWoo — flujo lazy SKU", () => {
 
   it("4. Sin sku raw (caso BAZAR 380): falla con error claro, no publica, no genera SKU inválido", async () => {
     const user = await createTestUser();
-    const provider = await createTestProvider(user.id, { skuPrefix: "B380-" });
-    const { store } = await createTestStore(user.id);
+    const provider = await createTestProvider(user.id, {
+      id: ELIGIBLE_PAIR.providerId,
+      skuPrefix: "B380-",
+    });
+    const { store } = await createTestStore(user.id, { id: ELIGIBLE_PAIR.storeId });
     const cp = await createTestCatalogProduct(user.id, provider.id, {
       sku: null, // caso real: el scraper no capturó sku
       finalPrice: 1500,

@@ -49,6 +49,9 @@ export async function createTestUser(
 }
 
 export interface ProviderOverrides {
+  /** Id explícito. Sólo se usa cuando el test necesita un providerId ESPECÍFICO
+   *  (ej. un par elegible de FIRST_PUBLISH_AUTHORITY). Por defecto lo genera Prisma. */
+  id?: string;
   name?: string;
   providerType?: "SCRAPER" | "MANUAL" | "IMPORTED" | "OWN_STOCK";
   baseUrl?: string;
@@ -62,6 +65,7 @@ export async function createTestProvider(
 ): Promise<Provider> {
   return testPrisma.provider.create({
     data: {
+      ...(overrides.id ? { id: overrides.id } : {}),
       userId,
       name: overrides.name ?? `TestProvider-${uniq()}`,
       providerType: overrides.providerType ?? "MANUAL",
@@ -75,6 +79,8 @@ export async function createTestProvider(
 }
 
 export interface StoreOverrides {
+  /** Id explícito. Ver ProviderOverrides.id. */
+  id?: string;
   name?: string;
   platform?: "WOOCOMMERCE" | "SHOPIFY" | "TIENDANUBE";
   url?: string;
@@ -92,6 +98,7 @@ export async function createTestStore(
 ): Promise<{ store: Store; integration: StoreIntegration }> {
   const store = await testPrisma.store.create({
     data: {
+      ...(overrides.id ? { id: overrides.id } : {}),
       userId,
       name: overrides.name ?? `TestStore-${uniq()}`,
       platform: overrides.platform ?? "WOOCOMMERCE",
