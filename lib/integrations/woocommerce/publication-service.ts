@@ -15,11 +15,23 @@ import { buildPublicationSku } from "@/lib/catalog/publication-sku";
 import { findCollidingSkuInPricEcom } from "@/lib/catalog/sku-guards";
 import { assertSkuNotInWoo } from "@/lib/integrations/woocommerce/sku-guards";
 import { WooApiError, classifyWooError } from "./woo-api-error";
+import {
+  canFirstPublish,
+  firstPublishDenyMessage,
+  FIRST_PUBLISH_NOT_ELIGIBLE,
+  type FirstPublishVerdict,
+} from "@/lib/publishing/first-publish-authority";
 
 export interface PublishResult {
   success: boolean;
   externalProductId?: number;
   error?: string;
+  /**
+   * C2-DESIGN-1 · código estable y OPCIONAL para distinguir un bloqueo deliberado de
+   * PricEcom de un fallo de WooCommerce. Los callers históricos leen sólo `success`/`error`,
+   * así que agregarlo es retrocompatible.
+   */
+  code?: typeof FIRST_PUBLISH_NOT_ELIGIBLE;
 }
 
 // 1A.2-ab — contrato honesto: mapea un error de Woo (catch) al EJE SYNC.
@@ -81,6 +93,90 @@ export async function publishProductToWoo(
   });
   if (!product) return { success: false, error: "Producto no encontrado" };
 
+  // C2-DESIGN-1 · la lectura de existingPub se adelantó hasta acá (antes vivía después de
+  // resolveWooCategories). Depende SÓLO de los parámetros de la función — no usa `product`,
+  // ni `pricing`, ni `wooCategories` — así que adelantarla no cambia ninguna conducta, y
+  // permite decidir la elegibilidad de primera publicación antes de todo lo demás.
+  const existingPub = await prisma.productPublication.findUnique({
+    where: { catalogProductId_storeId: { catalogProductId, storeId } },
+    select: {
+      id: true,
+      sku: true,
+      // externalSku es el snapshot del SKU como está en Woo. Lo usamos para
+      // detectar drift entre pp.sku (PricEcom) y el SKU real en la tienda:
+      // si difieren, el sync re-empuja el SKU como parte del updatePayload
+      // (necesario para que el endpoint de renombre con error transitorio
+      // se cierre vía pendingSync + reintento).
+      externalSku: true,
+      externalProductId: true,
+      commercialTitle: true,
+      commercialTitleUserEdited: true,
+      commercialDescription: true,
+      commercialDescriptionUserEdited: true,
+    },
+  });
+
+  // ─── C2-DESIGN-1 · GUARDARRAÍL DE PRIMERA PUBLICACIÓN ───────────────────
+  // Punto único de enforcement: este gateway es el ÚNICO call site productivo de
+  // client.createProduct, así que domina los tres caminos que pueden crear una ficha remota
+  // (bulk-update/route.ts:194, sync/publications/route.ts:157, upsert-catalog-products.ts:166)
+  // por construcción, no por convención. Ningún caller puede omitirlo.
+  //
+  // El predicado es EL MISMO del branch create-vs-update de más abajo
+  // (`existingPub?.externalProductId`): compartirlo garantiza que el guard no pueda divergir de
+  // la rama que protege. Un UPDATE de una publicación ya existente en la tienda no se evalúa
+  // nunca.
+  //
+  // Momento: acá todavía no ocurrió NINGÚN HTTP a Woo (el primero del path CREATE es el GET de
+  // assertSkuNotInWoo) ni ningún write de dominio (el primero es el UPDATE de pp.sku del lazy
+  // SKU). Por eso un DENY es inerte: cero red, cero DB, sólo audit trail.
+  //
+  // La autoridad es transitoria y reemplazable: C2-DESIGN-2 cambia el cuerpo de
+  // canFirstPublish(), no este punto ni este momento.
+  if (!existingPub?.externalProductId) {
+    let verdict: FirstPublishVerdict;
+    try {
+      verdict = canFirstPublish(product.providerId, storeId);
+    } catch {
+      // canFirstPublish ya es total; el gateway falla cerrado igual, para que ningún refactor
+      // futuro de la autoridad pueda transformar una excepción en una publicación remota.
+      verdict = { decision: "DENY", reason: "AUTHORITY_ERROR" };
+    }
+
+    if (verdict.decision === "DENY") {
+      const denyMessage = firstPublishDenyMessage(verdict.reason);
+      // El registro vive DENTRO del gateway a propósito: upsert-catalog-products.ts:166
+      // descarta el valor de retorno, así que un DENY registrado por el caller sería mudo
+      // justamente en el camino automático del worker.
+      const emitDeny =
+        verdict.reason === "UNRESOLVABLE" || verdict.reason === "AUTHORITY_ERROR"
+          ? logError
+          : logWarning;
+      await emitDeny({
+        source: "SYNC",
+        type: "FIRST_PUBLISH_DENIED",
+        title: `Primera publicación bloqueada — ${product.supplierName}`,
+        description: denyMessage,
+        productId: catalogProductId,
+        providerId: product.providerId || undefined,
+        publicationId: existingPub?.id,
+        storeId: storeId || undefined,
+        metadata: {
+          reason: verdict.reason,
+          providerId: product.providerId,
+          storeId,
+          catalogProductId,
+          publicationId: existingPub?.id ?? null,
+        },
+      });
+      return {
+        success: false,
+        error: denyMessage,
+        code: FIRST_PUBLISH_NOT_ELIGIBLE,
+      };
+    }
+  }
+
   const pricing = resolvePricing(
     {
       wholesalePrice: product.wholesalePrice,
@@ -106,25 +202,6 @@ export async function publishProductToWoo(
     storeId,
     product.categories.map((c) => c.categoryId)
   );
-
-  const existingPub = await prisma.productPublication.findUnique({
-    where: { catalogProductId_storeId: { catalogProductId, storeId } },
-    select: {
-      id: true,
-      sku: true,
-      // externalSku es el snapshot del SKU como está en Woo. Lo usamos para
-      // detectar drift entre pp.sku (PricEcom) y el SKU real en la tienda:
-      // si difieren, el sync re-empuja el SKU como parte del updatePayload
-      // (necesario para que el endpoint de renombre con error transitorio
-      // se cierre vía pendingSync + reintento).
-      externalSku: true,
-      externalProductId: true,
-      commercialTitle: true,
-      commercialTitleUserEdited: true,
-      commercialDescription: true,
-      commercialDescriptionUserEdited: true,
-    },
-  });
 
   // ─── Lazy SKU (Fase 3) ──────────────────────────────────────────────────
   // Si la publication ya tiene sku asignado → usarlo (inmutable). Si no,
