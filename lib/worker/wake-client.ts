@@ -78,8 +78,12 @@ export interface WakeResult {
   rawOutcome?: string;
 }
 
-/** Outcomes que el worker puede devolver con 2xx. */
-const WORKER_2XX_OUTCOMES = new Set<WakeOutcome>([
+/**
+ * Outcomes que el worker puede devolver con 2xx.
+ * Exportado para que el test estructural compare este conjunto contra el del worker: si divergen,
+ * el emisor manda todo a UNRECOGNIZED_RESPONSE y nadie se entera.
+ */
+export const WORKER_2XX_OUTCOMES = new Set<WakeOutcome>([
   "ACCEPTED_AND_CLAIMED",
   "WORKER_BUSY_NOT_CLAIMED",
   "JOB_NOT_RECLAIMABLE",
