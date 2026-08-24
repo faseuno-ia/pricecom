@@ -278,6 +278,20 @@ model ExtractedProduct {
   /// null | "selected" | "prepared" | "published" — flag legacy del flow de publicación
   /// a nivel snapshot. Para el estado canónico ver CatalogProduct.publications.
   publicationStatus      String?
+
+  /// C2-MINI-A · Espejo de la taxonomía del proveedor (breadcrumb tal cual llega). SÓLO observación:
+  /// no alimenta Category ni la publicación en tienda. NO reemplaza `supplierCategory` (etiqueta
+  /// plana legacy, viva en otros proveedores), que queda intacta.
+  ///
+  /// TRES ESTADOS, y `supplierTaxonomyObservedAt` es el DISCRIMINANTE — no por preferencia: el
+  /// cliente de Prisma tipa las listas escalares como no-nullable, así que NULL y [] colapsan en
+  /// `[]` y la ruta sola no puede separar "no se observó" de "se observó sin categoría".
+  ///   observedAt = null                          → no hubo observación utilizable
+  ///   observedAt ≠ null · uncategorized = true   → observación válida, sin categoría material
+  ///   observedAt ≠ null · uncategorized = false  → breadcrumb observado, en `path`
+  supplierTaxonomyPath          String[]  @default([])
+  supplierTaxonomyObservedAt    DateTime?
+  supplierTaxonomyUncategorized Boolean?
   catalogProductSnapshot CatalogProduct[] @relation("LatestSnapshot")
 
   @@index([jobId])
@@ -569,6 +583,20 @@ model CatalogProduct {
   // Referencia al último snapshot extraído (linea de tiempo)
   latestExtractedProductId String?
   latestExtractedProduct   ExtractedProduct? @relation("LatestSnapshot", fields: [latestExtractedProductId], references: [id])
+
+  /// C2-MINI-A · Espejo de la taxonomía del proveedor (breadcrumb tal cual llega). SÓLO observación:
+  /// no alimenta Category ni la publicación en tienda. NO reemplaza `supplierCategory` (etiqueta
+  /// plana legacy, viva en otros proveedores), que queda intacta.
+  ///
+  /// TRES ESTADOS, y `supplierTaxonomyObservedAt` es el DISCRIMINANTE — no por preferencia: el
+  /// cliente de Prisma tipa las listas escalares como no-nullable, así que NULL y [] colapsan en
+  /// `[]` y la ruta sola no puede separar "no se observó" de "se observó sin categoría".
+  ///   observedAt = null                          → no hubo observación utilizable
+  ///   observedAt ≠ null · uncategorized = true   → observación válida, sin categoría material
+  ///   observedAt ≠ null · uncategorized = false  → breadcrumb observado, en `path`
+  supplierTaxonomyPath          String[]  @default([])
+  supplierTaxonomyObservedAt    DateTime?
+  supplierTaxonomyUncategorized Boolean?
 
   // Datos comerciales editados por el usuario (worker NUNCA toca)
   commercialTitle       String?
