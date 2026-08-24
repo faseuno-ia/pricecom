@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { startExtractionSchema } from "@/lib/utils/schemas";
 import { requireSession } from "@/lib/auth";
+import { emitWake } from "@/lib/worker/wake-client";
 
 export async function POST(req: NextRequest) {
   const session = await requireSession();
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Create job (worker will pick it up)
+  // Create job
   const job = await prisma.extractionJob.create({
     data: {
       providerId,
@@ -46,5 +47,16 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ jobId: job.id, status: "PENDING" }, { status: 201 });
+  // NEON-GATE2A-EXEC-1 · Despertar al worker. La señal SÓLO despierta: la autoridad de ejecución
+  // es la fila recién creada, y el claim dirigido del worker decide.
+  //
+  // emitWake es TOTAL (nunca lanza) por contrato: WAKE_FAILURE_BREAKS_CREATE = false. El job ya
+  // está creado y es redispatchable pase lo que pase, así que el resultado del wake viaja DENTRO
+  // de la respuesta de éxito en vez de convertirse en un error.
+  //
+  // Sin WORKER_WAKE_URL / WORKER_WAKE_SECRET no se hace ninguna llamada: ausencia de
+  // configuración significa no intentar, no fallar.
+  const wake = await emitWake(job.id);
+
+  return NextResponse.json({ jobId: job.id, status: "PENDING", wake }, { status: 201 });
 }

@@ -35,6 +35,66 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 let wooIdSeq = 9000;
 
+/**
+ * Handler programable. Recibe la url y el init ya normalizados y devuelve la Response.
+ * Si LANZA, el throw se propaga tal cual al código bajo test — así se simulan errores de
+ * transporte reales (ECONNREFUSED / ENOTFOUND / TimeoutError), que en `fetch` de Node NO
+ * son respuestas HTTP sino excepciones.
+ */
+export type FetchHandler = (
+  url: string,
+  init: RequestInit | undefined,
+) => Promise<Response>;
+
+/**
+ * Spy genérico de transporte. Registra toda llamada a `globalThis.fetch` y delega la respuesta
+ * en `handler`. Sin handler, responde 200 con `{}` (útil sólo para contar llamadas).
+ *
+ * `installWooFetchSpy` es este mismo spy con el router de WooCommerce como handler.
+ */
+export function installFetchSpy(handler?: FetchHandler): FetchSpyHandle {
+  const original = globalThis.fetch;
+  const calls: FetchCall[] = [];
+
+  const spy = async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = typeof input === "string" ? input : String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    let body: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    calls.push({ method, url, body });
+    if (handler) return handler(url, init);
+    return jsonResponse({});
+  };
+
+  globalThis.fetch = spy as unknown as typeof globalThis.fetch;
+
+  return {
+    calls,
+    count(method?: string) {
+      return method
+        ? calls.filter((c) => c.method === method.toUpperCase()).length
+        : calls.length;
+    },
+    byMethod() {
+      const out: Record<string, number> = { GET: 0, POST: 0, PUT: 0, DELETE: 0 };
+      for (const c of calls) out[c.method] = (out[c.method] ?? 0) + 1;
+      return out;
+    },
+    restore() {
+      globalThis.fetch = original;
+    },
+  };
+}
+
 export function installWooFetchSpy(): FetchSpyHandle {
   const original = globalThis.fetch;
   const calls: FetchCall[] = [];
