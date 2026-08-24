@@ -29,26 +29,38 @@ import type { IJobQueue, JobPayload } from "./queues/job-queue.interface";
 import { JobLease } from "./job-lease";
 import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
 import { resolveWriteOrchestrationMode } from "../../lib/catalog/write-orchestration-mode";
-import { logInfo, logError } from "../../lib/events/event-log";
-import { runConsistencyCheck } from "./consistency-check";
+import { logInfo, logWarning, logError } from "../../lib/events/event-log";
+import { runEndOfAttemptConsistency, shouldRunEndOfAttemptConsistency } from "./consistency-t2";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
 import { fencedPartialWrite } from "./partial-commit-fenced-write";
 import { LeaseFencingError } from "./lease-fencing-error";
 import { bootWorker, readWorkerIdentity } from "./worker-boot";
+import { ExecutionState } from "./execution-state";
+import { startWakeServer } from "./wake-server";
+import type { Server } from "node:http";
 import { selectAndGuardPath, buildPathDecisionWitness, CANARY_MARKER } from "./execution-path";
 
 // ─── Configuración ────────────────────────────────────────────────────────────
-const POLL_INTERVAL_MS   = parseInt(process.env.WORKER_POLL_INTERVAL   ?? "5000");
-const STALE_JOB_TIMEOUT  = parseInt(process.env.WORKER_STALE_TIMEOUT_MS ?? String(10 * 60 * 1000));
-const STALE_CHECK_EVERY  = 12; // cada 12 polls (~1 min) revisar stale jobs
+// NEON-GATE2A-EXEC-2 · umbrales del modelo event-driven. Se fijan los cuatro juntos o ninguno:
+//   claim típico < WAKE_HTTP_TIMEOUT (5s, lado web) < CLAIM_MAX_DURATION < LIVE_LEASE_THRESHOLD
+// CLAIM_LATENCY_MS = NOT_DETERMINED: son márgenes conservadores, no mediciones.
+const CLAIM_MAX_DURATION_MS   = parseInt(process.env.WORKER_CLAIM_MAX_DURATION_MS ?? "30000");
+const LIVE_LEASE_THRESHOLD_MS = parseInt(process.env.WORKER_LIVE_LEASE_THRESHOLD_MS ?? "240000");
+
+// El puerto NO es cosmético: es el que ya está en WORKER_WAKE_URL del servicio web. El servicio no
+// tiene serviceDomains (sólo privateNetworkEndpoint), así que Railway puede no inyectar PORT.
+// Si el bind no coincide con 8080, el wake no llega.
+const WORKER_LISTEN_PORT = parseInt(process.env.PORT ?? process.env.WORKER_PORT ?? "8080");
+// La red privada de Railway es IPv6-only: bindear a 0.0.0.0 o localhost lo deja inalcanzable.
+const WORKER_LISTEN_HOST = "::";
+
+// Interruptor TEMPORAL de migración. Default apagado. Owner de su eliminación: 2B.
+const LEGACY_POLL_FALLBACK = process.env.WORKER_LEGACY_POLL_FALLBACK === "true";
+const LEGACY_POLL_INTERVAL_MS = parseInt(process.env.WORKER_POLL_INTERVAL ?? "5000");
+const FALLBACK_ATTENDED_WINDOW_MS = parseInt(process.env.WORKER_FALLBACK_ATTENDED_WINDOW_MS ?? "120000");
 // 2G-R8-Q1 · heartbeat de lease. 60s de intervalo → ~10 renovaciones dentro del stale timeout de
 // 600s → un job vivo (walk largo) nunca se re-clama. Seguridad operativa, no inferencia de duración.
 const WORKER_LEASE_HEARTBEAT_INTERVAL_MS = parseInt(process.env.WORKER_LEASE_HEARTBEAT_INTERVAL_MS ?? "60000");
-// Cada 60 polls (~5 min a 5s/poll) chequea consistencia. Con módulo 1 se
-// dispara también en el primer ciclo, para limpiar lo que quedó de períodos
-// donde el worker estuvo caído.
-const CONSISTENCY_CHECK_EVERY = 60;
-
 // ─── Instancias ───────────────────────────────────────────────────────────────
 const prisma = new PrismaClient();
 
@@ -82,6 +94,9 @@ async function writeLog(
 // ─── Procesador de job ────────────────────────────────────────────────────────
 async function processJob(payload: JobPayload) {
   const { jobId, leaseVersion } = payload;
+  // NEON-GATE2A-EXEC-2 · gate de T2. Se marca justo después del upsert FULL, que es lo único
+  // capaz de dejar material de case2 (SUPPLIER_REMOVED + auto-pausa) commiteado.
+  let fullUpsertAttempted = false;
   console.log(`\n► Procesando job ${jobId} (PID ${process.pid})`);
 
   // 2G-R8-Q1 · lease heartbeat: renueva el ownership (workerLockedAt) mientras el job trabaja, de
@@ -302,6 +317,7 @@ async function processJob(payload: JobPayload) {
       );
       await prisma.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
       try {
+        fullUpsertAttempted = true;
         await upsertCatalogProducts(jobId, prisma);
         await onLog("DEBUG", "CatalogProduct upsert completado");
       } catch (err) {
@@ -371,6 +387,19 @@ async function processJob(payload: JobPayload) {
   } finally {
     // 2G-R8-Q1 · siempre detener el heartbeat (limpieza del timer; sin dangling interval).
     await lease.stop("processJob-end");
+
+    // NEON-GATE2A-EXEC-2 · T2 · END_OF_ATTEMPT, no END_OF_SUCCESS.
+    // Corre DESPUÉS del terminal y del lease: no puede alterar el estado terminal del job ni
+    // robarse el lease a sí mismo. Post-commit obligatorio (hace HTTP a Woo). Nunca lanza.
+    if (shouldRunEndOfAttemptConsistency({ fullUpsertAttempted, succeeded: true })) {
+      try {
+        const providerId = payload.providerId;
+        const r = await runEndOfAttemptConsistency(prisma, { providerId, jobId });
+        console.log(`[T2] fin de attempt — provider= scanned= fixed= errors=`);
+      } catch (err) {
+        console.error(`[T2] falló para job  (no afecta el terminal):`, err);
+      }
+    }
   }
 }
 
@@ -458,58 +487,152 @@ async function processPartialCommitShadowJob(args: {
   })}`);
 }
 
-// ─── Poll loop ────────────────────────────────────────────────────────────────
-async function pollLoop() {
+// ─── NEON-GATE2A-EXEC-2 · Ejecución event-driven ──────────────────────────────
+// El while(true) murió. Con él murieron sus dos mecanismos anidados, que eran módulos de
+// pollCount y no timers propios: releaseStaleJobs (re-alojado como perezoso por jobId) y
+// runConsistencyCheck (re-alojado como T2 al END_OF_ATTEMPT, dentro de processJob).
+//
+// En operación normal —fallback apagado, sin job en vuelo— no queda ningún setInterval, ningún
+// setTimeout y ninguna query. Eso es lo que permite que Neon suspenda.
+
+const state = new ExecutionState();
+let wakeServer: Server | null = null;
+
+/** Arranca processJob DESACOPLADO y libera el estado local pase lo que pase. */
+function startExecution(payload: JobPayload): void {
+  void (async () => {
+    try {
+      await processJob(payload);
+    } catch (err) {
+      console.error(`[worker] processJob lanzó fuera de su try (job ${payload.jobId}):`, err);
+    } finally {
+      // RELEASE_ON_EXECUTION_PATH · CAS por jobId: no puede soltar la exclusión de otro.
+      state.releaseRunning(payload.jobId);
+      await disconnectIfIdle();
+    }
+  })();
+}
+
+/**
+ * $disconnect() al quedar IDLE. Sin esto la conexión ociosa puede impedir el autosuspend de Neon,
+ * que es el objetivo del track. Prisma reconecta perezosamente: el próximo wake reabre solo.
+ * En modo fallback NO se desconecta: el bucle necesita la conexión.
+ */
+async function disconnectIfIdle(): Promise<void> {
+  if (LEGACY_POLL_FALLBACK) return;
+  if (state.snapshot().phase !== "IDLE") return;
+  try {
+    await prisma.$disconnect();
+  } catch (err) {
+    console.error("[worker] $disconnect falló:", err);
+  }
+}
+
+function startWakeExecutor(): void {
   console.log(`
-⚙  Worker iniciado
+⚙  Worker iniciado (event-driven)
    PID:            ${process.pid}
-   Poll interval:  ${POLL_INTERVAL_MS}ms
-   Stale timeout:  ${STALE_JOB_TIMEOUT / 1000}s
-   Cola:           DbPollingQueue (PostgreSQL + FOR UPDATE SKIP LOCKED)
+   Modo:           WAKE
+   Listen:         [${WORKER_LISTEN_HOST}]:${WORKER_LISTEN_PORT}/wake
+   Claim:          dirigido por jobId (FOR UPDATE SKIP LOCKED)
+   Umbrales:       claim ${CLAIM_MAX_DURATION_MS}ms · lease vivo ${LIVE_LEASE_THRESHOLD_MS}ms
 `);
 
-  let pollCount = 0;
-
-  while (true) {
-    try {
-      pollCount++;
-
-      // Liberar stale jobs periódicamente (workers muertos sin completar)
-      if (pollCount % STALE_CHECK_EVERY === 0) {
-        const released = await queue.releaseStaleJobs(STALE_JOB_TIMEOUT);
-        if (released > 0) {
-          console.log(`[INFO] Se liberaron ${released} job(s) stale → vuelven a PENDING`);
-        }
-      }
-
-      // Job de consistencia: arregla combinaciones inválidas entre
-      // ProductPublication y CatalogProduct (DRAFT residuales, ACTIVE con
-      // proveedor removido, ACTIVE con producto pausado). El % 60 === 1
-      // dispara en el ciclo 1, 61, 121... = arranque + cada 60 polls.
-      if (pollCount % CONSISTENCY_CHECK_EVERY === 1) {
+  wakeServer = startWakeServer({
+    host: WORKER_LISTEN_HOST,
+    port: WORKER_LISTEN_PORT,
+    onLog: (m) => console.log(m),
+    deps: {
+      secret: process.env.WORKER_WAKE_SECRET,
+      state,
+      legacyFallbackEnabled: false,
+      claimMaxDurationMs: CLAIM_MAX_DURATION_MS,
+      liveLeaseThresholdMs: LIVE_LEASE_THRESHOLD_MS,
+      now: () => Date.now(),
+      claimJob: (jobId) => queue.claimJob(jobId),
+      isRunningLeaseAlive: (jobId, ms) => queue.isRunningLeaseAlive(jobId, ms),
+      inspectJob: (jobId, ms) => queue.inspectJob(jobId, ms),
+      releaseStaleJob: (jobId, ms) => queue.releaseStaleJob(jobId, ms),
+      startExecution,
+      onWitness: async (w) => {
         try {
-          await runConsistencyCheck(prisma);
+          await logWarning({
+            source: "WORKER",
+            type: w.type,
+            title: `[Wake] ${w.type} — job ${w.jobId}`,
+            jobId: w.jobId,
+            metadata: w.metadata,
+          });
         } catch (err) {
-          // runConsistencyCheck ya tiene try/catch por caso, pero defensa
-          // en profundidad: si algo dispara antes de los try internos, no
-          // queremos matar el worker.
-          console.error("[ERROR] Consistency check falló:", err);
+          console.error("[worker] no se pudo registrar el testigo del wake:", err);
         }
+      },
+    },
+  });
+}
+
+/**
+ * WORKER_LEGACY_POLL_FALLBACK · interruptor TEMPORAL de migración. Default apagado.
+ *
+ * P1 · EXCLUSIÓN MUTUA: con el fallback encendido el endpoint responde LEGACY_MODE_ACTIVE sin
+ *      reclamar. Un solo dueño del claim, siempre.
+ * P2 · VENTANA DE ATENCIÓN: el claim exige createdAt dentro de FALLBACK_ATTENDED_WINDOW_MS ⇒
+ *      procesa trabajo atendido y reciente, nunca abandonado. Por eso no reintroduce drain global.
+ *
+ * Revive UN SOLO mecanismo: la adquisición de jobs. No revive el barrido stale global ni el
+ * consistency timer. Encenderlo devuelve el costo de Neon: es medida de incidente, no modo de
+ * operación. Owner de su eliminación: 2B.
+ */
+function startLegacyFallbackExecutor(): void {
+  console.log(`
+⚙  Worker iniciado (LEGACY_POLL · interruptor temporal de migración)
+   PID:            ${process.pid}
+   Poll interval:  ${LEGACY_POLL_INTERVAL_MS}ms
+   Ventana:        ${FALLBACK_ATTENDED_WINDOW_MS}ms (no toma trabajo abandonado)
+`);
+
+  // El endpoint sigue levantado para responder LEGACY_MODE_ACTIVE: el web recibe una respuesta
+  // honesta en vez de un connection-refused.
+  wakeServer = startWakeServer({
+    host: WORKER_LISTEN_HOST,
+    port: WORKER_LISTEN_PORT,
+    onLog: (m) => console.log(m),
+    deps: {
+      secret: process.env.WORKER_WAKE_SECRET,
+      state,
+      legacyFallbackEnabled: true,
+      claimMaxDurationMs: CLAIM_MAX_DURATION_MS,
+      liveLeaseThresholdMs: LIVE_LEASE_THRESHOLD_MS,
+      now: () => Date.now(),
+      claimJob: (jobId) => queue.claimJob(jobId),
+      isRunningLeaseAlive: (jobId, ms) => queue.isRunningLeaseAlive(jobId, ms),
+      inspectJob: (jobId, ms) => queue.inspectJob(jobId, ms),
+      releaseStaleJob: (jobId, ms) => queue.releaseStaleJob(jobId, ms),
+      startExecution,
+      onWitness: async () => {},
+    },
+  });
+
+  void (async () => {
+    for (;;) {
+      try {
+        const payload = await queue.claimNextAttendedJob(FALLBACK_ATTENDED_WINDOW_MS);
+        if (payload) {
+          const begun = state.tryBeginClaiming(payload.jobId, Date.now());
+          if (begun.ok && state.promoteToRunning(payload.jobId, Date.now())) {
+            try {
+              await processJob(payload);
+            } finally {
+              state.releaseRunning(payload.jobId);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[ERROR] fallback loop:", err);
       }
-
-      // Tomar el siguiente job disponible de forma atómica
-      const payload = await queue.claimNextJob();
-
-      if (payload) {
-        await processJob(payload);
-      }
-
-    } catch (err) {
-      console.error("[ERROR] Error en poll loop:", err);
+      await new Promise((r) => setTimeout(r, LEGACY_POLL_INTERVAL_MS));
     }
-
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
+  })();
 }
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
@@ -518,18 +641,25 @@ process.on("SIGTERM", shutdown);
 
 async function shutdown() {
   console.log("\n🛑 Cerrando worker...");
+  wakeServer?.close();
   await prisma.$disconnect();
   process.exit(0);
 }
 
-// 2G-R9-PR1 · arranque FAIL-CLOSED. El poll loop SÓLO corre si WORKER_ENABLED === "true"; en cualquier
-// otro caso el proceso queda idle emitiendo [WorkerDisabledHeartbeat] sin consumir la cola. [WorkerBoot]
-// se emite UNA vez en ambos modos (testigo de identidad del ejecutor). Sink: consola (no hay jobId al boot).
+// 2G-R9-PR1 · arranque FAIL-CLOSED. El ejecutor SÓLO corre si WORKER_ENABLED === "true"; en cualquier
+// otro caso el proceso queda idle emitiendo [WorkerDisabledHeartbeat] sin consumir la cola ni abrir
+// puerto. [WorkerBoot] se emite UNA vez en ambos modos (testigo de identidad del ejecutor).
 bootWorker({
   workerEnabledRaw: process.env.WORKER_ENABLED,
   pid: process.pid,
   env: process.env,
   emit: (message) => console.log(message),
-  startPoller: () => { void pollLoop(); },
+  executorMode: LEGACY_POLL_FALLBACK ? "LEGACY_POLL" : "WAKE",
+  listenHost: WORKER_LISTEN_HOST,
+  listenPort: WORKER_LISTEN_PORT,
+  startPoller: () => {
+    if (LEGACY_POLL_FALLBACK) startLegacyFallbackExecutor();
+    else startWakeExecutor();
+  },
   scheduleDisabledHeartbeat: (onTick, intervalMs) => { setInterval(onTick, intervalMs); },
 });

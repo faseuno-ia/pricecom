@@ -84,11 +84,29 @@ describe("2G-R9-PR1 · GUARD 2 · worker entrypoint fail-closed (CI-enforced)", 
   it("el arranque pasa por bootWorker (guard WORKER_ENABLED), no por un pollLoop() incondicional", () => {
     expect(src).toMatch(/bootWorker\(\{/);
     expect(src).toContain("process.env.WORKER_ENABLED");
-    expect(src).not.toMatch(/^\s*pollLoop\(\);\s*$/m);
-    const invocations = [...src.matchAll(/(^|[^a-zA-Z.])pollLoop\(\)/gm)]
-      .filter((m) => !/function\s+pollLoop/.test(src.slice(Math.max(0, m.index! - 20), m.index! + 12)));
-    expect(invocations.length).toBe(1); // sólo el void pollLoop() del closure startPoller
-    expect(src).toMatch(/startPoller:\s*\(\)\s*=>\s*\{\s*void pollLoop\(\);\s*\}/);
+    // NEON-GATE2A-EXEC-2 · pollLoop dejó de existir: el ejecutor ahora es startWakeExecutor o,
+    // con el interruptor de migración, startLegacyFallbackExecutor. El guard NO se relaja — se
+    // reexpresa sobre la propiedad que protegía: NINGÚN ejecutor puede arrancar fuera del closure
+    // startPoller que bootWorker invoca sólo con WORKER_ENABLED === "true".
+    expect(src).not.toMatch(/pollLoop/);
+    const EXECUTORS = ["startWakeExecutor", "startLegacyFallbackExecutor"];
+    // Conteo por substring, NO con new RegExp(...) sobre strings: "\s" dentro de un string de JS
+    // es "s", y una regex mal escapada haría pasar este guard por vacuidad.
+    const countOf = (hay: string, needle: string) => hay.split(needle).length - 1;
+    // Al borrar el encabezado de la declaración, `nombre(` queda sólo en los call sites.
+    const callsOnly = src.replace(/function\s+start\w*Executor/g, "DECLARATION");
+    const startPollerAt = callsOnly.indexOf("startPoller:");
+    expect(startPollerAt).toBeGreaterThan(-1);
+    for (const fn of EXECUTORS) {
+      expect(countOf(src, "function " + fn)).toBe(1);
+      expect(countOf(callsOnly, fn + "(")).toBe(1);
+      expect(countOf(callsOnly, "." + fn + "(")).toBe(0);
+      // La única invocación vive DESPUÉS de startPoller:, es decir dentro del closure que
+      // bootWorker ejecuta sólo con WORKER_ENABLED === "true".
+      expect(callsOnly.indexOf(fn + "(")).toBeGreaterThan(startPollerAt);
+    }
+    // el closure elige entre los dos ejecutores y no hace nada más
+    expect(src).toMatch(/startPoller:\s*\(\)\s*=>\s*\{\s*if \(LEGACY_POLL_FALLBACK\) startLegacyFallbackExecutor\(\);\s*else startWakeExecutor\(\);\s*\}/);
   });
 
   it("dev.ts (entrypoint local) fuerza WORKER_ENABLED sólo por defecto y delega en index.ts (mismo guard)", () => {

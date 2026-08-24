@@ -14,6 +14,14 @@
 // Sin secretos: los campos de identidad son variables de sistema inyectadas por Railway.
 
 export const WORKER_BOOT_SCHEMA_VERSION = 1 as const;
+
+/**
+ * NEON-GATE2A-EXEC-2 · en qué modelo arrancó el ejecutor.
+ *   WAKE        event-driven: servidor /wake + claim dirigido (default)
+ *   LEGACY_POLL interruptor temporal de migración (WORKER_LEGACY_POLL_FALLBACK)
+ * Es lo que permite leer el modo desde logs sin adivinar.
+ */
+export type ExecutorMode = "WAKE" | "LEGACY_POLL";
 export const DISABLED_HEARTBEAT_INTERVAL_MS = 60_000;
 
 /** FAIL-CLOSED: verdadero SÓLO ante el literal "true". Nada más habilita el poller. */
@@ -41,11 +49,17 @@ export function readWorkerIdentity(env: Record<string, string | undefined>): Wor
 
 export function buildWorkerBootWitness(a: {
   workerEnabled: boolean; pollerStarted: boolean; pid: number; identity: WorkerIdentity;
+  // NEON-GATE2A-EXEC-2 · campos ADITIVOS. `pollerStarted` conserva su nombre y ensancha su
+  // semántica a "el ejecutor arrancó": renombrarlo rompería la certificación post-deploy en uso.
+  executorMode?: ExecutorMode; listenHost?: string; listenPort?: number;
 }): Record<string, unknown> {
   return {
     schemaVersion: WORKER_BOOT_SCHEMA_VERSION,
     workerEnabled: a.workerEnabled,
     pollerStarted: a.pollerStarted,
+    executorMode: a.executorMode,
+    listenHost: a.listenHost,
+    listenPort: a.listenPort,
     pid: a.pid,
     railwayServiceName: a.identity.railwayServiceName,
     railwayServiceId: a.identity.railwayServiceId,
@@ -74,8 +88,12 @@ export interface BootDeps {
   env: Record<string, string | undefined>;
   /** Sink de los witnesses. Sólo consola: al arranque NO hay jobId → ExtractionLog no corresponde. */
   emit: (message: string) => void;
-  /** El poll loop real (única superficie que lee la cola). */
+  /** Arranca el ejecutor (única superficie que lee la cola): servidor de wake o fallback. */
   startPoller: () => void;
+  /** NEON-GATE2A-EXEC-2 · metadata ADITIVA del testigo. Opcional: los tests existentes no la pasan. */
+  executorMode?: ExecutorMode;
+  listenHost?: string;
+  listenPort?: number;
   /** Programa el heartbeat de modo-deshabilitado. En modo habilitado NO se invoca (timer no arranca). */
   scheduleDisabledHeartbeat: (onTick: () => void, intervalMs: number) => void;
 }
@@ -95,7 +113,7 @@ export function bootWorker(deps: BootDeps): BootResult {
   const workerEnabled = resolveWorkerEnabled(deps.workerEnabledRaw);
   const identity = readWorkerIdentity(deps.env);
 
-  deps.emit(`[WorkerBoot] ${JSON.stringify(buildWorkerBootWitness({ workerEnabled, pollerStarted: workerEnabled, pid: deps.pid, identity }))}`);
+  deps.emit(`[WorkerBoot] ${JSON.stringify(buildWorkerBootWitness({ workerEnabled, pollerStarted: workerEnabled, pid: deps.pid, identity, executorMode: deps.executorMode, listenHost: deps.listenHost, listenPort: deps.listenPort }))}`);
 
   if (workerEnabled) {
     deps.startPoller();

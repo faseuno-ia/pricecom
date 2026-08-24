@@ -28,6 +28,13 @@ export type LeaseRenewResult =
   | { kind: "LOST" } // CAS afectó 0 filas → ownership perdido (reclaim/nuevo claim)
   | { kind: "UNKNOWN" }; // el CAS lanzó (DB error/timeout) → ownership indeterminado (fail-closed)
 
+/** NEON-GATE2A-EXEC-2-F1 · Foto de la fila, suficiente para elegir rama sin poder mutar nada. */
+export interface JobInspection {
+  status: string;
+  /** ¿`workerLockedAt` dentro del umbral? false también si no hay lease o el job no está RUNNING. */
+  leaseAlive: boolean;
+}
+
 export interface IJobQueue {
   /**
    * Intenta tomar el próximo job disponible de forma atómica.
@@ -35,6 +42,38 @@ export interface IJobQueue {
    * Retorna null si no hay jobs disponibles.
    */
   claimNextJob(): Promise<JobPayload | null>;
+
+  /**
+   * NEON-GATE2A-EXEC-2 · Claim DIRIGIDO: reclama ESE job y ningún otro. Misma atomicidad
+   * (UPDATE … FOR UPDATE SKIP LOCKED … RETURNING) y mismo filtro de source. Devuelve null si el
+   * job ya no es reclamable (no PENDING, tomado por otra tx, o source=IMPORT).
+   */
+  claimJob(jobId: string): Promise<JobPayload | null>;
+
+  /**
+   * NEON-GATE2A-EXEC-2 · Claim del fallback legacy, restringido a jobs creados dentro de la
+   * ventana de atención. Nunca toma trabajo abandonado ⇒ no reintroduce drain global.
+   */
+  claimNextAttendedJob(attendedWindowMs: number): Promise<JobPayload | null>;
+
+  /**
+   * NEON-GATE2A-EXEC-2 · Testigo de detección: ¿el job sigue RUNNING con lease renovado dentro
+   * del umbral? Sólo lectura; jamás muta ni resetea estado.
+   */
+  isRunningLeaseAlive(jobId: string, thresholdMs: number): Promise<boolean>;
+
+  /**
+   * NEON-GATE2A-EXEC-2-F1 · Lectura pura de la fila para DECIDIR el camino del wake cuando el
+   * claim dirigido devuelve null. Es ORIENTATIVA, no autoridad: entre esta lectura y el release
+   * la fila puede moverse, y por eso el release re-verifica su propio predicado.
+   */
+  inspectJob(jobId: string, liveLeaseThresholdMs: number): Promise<JobInspection | null>;
+
+  /**
+   * NEON-GATE2A-EXEC-2 · Stale recovery PEREZOSA acotada a un jobId, con el predicado
+   * re-verificado en la misma sentencia y PRESERVANDO startedAt/errorMessage.
+   */
+  releaseStaleJob(jobId: string, staleAfterMs: number): Promise<boolean>;
 
   /**
    * Marca el job como iniciado con timestamp y PID del worker.

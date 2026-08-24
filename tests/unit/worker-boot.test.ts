@@ -123,11 +123,18 @@ describe("2G-R9-PR1 · witnesses (identidad Railway, sin secretos)", () => {
   });
 
   it("H) [WorkerBoot] contiene sólo campos de identidad/estado — sin secretos", () => {
-    const w = buildWorkerBootWitness({ workerEnabled: true, pollerStarted: true, pid: 1, identity: readWorkerIdentity(IDENTITY_ENV) });
+    // NEON-GATE2A-EXEC-2 · el testigo suma executorMode/listenHost/listenPort. Se pasan valores
+    // reales para que el conteo de claves signifique algo, y se mantiene la lista EXACTA: la
+    // afirmación de abajo (sin secretos en el blob) es la que carga la intención de seguridad,
+    // pero una lista cerrada es lo que impide que alguien agregue un campo sin revisarlo acá.
+    const w = buildWorkerBootWitness({ workerEnabled: true, pollerStarted: true, pid: 1, identity: readWorkerIdentity(IDENTITY_ENV), executorMode: "WAKE", listenHost: "::", listenPort: 8080 });
     expect(Object.keys(w).sort()).toEqual([
+      "executorMode", "listenHost", "listenPort",
       "pid", "pollerStarted", "railwayDeploymentId", "railwayGitCommitSha", "railwayReplicaId",
       "railwayServiceId", "railwayServiceName", "schemaVersion", "workerEnabled",
     ]);
+    expect(w.executorMode).toBe("WAKE");
+    expect(w.listenPort).toBe(8080);
     expect(w.schemaVersion).toBe(WORKER_BOOT_SCHEMA_VERSION);
     const blob = JSON.stringify(w).toLowerCase();
     for (const forbidden of ["password", "secret", "token", "database_url", "consumerkey", "encrypted"]) {
