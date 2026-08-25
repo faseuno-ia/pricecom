@@ -17,8 +17,21 @@ const SCRAPER_SERVICE_PATH = resolve(process.cwd(), "lib/scraper/scraper.service
 // ─────────────────────────────────────────────────────────────────────────────
 // BLOQUE 1 — B5 inmutable + B4 sucesión firmada
 //
-// B5 (extracted-product-input) permanece INMUTABLE firmado: un cambio de SHA es un
-// DEFECTO hasta una decisión explícita de descongelamiento.
+// B5 (extracted-product-input) estaba INMUTABLE firmado. FUE DESCONGELADO por decisión explícita
+// en C2-MINI-A (espejo de taxonomía del proveedor), que autoriza expresamente modificar este
+// archivo para transportar la observación hacia el snapshot durable. Delta autorizado y acotado:
+//   + ExtractedProductCreateInput: supplierTaxonomyPath / ...ObservedAt / ...Uncategorized
+//   + 4º parámetro REQUERIDO `attemptObservedAt` (un instante por attempt, no uno por producto;
+//     requerido a propósito: opcional degradaría en silencio a "no observado" si un call site lo
+//     olvida). Los 3 call sites del worker lo pasan.
+//   ~ el return suma las tres claves derivadas de p.supplierTaxonomy (null/undefined ⇒ NO_OBSERVADO)
+//   = los 13 campos históricos conservan valor y default ("Sin nombre"), probado por
+//     mapper_output_shape_is_unchanged_for_legacy_fields. rawData intacto.
+//
+// RE-FREEZE (C2-MINI-A): el descongelamiento fue PUNTUAL. B5 vuelve a régimen INMUTABLE en el nuevo
+// SHA; cualquier cambio futuro es un DEFECTO hasta un nuevo descongelamiento explícito. El SHA
+// predecesor queda registrado abajo como `not.toBe` para que el estado anterior no pueda volver en
+// silencio. No actualizar estos SHA como reacción automática a CI.
 //
 // B4 (tiendanube-walker) FUE descongelado por decisión explícita en 2G-R3
 // (SITEMAP_DRIVEN_DISCOVERY). Delta autorizado y acotado:
@@ -33,7 +46,8 @@ const SCRAPER_SERVICE_PATH = resolve(process.cwd(), "lib/scraper/scraper.service
 // régimen INMUTABLE en el nuevo SHA: cualquier cambio futuro es un DEFECTO hasta un nuevo
 // descongelamiento explícito. No actualizar estos SHA como reacción automática a CI.
 // ─────────────────────────────────────────────────────────────────────────────
-const B5_SIGNED_SHA256 = "5091077200502b36f538d9b626ae2ea2f0e30e935cc685fb8b79a657aa1cb9b0";
+const B5_G1_FROZEN_SHA256 = "5091077200502b36f538d9b626ae2ea2f0e30e935cc685fb8b79a657aa1cb9b0";
+const B5_C2MINIA_SUCCESSOR_SHA256 = "860b8e34f8320331593c3b4ec657a50534b1d701527b1a2c9901121f346adcfa";
 const B4_G1_FROZEN_SHA256 = "1db776adb0d2e642ab815032073f113d07513e1bb1f79a8c395ef564bb719cb7";
 const B4_2GR3_SUCCESSOR_SHA256 = "e8d53e3be901db0b8783ffae6576752e54a4a17bf451441915541e359804bf2e";
 // 2G-R7: sucesión firmada de B4. Delta autorizado y acotado (observabilidad §7):
@@ -73,8 +87,12 @@ const B4_R8Q2_1A_R1_SUCCESSOR_SHA256 = "120491f51d651703d2b9a1ab5e4c4c47645227bc
 const B4_C1_SUCCESSOR_SHA256 = "6acdf4112353a1b79e20ce716ffcc9f3ba7e9b48fc03a05d5740b96257de8fac";
 
 describe("B5 inmutable + B4 sucesión firmada C1", () => {
-  it("preserva B5 extracted-product-input como RUNTIME_REQUIRED_FROZEN_CONTENT", () => {
-    expect(sha256File(B5_PATH)).toBe(B5_SIGNED_SHA256);
+  it("mantiene B5 extracted-product-input en el sucesor firmado C2-MINI-A", () => {
+    const actual = sha256File(B5_PATH);
+    // Estado anterior deliberadamente sucedido (G1 → C2-MINI-A). La aserción no se debilita: se
+    // convierte en sucesión firmada, que además impide volver al SHA viejo sin decisión explícita.
+    expect(actual).not.toBe(B5_G1_FROZEN_SHA256);
+    expect(actual).toBe(B5_C2MINIA_SUCCESSOR_SHA256);
   });
 
   it("mantiene B4 tiendanube-walker en el sucesor firmado C1 (observación de taxonomía)", () => {

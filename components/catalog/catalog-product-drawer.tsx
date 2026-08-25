@@ -28,6 +28,7 @@ import {
   getAnomalousSkuTooltip,
 } from "@/lib/catalog/anomalous-sku";
 import { StatusHelpModal } from "@/components/ui/status-help-modal";
+import { renderSupplierTaxonomy } from "@/lib/catalog/supplier-taxonomy-display";
 
 export interface CatalogProductDetail {
   id: string;
@@ -39,6 +40,10 @@ export interface CatalogProductDetail {
   wholesalePrice: number | null;
   stock: string | null;
   supplierCategory: string | null;
+  // C2-MINI-A · observación del proveedor. NO es categoría comercial: no publica ni mapea.
+  supplierTaxonomyPath?: string[] | null;
+  supplierTaxonomyObservedAt?: string | Date | null;
+  supplierTaxonomyUncategorized?: boolean | null;
   imageUrl: string | null;
   lastSeenAt: string;
   supplierStatus: "ACTIVE" | "SUPPLIER_REMOVED";
@@ -728,6 +733,21 @@ export function CatalogProductDrawer({ productId, onClose, onSaved }: Props) {
                     <span>{product.supplierCategory}</span>
                   </p>
                 )}
+                <p>
+                  <span className="text-muted-foreground">Ruta del proveedor:</span>{" "}
+                  <span>
+                    {renderSupplierTaxonomy(
+                      {
+                        supplierTaxonomyPath: product.supplierTaxonomyPath ?? [],
+                        supplierTaxonomyObservedAt: product.supplierTaxonomyObservedAt
+                          ? new Date(product.supplierTaxonomyObservedAt)
+                          : null,
+                        supplierTaxonomyUncategorized: product.supplierTaxonomyUncategorized ?? null,
+                      },
+                      "—",
+                    )}
+                  </span>
+                </p>
                 <p>
                   <span className="text-muted-foreground">Última vez visto:</span>{" "}
                   <span>

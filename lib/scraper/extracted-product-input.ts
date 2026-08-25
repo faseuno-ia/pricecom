@@ -28,13 +28,30 @@ export interface ExtractedProductCreateInput {
   productUrl: string | null;
   imageUrl: string | null;
   rawData: Prisma.InputJsonValue;
+  /// C2-MINI-A · transporte de la observación de taxonomía hacia el snapshot durable, que es de
+  /// donde el mirror writer la lee. `observedAt` es el DISCRIMINANTE de los tres estados.
+  supplierTaxonomyPath: string[];
+  supplierTaxonomyObservedAt: Date | null;
+  supplierTaxonomyUncategorized: boolean | null;
 }
 
+/**
+ * C2-MINI-A · `attemptObservedAt` es OBLIGATORIO y viene del caller: UN timestamp por attempt, no
+ * uno por producto. `products.map(() => new Date())` produciría cientos de instantes distintos para
+ * una sola observación y volvería inútil la comparación de frescura del espejo.
+ *
+ * Es parámetro requerido a propósito: si fuera opcional, un call site que lo olvide degradaría en
+ * silencio a "no observado" y perdería el dato sin que nada falle.
+ */
 export function mapScrapedToExtractedProductInput(
   p: ScrapedProduct,
   jobId: string,
   providerId: string,
+  attemptObservedAt: Date,
 ): ExtractedProductCreateInput {
+  // Tres estados. `null`/`undefined` = NOT_OBSERVED: no se inventa timestamp, y por eso el espejo
+  // sabe después que esa fila no puede pisar una observación válida anterior.
+  const t = p.supplierTaxonomy ?? null;
   return {
     jobId,
     providerId,
@@ -51,5 +68,8 @@ export function mapScrapedToExtractedProductInput(
     // rawData del scraper es Record<string, unknown> por API genérica; se
     // transporta como InputJsonValue de Prisma en el boundary de persistencia.
     rawData: p.rawData as Prisma.InputJsonValue,
+    supplierTaxonomyPath: t ? t.path : [],
+    supplierTaxonomyObservedAt: t ? attemptObservedAt : null,
+    supplierTaxonomyUncategorized: t ? t.uncategorized : null,
   };
 }

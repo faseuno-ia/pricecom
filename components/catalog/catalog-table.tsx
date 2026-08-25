@@ -80,6 +80,10 @@ interface CatalogRow {
   manualMargin: number | null;
   stock: string | null;
   supplierCategory: string | null;
+  // C2-MINI-A · viaja desde la API para que el drawer la muestre sin un fetch extra.
+  supplierTaxonomyPath?: string[] | null;
+  supplierTaxonomyObservedAt?: string | Date | null;
+  supplierTaxonomyUncategorized?: boolean | null;
   imageUrl: string | null;
   supplierStatus: SupplierStatus;
   internalStatus: InternalStatus;

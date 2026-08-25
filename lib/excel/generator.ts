@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import { ExtractedProduct, Provider } from "@prisma/client";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
+import { renderSupplierTaxonomy } from "@/lib/catalog/supplier-taxonomy-display";
 
 interface ExcelProduct extends ExtractedProduct {
   provider?: Provider | null;
@@ -52,6 +53,8 @@ export async function generateExcel(
     { header: "Fecha Extracción", key: "extractedAt", width: 20 },
     { header: "Estado", key: "status", width: 14 },
     { header: "Observaciones", key: "observations", width: 30 },
+    // C2-MINI-A · al FINAL. Es el snapshot de ESTA extracción, no el espejo actual.
+    { header: "Categoría proveedor (ruta)", key: "supplierTaxonomy", width: 42 },
   ];
 
   sheet.columns = columns;
@@ -89,6 +92,7 @@ export async function generateExcel(
       extractedAt: format(new Date(product.extractedAt), "dd/MM/yyyy HH:mm", { locale: es }),
       status: product.status ?? "",
       observations: product.observations ?? "",
+      supplierTaxonomy: renderSupplierTaxonomy(product),
     });
 
     // Zebra striping
