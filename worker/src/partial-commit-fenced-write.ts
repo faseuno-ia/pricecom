@@ -25,6 +25,8 @@ export interface FencedPartialWriteParams {
   /** valor esperado de workerLockedAt (el lease del worker). El CAS falla si no coincide. */
   leaseVersion: Date;
   observations: ScrapedProduct[];
+  /** C2-MINI-A · UN instante de observación por attempt, compartido por todo el snapshot. */
+  attemptObservedAt: Date;
   priceWriteSkus: Array<{ sku: string; newPrice: number }>;
   completionStats: Record<string, number>;
   onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", msg: string) => Promise<void> | void;
@@ -56,7 +58,7 @@ export async function fencedPartialWrite(prisma: PrismaClient, params: FencedPar
     }
 
     // 3 · ExtractedProduct = OBSERVACIONES.
-    await tx.extractedProduct.createMany({ data: observations.map((prod) => mapScrapedToExtractedProductInput(prod, jobId, provider.id)) });
+    await tx.extractedProduct.createMany({ data: observations.map((prod) => mapScrapedToExtractedProductInput(prod, jobId, provider.id, params.attemptObservedAt)) });
     const eps = await tx.extractedProduct.findMany({ where: { jobId }, select: { id: true, sku: true } });
     const epBySku = new Map(eps.map((e) => [String(e.sku ?? "").trim(), e.id]));
 

@@ -10,6 +10,7 @@ import {
   type PricingRuleForCalc,
 } from "@/lib/pricing/pricing-engine";
 import { buildCatalogListWhere } from "@/lib/catalog/list-filters";
+import { renderSupplierTaxonomy } from "@/lib/catalog/supplier-taxonomy-display";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -158,6 +159,9 @@ export async function POST(req: NextRequest) {
     { header: "Precio", key: "price", width: 15 },
     { header: "Categoría", key: "category", width: 25 },
     { header: "Imagen", key: "image", width: 60 },
+    // C2-MINI-A · se AGREGA AL FINAL. Intercalarla desplazaría las anteriores y rompería toda
+    // planilla del cliente que dependa de la posición. "Categoría" (legacy) no se toca.
+    { header: "Categoría proveedor (ruta)", key: "supplierTaxonomy", width: 42 },
   ] as Partial<ExcelJS.Column>[];
 
   const header = sheet.getRow(1);
@@ -199,12 +203,13 @@ export async function POST(req: NextRequest) {
       price,
       category: p.assignedCategory?.name ?? p.supplierCategory ?? "",
       image: p.images[0]?.url ?? p.imageUrl ?? "",
+      supplierTaxonomy: renderSupplierTaxonomy(p),
     });
   }
 
   sheet.getColumn("price").numFmt = '"$"#,##0.00';
 
-  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 6 } };
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: sheet.columns.length } };
 
   const buffer = await wb.xlsx.writeBuffer();
   const filename = `catalogo-comercial-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`;

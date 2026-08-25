@@ -31,6 +31,7 @@ import { resolveCatalogWriteMode } from "../../lib/catalog/catalog-write-mode";
 import { resolveWriteOrchestrationMode } from "../../lib/catalog/write-orchestration-mode";
 import { logInfo, logWarning, logError } from "../../lib/events/event-log";
 import { runEndOfAttemptConsistency, shouldRunEndOfAttemptConsistency } from "./consistency-t2";
+import { persistSupplierTaxonomyObservation } from "../../lib/catalog/supplier-taxonomy-observation";
 import { runPartialCommitShadow, type FencedCommitInput } from "./partial-commit-shadow";
 import { fencedPartialWrite } from "./partial-commit-fenced-write";
 import { LeaseFencingError } from "./lease-fencing-error";
@@ -97,6 +98,10 @@ async function processJob(payload: JobPayload) {
   // NEON-GATE2A-EXEC-2 · gate de T2. Se marca justo después del upsert FULL, que es lo único
   // capaz de dejar material de case2 (SUPPLIER_REMOVED + auto-pausa) commiteado.
   let fullUpsertAttempted = false;
+  // C2-MINI-A · UN instante de observación por ATTEMPT. Todas las filas del snapshot lo comparten:
+  // con un `new Date()` por producto habría cientos de timestamps para una sola observación y la
+  // comparación de frescura del espejo perdería sentido.
+  const attemptObservedAt = new Date();
   console.log(`\n► Procesando job ${jobId} (PID ${process.pid})`);
 
   // 2G-R8-Q1 · lease heartbeat: renueva el ownership (workerLockedAt) mientras el job trabaja, de
@@ -279,7 +284,7 @@ async function processJob(payload: JobPayload) {
             { findExisting: (u, p, s) => tx.catalogProduct.findMany({ where: { userId: u, providerId: p, sku: { in: s } }, select: { id: true, sku: true, wholesalePrice: true } }) },
             { userId: job.userId, providerUserId: provider.userId, providerId: provider.id, requiresLogin: provider.requiresLogin, jobId, products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })), onLog },
           );
-          await tx.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
+          await tx.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id, attemptObservedAt)) });
           await upsertCatalogProducts(jobId, tx as unknown as PrismaClient);
           await tx.provider.update({ where: { id: provider.id }, data: { lastExtractionAt: new Date() } });
           // Terminal COMPLETED con Excel NULO: el artefacto de reporte se genera POST-COMMIT
@@ -302,6 +307,7 @@ async function processJob(payload: JobPayload) {
       // POST-COMMIT: Excel = artefacto de reporte best-effort. Ya NO hay lease (workerLockedAt=NULL,
       // job COMPLETED). attachExcelPostCommit NUNCA lanza: un fallo deja el job COMPLETED con
       // excelData=null (regenerable) — no revierte precios ni cambia el estado del job.
+      await mirrorSupplierTaxonomy(jobId, onLog);
       await attachExcelPostCommit({ prisma, generateExcel, onLog }, { jobId, provider });
       await emitCompletion();
       return;
@@ -315,7 +321,7 @@ async function processJob(payload: JobPayload) {
         { findExisting: (userId, providerId, skus) => prisma.catalogProduct.findMany({ where: { userId, providerId, sku: { in: skus } }, select: { id: true, sku: true, wholesalePrice: true } }) },
         { userId: job.userId, providerUserId: provider.userId, providerId: provider.id, requiresLogin: provider.requiresLogin, jobId, products: products.map((p) => ({ sku: p.sku, wholesalePrice: p.wholesalePrice })), onLog },
       );
-      await prisma.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id)) });
+      await prisma.extractedProduct.createMany({ data: products.map((p) => mapScrapedToExtractedProductInput(p, jobId, provider.id, attemptObservedAt)) });
       try {
         fullUpsertAttempted = true;
         await upsertCatalogProducts(jobId, prisma);
@@ -343,6 +349,7 @@ async function processJob(payload: JobPayload) {
       return;
     }
     await onLog("INFO", `✓ Completado — ${products.length} productos procesados.`);
+    await mirrorSupplierTaxonomy(jobId, onLog);
     await emitCompletion();
 
   } catch (err) {
@@ -403,6 +410,32 @@ async function processJob(payload: JobPayload) {
   }
 }
 
+/**
+ * C2-MINI-A · materialización POST-COMMIT del espejo de taxonomía.
+ *
+ * Corre DESPUÉS del terminal, fuera de la transacción comercial. La razón no es de visibilidad —una
+ * transacción sí ve sus propias escrituras— sino de AISLAMIENTO DE AUTORIDAD: un fallo al espejar un
+ * breadcrumb no puede revertir precios ya validados por D ni cambiar el estado del job.
+ *
+ * `persistSupplierTaxonomyObservation` nunca lanza; el try/catch es defensa en profundidad.
+ */
+async function mirrorSupplierTaxonomy(
+  jobId: string,
+  onLog: (level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string, meta?: Record<string, unknown>) => Promise<void>,
+): Promise<void> {
+  try {
+    const r = await persistSupplierTaxonomyObservation(prisma, { jobId });
+    if (r.totalSnapshots > 0 && (r.written > 0 || r.conflicted > 0 || r.failed)) {
+      await onLog(
+        r.failed ? "WARN" : "INFO",
+        `[Taxonomía] espejo: ${r.written} escritos · ${r.stale} obsoletos · ${r.conflicted} en conflicto · ${r.notInCatalog} sin producto`,
+      );
+    }
+  } catch (err) {
+    console.error(`[worker] espejo de taxonomía falló para job ${jobId} (no afecta el terminal):`, err);
+  }
+}
+
 // ─── 2G-R8-Q2.1-B · PARTIAL-COMMIT SHADOW (path explícito) ─────────────────────
 // Construye las deps REALES (walk rico, catálogo, fenced write, terminal no-write) y corre la
 // orquestación pura (orden de fases). El precio se escribe SÓLO para el PRICE_WRITE_SET explícito
@@ -416,6 +449,8 @@ async function processPartialCommitShadowJob(args: {
   onProgress: (currentPage: number, totalFoundSoFar: number) => Promise<void>;
 }): Promise<void> {
   const { job, provider, runtimeConfig, lease, onLog, onProgress } = args;
+  // C2-MINI-A · UN instante de observación para todo este attempt (mismo criterio que processJob).
+  const attemptObservedAt = new Date();
   const p = provider as unknown as { id: string; userId: string | null; requiresLogin: boolean; encryptedPassword: string | null; baseUrl: string; name: string; scraperConfig: unknown };
   const jobId = job.id;
   const scraper = new ScraperService();
@@ -460,8 +495,10 @@ async function processPartialCommitShadowJob(args: {
       const result = await fencedPartialWrite(prisma, {
         jobId, userId: job.userId, provider: { id: p.id, userId: p.userId, requiresLogin: p.requiresLogin },
         leaseVersion: fin.leaseVersion, observations, priceWriteSkus, completionStats, onLog,
+        attemptObservedAt,
       });
-      // POST-COMMIT · Excel best-effort (no revierte precios ni cambia el estado COMPLETED del job).
+      // POST-COMMIT · espejo de taxonomía y Excel: ninguno revierte precios ni cambia COMPLETED.
+      if (result.committed) await mirrorSupplierTaxonomy(jobId, onLog);
       await attachExcelPostCommit({ prisma, generateExcel, onLog }, { jobId, provider: provider as never });
       return result;
     },

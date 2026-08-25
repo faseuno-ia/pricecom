@@ -41,6 +41,10 @@ const epCount = (jobId: string) => testPrisma.extractedProduct.count({ where: { 
 const jobStatus = async (jobId: string) => (await testPrisma.extractionJob.findUniqueOrThrow({ where: { id: jobId }, select: { status: true } })).status;
 const stats = (n: number) => ({ totalProducts: n, productsWithPrice: 0, productsWithoutPrice: 0, productsWithoutSku: 0 });
 
+// C2-MINI-A · el fenced write ahora exige UN instante de observación por attempt. Constante fija:
+// estos tests no afirman nada sobre taxonomía, sólo necesitan satisfacer el contrato.
+const ATTEMPT_OBSERVED_AT = new Date("2026-08-24T00:00:00.000Z");
+
 describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
   beforeEach(async () => { await truncateAll(); });
   afterAll(async () => { await testPrisma.$disconnect(); });
@@ -50,7 +54,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     await expect(fencedPartialWrite(testPrisma, {
       jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
       leaseVersion: new Date(Date.now() - 999999), // NO coincide con job.workerLockedAt
-      observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
+      observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
     })).rejects.toThrow(/LEASE_FENCING_LOST/);
     expect(await priceOf(provider.id, "A")).toBe(100);
     expect(await epCount(job.id)).toBe(0);
@@ -61,7 +65,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }]);
     await expect(fencedPartialWrite(testPrisma, {
       jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-      leaseVersion: lease, observations: [sp("A", 0)], priceWriteSkus: [{ sku: "A", newPrice: 0 }], completionStats: stats(1), onLog: noLog,
+      leaseVersion: lease, observations: [sp("A", 0)], priceWriteSkus: [{ sku: "A", newPrice: 0 }], completionStats: stats(1), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
     })).rejects.toThrow(/PRE_WRITE_PRICE_REGRESSION/);
     expect(await priceOf(provider.id, "A")).toBe(100);
     expect(await epCount(job.id)).toBe(0);
@@ -74,7 +78,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
       jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
       leaseVersion: lease, observations: [sp("A", 110), sp("B", 55), sp("C", 88)],
       priceWriteSkus: [{ sku: "A", newPrice: 110 }, { sku: "B", newPrice: 55 }, { sku: "C", newPrice: 88 }],
-      completionStats: stats(3), onLog: noLog, faults: { throwAfterPriceUpdates: 2 },
+      completionStats: stats(3), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT, faults: { throwAfterPriceUpdates: 2 },
     })).rejects.toThrow(/__TEST_FAULT_JS/);
     expect(await priceOf(provider.id, "A")).toBe(100);
     expect(await priceOf(provider.id, "B")).toBe(50);
@@ -92,7 +96,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
       await expect(fencedPartialWrite(testPrisma, {
         jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
         leaseVersion: lease, observations: [sp("A", 110), sp("B", 55)],
-        priceWriteSkus: [{ sku: "A", newPrice: 110 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog,
+        priceWriteSkus: [{ sku: "A", newPrice: 110 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
       })).rejects.toThrow(/test_db_fault_on_B/);
       expect(await priceOf(provider.id, "A")).toBe(100); // el update de A se revirtió también
       expect(await priceOf(provider.id, "B")).toBe(50);
@@ -111,7 +115,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     try {
       await expect(fencedPartialWrite(testPrisma, {
         jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
+        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
       })).rejects.toThrow(/test_provider_update_fault/); // W18_PROVIDER_UPDATE_ACTUAL_FAILURE
       expect(await priceOf(provider.id, "A")).toBe(100); // CATALOG_ROLLBACK
       expect(await epCount(job.id)).toBe(0);             // EP_ROLLBACK
@@ -130,7 +134,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     try {
       await expect(fencedPartialWrite(testPrisma, {
         jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog,
+        leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: stats(1), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
       })).rejects.toThrow(/test_terminal_fault/); // W19_TERMINAL_UPDATE_ACTUAL_FAILURE
       expect(await priceOf(provider.id, "A")).toBe(100); // CATALOG_ROLLBACK
       expect(await epCount(job.id)).toBe(0);             // EP_ROLLBACK
@@ -147,7 +151,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }]);
     const r = await fencedPartialWrite(testPrisma, {
       jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-      leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: { totalProducts: 1, productsWithPrice: 1, productsWithoutPrice: 0, productsWithoutSku: 0 }, onLog: noLog,
+      leaseVersion: lease, observations: [sp("A", 110)], priceWriteSkus: [{ sku: "A", newPrice: 110 }], completionStats: { totalProducts: 1, productsWithPrice: 1, productsWithoutPrice: 0, productsWithoutSku: 0 }, onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
     });
     expect(r.committed).toBe(true);
     expect(r.writtenCount).toBe(1);
@@ -163,7 +167,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
       leaseVersion: lease,
       observations: [sp("A", 110), sp("B", 55), sp("NUEVO1", 200), sp("NUEVO2", 300)], // M=4
       priceWriteSkus: [{ sku: "A", newPrice: 110 }, { sku: "B", newPrice: 55 }], // N=2
-      completionStats: stats(4), onLog: noLog,
+      completionStats: stats(4), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
     });
     expect(await epCount(job.id)).toBe(4); // M observaciones (Excel input = M)
     expect(await priceOf(provider.id, "A")).toBe(110);
@@ -177,7 +181,7 @@ describe("2G-R8-Q2.1-B · tx fenced atomicity (Postgres real)", () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }]);
     const r = await fencedPartialWrite(testPrisma, {
       jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true },
-      leaseVersion: lease, observations: [sp("A", null)], priceWriteSkus: [], completionStats: stats(1), onLog: noLog,
+      leaseVersion: lease, observations: [sp("A", null)], priceWriteSkus: [], completionStats: stats(1), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT,
     });
     expect(r.committed).toBe(true);
     expect(r.writtenCount).toBe(0);
@@ -200,7 +204,7 @@ describe("2G-R8-Q2.1-B · restore (Postgres real, §4)", () => {
   it("Caso B · roundtrip: current==expectedPost → restaura exactamente a pre-run (EP histórico NO borrado)", async () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }, { sku: "B", wholesalePrice: 50 }]);
     const pre = await snapRows(provider.id);
-    await fencedPartialWrite(testPrisma, { jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true }, leaseVersion: lease, observations: [sp("A", 130), sp("B", 55)], priceWriteSkus: [{ sku: "A", newPrice: 130 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog });
+    await fencedPartialWrite(testPrisma, { jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true }, leaseVersion: lease, observations: [sp("A", 130), sp("B", 55)], priceWriteSkus: [{ sku: "A", newPrice: 130 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT });
     const post = await snapRows(provider.id);
     const current = await snapRows(provider.id);
     const plan = buildRestorePlan({ preRun: pre.map(mutable), expectedPost: post.map(mutable), current: current.map(mutable) });
@@ -216,7 +220,7 @@ describe("2G-R8-Q2.1-B · restore (Postgres real, §4)", () => {
   it("Caso C · una fila cambió después (current diverge) → conflicto → fail-closed → 0 restore writes", async () => {
     const { provider, job, lease } = await seed([{ sku: "A", wholesalePrice: 100 }, { sku: "B", wholesalePrice: 50 }]);
     const pre = await snapRows(provider.id);
-    await fencedPartialWrite(testPrisma, { jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true }, leaseVersion: lease, observations: [sp("A", 130), sp("B", 55)], priceWriteSkus: [{ sku: "A", newPrice: 130 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog });
+    await fencedPartialWrite(testPrisma, { jobId: job.id, userId: provider.userId, provider: { id: provider.id, userId: provider.userId, requiresLogin: true }, leaseVersion: lease, observations: [sp("A", 130), sp("B", 55)], priceWriteSkus: [{ sku: "A", newPrice: 130 }, { sku: "B", newPrice: 55 }], completionStats: stats(2), onLog: noLog, attemptObservedAt: ATTEMPT_OBSERVED_AT });
     const post = await snapRows(provider.id);
     // otra operación cambia B DESPUÉS de la corrida.
     const bId = post.find((r) => r.sku === "B")!.id;

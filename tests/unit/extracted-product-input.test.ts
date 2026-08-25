@@ -34,9 +34,13 @@ function crossProductScraped(): ScrapedProduct {
   };
 }
 
+// C2-MINI-A · el mapper exige UN instante de observación por attempt. Estos tests no afirman nada
+// sobre taxonomía: la constante sólo satisface el contrato, sin cambiar ninguna aserción previa.
+const ATTEMPT_AT = new Date("2026-08-24T00:00:00.000Z");
+
 describe("mapScrapedToExtractedProductInput — preservación de rawData", () => {
   it("mapea los campos canónicos del ganador", () => {
-    const out = mapScrapedToExtractedProductInput(crossProductScraped(), "job1", "prov1");
+    const out = mapScrapedToExtractedProductInput(crossProductScraped(), "job1", "prov1", ATTEMPT_AT);
     expect(out.jobId).toBe("job1");
     expect(out.providerId).toBe("prov1");
     expect(out.sku).toBe("3048-9");
@@ -47,17 +51,17 @@ describe("mapScrapedToExtractedProductInput — preservación de rawData", () =>
 
   it('name vacío → "Sin nombre" (comportamiento byte-equivalente al worker)', () => {
     const p = { ...crossProductScraped(), name: "" };
-    expect(mapScrapedToExtractedProductInput(p, "j", "pr").name).toBe("Sin nombre");
+    expect(mapScrapedToExtractedProductInput(p, "j", "pr", ATTEMPT_AT).name).toBe("Sin nombre");
   });
 
   it("rawData conserva las dos variantes cross-product", () => {
-    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr").rawData as Record<string, unknown>;
+    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr", ATTEMPT_AT).rawData as Record<string, unknown>;
     const variants = raw.variants as unknown[];
     expect(variants.length).toBe(2);
   });
 
   it("IDs se conservan como strings dentro de rawData", () => {
-    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr").rawData as Record<string, unknown>;
+    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr", ATTEMPT_AT).rawData as Record<string, unknown>;
     const v = (raw.variants as Record<string, unknown>[])[0];
     expect(typeof v.productId).toBe("string");
     expect(typeof v.variantId).toBe("string");
@@ -66,14 +70,14 @@ describe("mapScrapedToExtractedProductInput — preservación de rawData", () =>
   });
 
   it("conserva flags, crossProductSetKey y canonicalWinner", () => {
-    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr").rawData as Record<string, unknown>;
+    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr", ATTEMPT_AT).rawData as Record<string, unknown>;
     expect(raw.flags).toEqual(["CROSS_PRODUCT_CONFLICT"]);
     expect(raw.crossProductSetKey).toBe("167510197::170598112");
     expect((raw.canonicalWinner as Record<string, unknown>).variantId).toBe("643792286");
   });
 
   it("rawData es JSON.stringify-able (sin BigInt) y sin secretos", () => {
-    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr").rawData;
+    const raw = mapScrapedToExtractedProductInput(crossProductScraped(), "j", "pr", ATTEMPT_AT).rawData;
     let s = "";
     expect(() => { s = JSON.stringify(raw); }).not.toThrow();
     expect(/password|cookie|token|authorization|bearer|storageState/i.test(s)).toBe(false);
@@ -81,7 +85,7 @@ describe("mapScrapedToExtractedProductInput — preservación de rawData", () =>
 
   it("preserva referencia/estructura de rawData sin recortar claves", () => {
     const src = crossProductScraped();
-    const out = mapScrapedToExtractedProductInput(src, "j", "pr");
+    const out = mapScrapedToExtractedProductInput(src, "j", "pr", ATTEMPT_AT);
     expect(out.rawData).toEqual(src.rawData);
   });
 });
