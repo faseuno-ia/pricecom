@@ -23,6 +23,7 @@ model User {
   pricingRules    PricingRule[]
   stores          Store[]
   eventLogs       EventLog[]
+  priceReviews PriceReview[]
 }
 
 enum ProviderType {
@@ -69,6 +70,7 @@ model Provider {
   eventLogs         EventLog[]
 
   @@index([userId])
+  priceReviews PriceReview[]
 }
 
 model ProviderScraperConfig {
@@ -169,6 +171,8 @@ model ExtractionJob {
   comparison           ExtractionComparison?
   previousJobFor       ExtractionComparison[] @relation("PreviousJob")
   eventLogs            EventLog[]
+
+  priceReview PriceReview?
 
   @@index([status, createdAt])
   @@index([userId])
@@ -293,6 +297,8 @@ model ExtractedProduct {
   supplierTaxonomyObservedAt    DateTime?
   supplierTaxonomyUncategorized Boolean?
   catalogProductSnapshot CatalogProduct[] @relation("LatestSnapshot")
+
+  priceReviewItems PriceReviewItem[]
 
   @@index([jobId])
   @@index([providerId])
@@ -621,6 +627,8 @@ model CatalogProduct {
   categories   CatalogProductCategory[]
   eventLogs    EventLog[]
 
+  priceReviewItems PriceReviewItem[]
+
   @@unique([userId, providerId, sku])
   @@index([userId])
   @@index([providerId])
@@ -884,4 +892,116 @@ model EventLog {
   @@index([publicationId])
   @@index([storeId])
   @@index([jobId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2-A · PRICE REVIEW · propuesta de precio congelada, revisable y aplicable después.
+//
+// EXPAND-FIRST: estas tablas llegan VACÍAS e INERTES. Ningún código de aplicación las lee ni
+// las escribe en P2-A. La captura es P2-B; el apply es posterior.
+//
+// Existen porque hoy REVIEW_REQUIRED retorna antes de la transacción que persiste todo, así que
+// el write-set se pierde con el proceso: no hay nada que revisar (verificado — el job bloqueado
+// del 2026-08-25 tiene ExtractedProduct = 0).
+//
+// EVIDENCE ≠ WRITE CONTRACT
+//   ExtractedProduct  = qué se observó
+//   PriceReviewItem   = qué se aprobó aplicar
+// `oldPrice` NO es derivable de un estado posterior: es el baseline AL MOMENTO DE CAPTURA, y es
+// contra él que el compare-and-apply decide si la propuesta sigue siendo segura.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PriceReviewStatus {
+  PENDING
+  APPROVED_NOT_APPLIED
+  APPLIED
+  REJECTED
+  EXPIRED
+  FAILED_APPLY
+}
+
+enum PriceReviewItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+  CONFLICTED
+}
+
+model PriceReview {
+  id String @id @default(cuid())
+
+  /// SIN cascade a propósito: la propuesta tiene ciclo de vida propio y sobrevive a la falla del
+  /// job (JOB_EXECUTION_SUCCESS ≠ PROPOSAL_INTEGRITY).
+  extractionJobId String        @unique
+  extractionJob   ExtractionJob @relation(fields: [extractionJobId], references: [id])
+  providerId      String
+  provider        Provider      @relation(fields: [providerId], references: [id])
+  /// Tenancy. Misma autoridad que el resto del sistema: propiedad del recurso.
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+
+  status PriceReviewStatus @default(PENDING)
+
+  /// Hash del conjunto ordenado (sku, oldPrice, proposedPrice). Es lo que prueba que se aplicó
+  /// EXACTAMENTE lo revisado y no algo recomputado por código posterior distinto.
+  proposalSha String
+
+  /// Veredicto y forma del preflight que produjo el bloqueo.
+  verdict String
+  shape   String
+  /// Snapshot íntegro de las métricas del preflight, sin recálculo.
+  preflightMetrics Json
+
+  /// Denominadores completos de la partición: sin ellos, la ausencia no es auditable.
+  catalogTotalCount        Int
+  writeSetCount            Int
+  changedCount             Int
+  presentWithoutPriceCount Int
+  verifiedAbsentCount      Int
+  unverifiedCount          Int
+
+  createdAt         DateTime  @default(now())
+  approvedAt        DateTime?
+  approvedByUserId  String?
+  appliedAt         DateTime?
+  expiredAt         DateTime?
+  appliedCount      Int?
+  conflictedCount   Int?
+  failureReason     String?
+
+  items PriceReviewItem[]
+
+  @@index([providerId, status])
+  @@index([userId, status])
+}
+
+model PriceReviewItem {
+  id String @id @default(cuid())
+
+  priceReviewId String
+  priceReview   PriceReview @relation(fields: [priceReviewId], references: [id], onDelete: Cascade)
+
+  catalogProductId String
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id])
+
+  /// PIN DE EVIDENCIA · onDelete: Restrict. Una propuesta pendiente no puede quedar apuntando a
+  /// evidencia borrada: borrar el job que la sustenta debe fallar en voz alta, no en silencio.
+  extractedProductId String
+  extractedProduct   ExtractedProduct @relation(fields: [extractedProductId], references: [id], onDelete: Restrict)
+
+  sku String
+  /// Baseline AL MOMENTO DE CAPTURA. Nullable: NULL_TO_VALID es un caso legítimo del write-set.
+  oldPrice      Float?
+  /// Congelado: lo aprobado es inmutable, no se recomputa al aplicar.
+  proposedPrice Float
+  /// URL canónica de la ficha. Es lo que permite contrastar contra el proveedor.
+  canonicalUrl  String?
+
+  status         PriceReviewItemStatus @default(PENDING)
+  conflictReason String?
+
+  @@unique([priceReviewId, sku])
+  @@index([priceReviewId, status])
+  @@index([extractedProductId])
 }
